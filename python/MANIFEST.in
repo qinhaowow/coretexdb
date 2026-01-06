@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include cortexdb *.py
+recursive-include cortexdb/protocol *.py
+recursive-include cortexdb/integrations *.py

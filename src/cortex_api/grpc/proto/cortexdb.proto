@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package cortexdb;
+
+option go_package = "github.com/cortexdb/cortexdb/proto";
+option java_package = "com.cortexdb.proto";
+option rust_package = "cortexdb::cortex_api::grpc::generated";
+
+message Vector {
+  repeated float values = 1;
+}
+
+message Metadata {
+  map<string, string> fields = 1;
+}
+
+message VectorWithMetadata {
+  string id = 1;
+  Vector vector = 2;
+  Metadata metadata = 3;
+}
+
+message SearchRequest {
+  Vector query = 1;
+  int32 k = 2;
+  string index = 3;
+  float threshold = 4;
+}
+
+message SearchResultItem {
+  string id = 1;
+  float distance = 2;
+}
+
+message SearchResponse {
+  repeated SearchResultItem results = 1;
+  double execution_time = 2;
+}
+
+message CreateIndexRequest {
+  string name = 1;
+  string type = 2;
+  string metric = 3;
+}
+
+message CreateIndexResponse {
+  string status = 1;
+  string index = 2;
+}
+
+message AddVectorRequest {
+  string id = 1;
+  Vector vector = 2;
+  Metadata metadata = 3;
+  string index = 4;
+}
+
+message AddVectorResponse {
+  string status = 1;
+  string id = 2;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+}
+
+service CortexDBService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  rpc AddVector(AddVectorRequest) returns (AddVectorResponse);
+}
