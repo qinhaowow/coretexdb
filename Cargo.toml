@@ -33,7 +33,7 @@ name = "benches"
 path = "benches/main.rs"
 
 [features]
-default = ["core", "api", "enterprise-default"]
+default = ["core", "api"]
 
 core = []
 api = ["core", "tokio-runtime"]
@@ -49,49 +49,6 @@ monitoring = ["metrics", "tracing"]
 
 tokio-runtime = ["tokio/full"]
 tls = ["native-tls"]
-
-enterprise = ["enterprise-default"]
-enterprise-default = [
-    "ai-enterprise",
-    "security-enterprise",
-    "optimization-enterprise",
-    "support-enterprise"
-]
-
-ai-enterprise = [
-    "ndarray",
-    "rand",
-    "rand_distr",
-    "rayon",
-    "num-traits",
-    "wasmer",
-    "wasmer-compiler-cranelift",
-    "rustacuda",
-    "rustacuda-core",
-    "ocl"
-]
-
-security-enterprise = [
-    "oauth2",
-    "rusoto_s3",
-    "rusoto_core",
-    "rusoto_credential",
-    "rusoto_sts"
-]
-
-optimization-enterprise = [
-    "simd-enterprise"
-]
-
-support-enterprise = [
-    "enterprise-ui",
-    "enterprise-console"
-]
-
-simd-enterprise = []
-
-enterprise-ui = []
-enterprise-console = []
 
 open-source = []
 full = ["core", "api", "grpc", "distributed", "fulltext", "postgres", "compression", "metrics", "monitoring", "python"]

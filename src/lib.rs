@@ -76,9 +76,6 @@ pub mod sharding;
 pub mod discovery;
 pub mod coordinator;
 
-#[cfg(feature = "enterprise")]
-pub mod enterprise;
-
 #[cfg(feature = "python")]
 pub mod python;
 
