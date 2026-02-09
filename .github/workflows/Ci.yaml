@@ -105,22 +105,22 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Test Scheduler Module
-        run: cargo test --package cortexdb --lib -- scheduler:: --nocapture
+        run: "cargo test --package cortexdb --lib -- scheduler:: --nocapture"
       
       - name: Test Worker Module
-        run: cargo test --package cortexdb --lib -- worker:: --nocapture
+        run: "cargo test --package cortexdb --lib -- worker:: --nocapture"
       
       - name: Test Clustering Module
-        run: cargo test --package cortexdb --lib -- clustering:: --nocapture
+        run: "cargo test --package cortexdb --lib -- clustering:: --nocapture"
       
       - name: Test Sharding Module
-        run: cargo test --package cortexdb --lib -- sharding:: --nocapture
+        run: "cargo test --package cortexdb --lib -- sharding:: --nocapture"
       
       - name: Test Discovery Module
-        run: cargo test --package cortexdb --lib -- discovery:: --nocapture
+        run: "cargo test --package cortexdb --lib -- discovery:: --nocapture"
       
       - name: Test Coordinator Module
-        run: cargo test --package cortexdb --lib -- coordinator:: --nocapture
+        run: "cargo test --package cortexdb --lib -- coordinator:: --nocapture"
 
   integration_test:
     name: Integration Test
