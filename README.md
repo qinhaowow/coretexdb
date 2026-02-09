@@ -1,4 +1,4 @@
-# CortexDB - 企业级多模态向量数据库
+# CoretexDB - 企业级多模态向量数据库
 
 <div align="center">
 
