@@ -33,43 +33,43 @@ CortexDB 采用**双版本许可策略**，同时提供开源版和企业版，�
 
 #### 存储层 ✅
 
-| 模块 | 功能 | 状态 |
-|------|------|------|
-| MemoryStorage | 内存存储 | ✅ |
-| PersistentStorage | 持久化存储 | ✅ |
-| RocksDB 集成 | 磁盘存储 | ✅ |
-| LSM Tree | 日志结构合并树 | ✅ |
-| 列式存储 | 分析查询优化 | ✅ |
+| 模块              | 功能           | 状态 |
+| ----------------- | -------------- | ---- |
+| MemoryStorage     | 内存存储       | ✅   |
+| PersistentStorage | 持久化存储     | ✅   |
+| RocksDB 集成      | 磁盘存储       | ✅   |
+| LSM Tree          | 日志结构合并树 | ✅   |
+| 列式存储          | 分析查询优化   | ✅   |
 
 #### 索引层 ✅
 
-| 索引类型 | 算法 | 状态 |
-|----------|------|------|
-| 向量索引 | HNSW | ✅ |
-| | DiskANN | ✅ |
-| | BruteForce | ✅ |
-| 标量索引 | B-Tree | ✅ |
-| | Hash | ✅ |
-| 全文搜索 | Tantivy | ✅ |
-| 图索引 | HNSW | ✅ |
+| 索引类型 | 算法       | 状态 |
+| -------- | ---------- | ---- |
+| 向量索引 | HNSW       | ✅   |
+|          | DiskANN    | ✅   |
+|          | BruteForce | ✅   |
+| 标量索引 | B-Tree     | ✅   |
+|          | Hash       | ✅   |
+| 全文搜索 | Tantivy    | ✅   |
+| 图索引   | HNSW       | ✅   |
 
 #### API 层 ✅
 
-| 协议 | 实现 | 状态 |
-|------|------|------|
-| REST | Axum | ✅ |
-| gRPC | Tonic | ✅ |
-| PostgreSQL | Postgres Wire | ✅ |
-| GraphQL | Juniper | ✅ |
+| 协议       | 实现          | 状态 |
+| ---------- | ------------- | ---- |
+| REST       | Axum          | ✅   |
+| gRPC       | Tonic         | ✅   |
+| PostgreSQL | Postgres Wire | ✅   |
+| GraphQL    | Juniper       | ✅   |
 
 #### 分布式层 ✅
 
-| 功能 | 实现 | 状态 |
-|------|------|------|
-| 集群管理 | Gossip | ✅ |
-| 分片策略 | 一致性哈希 | ✅ |
-| 服务发现 | etcd/Consul | ✅ |
-| 负载均衡 | RoundRobin | ✅ |
+| 功能     | 实现        | 状态 |
+| -------- | ----------- | ---- |
+| 集群管理 | Gossip      | ✅   |
+| 分片策略 | 一致性哈希  | ✅   |
+| 服务发现 | etcd/Consul | ✅   |
+| 负载均衡 | RoundRobin  | ✅   |
 
 ### 构建命令
 
@@ -92,14 +92,14 @@ use cortexdb::{CortexDB, Vector};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = CortexDB::new().await?;
-    
+  
     let vector = Vector::new(vec![0.1, 0.2, 0.3, 0.4]);
     db.store("doc1", &vector, &serde_json::json!({
         "text": "Hello, CortexDB!"
     })).await?;
-    
+  
     let results = db.search(&[0.1, 0.2, 0.3, 0.4], 10).await?;
-    
+  
     Ok(())
 }
 ```
@@ -116,84 +116,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 高级 AI 算法 🔒
 
-| 功能 | 描述 | 加速比 |
-|------|------|--------|
-| HNSW++ | 增强版HNSW，支持更多优化参数 | 1.5x |
-| VAMANA | 微软DiskANN算法变体 | 2x |
-| OPQ | 可学习的优化积量化 | 3x |
-| IVF-HNSW | 混合索引结构 | 2.5x |
+| 功能     | 描述                         | 加速比 |
+| -------- | ---------------------------- | ------ |
+| HNSW++   | 增强版HNSW，支持更多优化参数 | 1.5x   |
+| VAMANA   | 微软DiskANN算法变体          | 2x     |
+| OPQ      | 可学习的优化积量化           | 3x     |
+| IVF-HNSW | 混合索引结构                 | 2.5x   |
 
 #### GPU 加速 🔒
 
-| 功能 | 硬件要求 | 加速比 |
-|------|----------|--------|
-| CUDA 向量搜索 | NVIDIA GPU (CUDA 11.0+) | 10x |
-| OpenCL 加速 | 支持OpenCL 1.2+ GPU | 8x |
-| 混合推理 | CPU/GPU 智能切换 | 自适应 |
-| 批量处理 | GPU 批处理优化 | 20x |
+| 功能          | 硬件要求                | 加速比 |
+| ------------- | ----------------------- | ------ |
+| CUDA 向量搜索 | NVIDIA GPU (CUDA 11.0+) | 10x    |
+| OpenCL 加速   | 支持OpenCL 1.2+ GPU     | 8x     |
+| 混合推理      | CPU/GPU 智能切换        | 自适应 |
+| 批量处理      | GPU 批处理优化          | 20x    |
 
 #### 企业级安全 🔒
 
-| 功能 | 合规标准 | 描述 |
-|------|----------|------|
-| 高级审计日志 | 所有 | 完整操作审计 |
-| SSO 集成 | 所有 | SAML/OAuth2/OIDC |
-| 数据脱敏 | GDPR | 动态脱敏引擎 |
-| 合规报告 | GDPR/HIPAA/SOX | 自动生成 |
-| 访问控制 | 所有 | 细粒度RBAC |
-| 加密 | 所有 | 传输和静态加密 |
+| 功能         | 合规标准       | 描述             |
+| ------------ | -------------- | ---------------- |
+| 高级审计日志 | 所有           | 完整操作审计     |
+| SSO 集成     | 所有           | SAML/OAuth2/OIDC |
+| 数据脱敏     | GDPR           | 动态脱敏引擎     |
+| 合规报告     | GDPR/HIPAA/SOX | 自动生成         |
+| 访问控制     | 所有           | 细粒度RBAC       |
+| 加密         | 所有           | 传输和静态加密   |
 
 #### 性能优化 🔒
 
-| 功能 | 平台 | 加速比 |
-|------|------|--------|
-| SIMD (AVX2) | x86_64 | 2x |
-| SIMD (AVX512) | x86_64 | 4x |
-| SIMD (Neon) | ARM64 | 2x |
-| 自适应缓存 | 通用 | 3x |
-| 查询优化 | 通用 | 2x |
+| 功能          | 平台   | 加速比 |
+| ------------- | ------ | ------ |
+| SIMD (AVX2)   | x86_64 | 2x     |
+| SIMD (AVX512) | x86_64 | 4x     |
+| SIMD (Neon)   | ARM64  | 2x     |
+| 自适应缓存    | 通用   | 3x     |
+| 查询优化      | 通用   | 2x     |
 
 #### 专属支持 🔒
 
-| 支持级别 | SLA | 响应时间 | 价格/年 |
-|----------|-----|----------|---------|
-| Standard | 99.9% | 4小时 | $10,000 |
-| Professional | 99.95% | 1小时 | $25,000 |
-| Enterprise | 99.99% | 15分钟 | $50,000 |
-| Mission-Critical | 99.999% | 5分钟 | $100,000 |
+| 支持级别         | SLA     | 响应时间 | 价格/年  |
+| ---------------- | ------- | -------- | -------- |
+| Standard         | 99.9%   | 4小时    | $10,000  |
+| Professional     | 99.95%  | 1小时    | $25,000  |
+| Enterprise       | 99.99%  | 15分钟   | $50,000  |
+| Mission-Critical | 99.999% | 5分钟    | $100,000 |
 
 ### 获取企业版
 
 ```bash
 # 联系销售团队
 Email: enterprise@cortexdb.io
-网站: https://cortexdb.io/enterprise
+网站: https://cortexdb.cn/enterprise
 ```
 
 ---
 
 ## 特性对照表
 
-| 功能 | 开源版 | 企业版 |
-|------|--------|--------|
-| 基础存储 | ✅ | ✅ |
-| 向量索引 (HNSW) | ✅ | ✅ |
-| 向量索引 (DiskANN) | ✅ | ✅+ |
-| 全文搜索 | ✅ | ✅ |
-| REST API | ✅ | ✅ |
-| gRPC API | ✅ | ✅ |
-| PostgreSQL 兼容 | ✅ | ✅ |
-| 基础分片 | ✅ | ✅+ |
-| 服务发现 | ✅ | ✅ |
-| 监控指标 | ✅ | ✅ |
-| 基础审计 | ✅ | ✅+ |
-| JWT 认证 | ✅ | ✅ |
-| **高级 AI 算法** | ❌ | ✅ |
-| **GPU 加速** | ❌ | ✅ |
-| **企业安全** | ❌ | ✅ |
-| **SIMD 优化** | ❌ | ✅ |
-| **合规报告** | ❌ | ✅ |
-| **专属支持** | ❌ | ✅ |
+| 功能                   | 开源版 | 企业版 |
+| ---------------------- | ------ | ------ |
+| 基础存储               | ✅     | ✅     |
+| 向量索引 (HNSW)        | ✅     | ✅     |
+| 向量索引 (DiskANN)     | ✅     | ✅+    |
+| 全文搜索               | ✅     | ✅     |
+| REST API               | ✅     | ✅     |
+| gRPC API               | ✅     | ✅     |
+| PostgreSQL 兼容        | ✅     | ✅     |
+| 基础分片               | ✅     | ✅+    |
+| 服务发现               | ✅     | ✅     |
+| 监控指标               | ✅     | ✅     |
+| 基础审计               | ✅     | ✅+    |
+| JWT 认证               | ✅     | ✅     |
+| **高级 AI 算法** | ❌     | ✅     |
+| **GPU 加速**     | ❌     | ✅     |
+| **企业安全**     | ❌     | ✅     |
+| **SIMD 优化**    | ❌     | ✅     |
+| **合规报告**     | ❌     | ✅     |
+| **专属支持**     | ❌     | ✅     |
 
 ---
 
@@ -243,9 +243,9 @@ cargo build --release --features "full,enterprise,ai-enterprise/rustacuda"
 
 ### v0.2.0 (当前版本)
 
-- [x] 开源版核心功能
-- [x] 企业版基础架构
-- [x] 双版本策略
+- [X] 开源版核心功能
+- [X] 企业版基础架构
+- [X] 双版本策略
 
 ### v0.3.0 (Q2 2024)
 
@@ -282,9 +282,9 @@ cargo build --release --features "full,enterprise,ai-enterprise/rustacuda"
 
 ## 联系信息
 
-| 渠道 | 开源版 | 企业版 |
-|------|--------|--------|
-| GitHub Issues | ✅ | ❌ |
-| 商业支持 | ❌ | ✅ |
-| Email | community@cortexdb.io | enterprise@cortexdb.io |
-| 网站 | https://cortexdb.io | https://cortexdb.io/enterprise |
+| 渠道          | 开源版                | 企业版                         |
+| ------------- | --------------------- | ------------------------------ |
+| GitHub Issues | ✅                    | ❌                             |
+| 商业支持      | ❌                    | ✅                             |
+| Email         | community@cortexdb.io | enterprise@cortexdb.io         |
+| 网站          | https://cortexdb.io   | https://cortexdb.io/enterprise |
