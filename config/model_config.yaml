@@ -1,0 +1,73 @@
+embedding:
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  model_type: sentence_transformers
+  device: cpu
+  batch_size: 32
+  max_seq_length: 256
+  normalize: true
+  cache_folder: models/embeddings
+
+  multimodal:
+    image_model: clip-vit-base-patch32
+    audio_model: wavlm-base
+    point_cloud_model: pointnet2
+
+llm:
+  provider: ollama
+
+  ollama:
+    base_url: http://localhost:11434
+    model: llama2
+    temperature: 0.7
+    max_tokens: 512
+    timeout: 120
+    stream: false
+
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-3.5-turbo
+    temperature: 0.7
+    max_tokens: 512
+    base_url: https://api.openai.com/v1
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-3-sonnet-20240229
+    temperature: 0.7
+    max_tokens: 512
+
+memory:
+  short_term_capacity: 100
+  long_term_threshold: 0.7
+  decay_factor: 0.95
+  consolidation_interval: 3600
+
+  importance_weights:
+    recency: 0.3
+    relevance: 0.4
+    frequency: 0.2
+    emotional: 0.1
+
+rag:
+  top_k: 5
+  score_threshold: 0.5
+  reranker: false
+
+  retrieval:
+    vector_weight: 0.7
+    scalar_weight: 0.3
+    hybrid_search: true
+
+  context:
+    max_length: 4096
+    include_sources: true
+    include_scores: true
+
+decision:
+  confidence_threshold: 0.7
+  risk_threshold: 0.5
+  max_replan_attempts: 3
+
+  options:
+    max_options: 5
+    evaluate_all: true

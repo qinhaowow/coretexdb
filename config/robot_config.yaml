@@ -1,0 +1,95 @@
+robot:
+  name: default_robot
+  type: mobile_manipulator
+  serial_number: ROBOT-001
+
+  dimensions:
+    length: 0.6
+    width: 0.5
+    height: 1.2
+    weight: 50.0
+
+sensors:
+  cameras:
+    - name: front_camera
+      topic: /camera/front/image_raw
+      type: rgb
+      resolution: [640, 480]
+      fps: 30
+
+    - name: depth_camera
+      topic: /camera/depth/image_raw
+      type: depth
+      resolution: [640, 480]
+      fps: 30
+
+  lidars:
+    - name: front_lidar
+      topic: /scan
+      type: 2d
+      angle_min: -3.14
+      angle_max: 3.14
+      range_min: 0.1
+      range_max: 10.0
+
+  imus:
+    - name: body_imu
+      topic: /imu/data
+      frame_id: imu_link
+
+  encoders:
+    - name: wheel_encoders
+      topic: /wheel_states
+      ticks_per_rev: 4096
+
+actuators:
+  wheels:
+    - name: front_left
+      type: differential
+      max_velocity: 1.0
+      max_torque: 10.0
+
+    - name: front_right
+      type: differential
+      max_velocity: 1.0
+      max_torque: 10.0
+
+    - name: rear_left
+      type: differential
+      max_velocity: 1.0
+      max_torque: 10.0
+
+    - name: rear_right
+      type: differential
+      max_velocity: 1.0
+      max_torque: 10.0
+
+  arms:
+    - name: manipulator_arm
+      type: 6dof
+      dof: 6
+      max_payload: 5.0
+
+navigation:
+  frame_id: odom
+  base_frame_id: base_link
+  map_frame_id: map
+
+  localization:
+    type: amcl
+    initial_pose: [0.0, 0.0, 0.0]
+
+  planning:
+    type: teb
+    max_vel_x: 0.5
+    max_vel_theta: 1.0
+
+safety:
+  collision_check: true
+  safe_distance: 0.3
+  emergency_stop_topics: [/emergency_stop]
+
+  limits:
+    max_linear_velocity: 1.0
+    max_angular_velocity: 2.0
+    max_acceleration: 0.5

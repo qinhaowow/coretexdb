@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package coretex;
+
+service CoretexService {
+  rpc CreateCollection(CreateCollectionRequest) returns (CollectionResponse);
+  rpc DeleteCollection(DeleteCollectionRequest) returns (CollectionResponse);
+  rpc ListCollections(Empty) returns (ListCollectionsResponse);
+  rpc InsertVectors(InsertVectorsRequest) returns (InsertVectorsResponse);
+  rpc SearchVectors(SearchRequest) returns (SearchResponse);
+  rpc GetVector(GetVectorRequest) returns (GetVectorResponse);
+  rpc DeleteVectors(DeleteVectorsRequest) returns (DeleteVectorsResponse);
+  rpc GetCollectionInfo(GetCollectionInfoRequest) returns (CollectionInfoResponse);
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}
+
+message Empty {}
+
+message CreateCollectionRequest {
+  string name = 1;
+  uint32 dimension = 2;
+  string metric = 3;
+}
+
+message DeleteCollectionRequest {
+  string name = 1;
+}
+
+message CollectionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListCollectionsResponse {
+  repeated string collections = 1;
+}
+
+message InsertVectorsRequest {
+  string collection = 1;
+  repeated VectorData vectors = 2;
+}
+
+message VectorData {
+  string id = 1;
+  repeated float vector = 2;
+  map<string, string> metadata = 3;
+}
+
+message InsertVectorsResponse {
+  repeated string ids = 1;
+  uint32 count = 2;
+}
+
+message SearchRequest {
+  string collection = 1;
+  repeated float query_vector = 2;
+  uint32 k = 3;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string id = 1;
+  float score = 2;
+  float distance = 3;
+}
+
+message GetVectorRequest {
+  string collection = 1;
+  string id = 2;
+}
+
+message GetVectorResponse {
+  string id = 1;
+  repeated float vector = 2;
+  string metadata = 3;
+}
+
+message DeleteVectorsRequest {
+  string collection = 1;
+  repeated string ids = 2;
+}
+
+message DeleteVectorsResponse {
+  uint32 deleted_count = 1;
+}
+
+message GetCollectionInfoRequest {
+  string name = 1;
+}
+
+message CollectionInfoResponse {
+  string name = 1;
+  uint32 dimension = 2;
+  string metric = 3;
+  uint32 vector_count = 4;
+}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+}

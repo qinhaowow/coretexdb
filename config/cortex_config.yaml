@@ -1,0 +1,36 @@
+host: localhost
+port: 5000
+timeout: 30
+connection_pool_size: 10
+max_retries: 3
+retry_delay: 1.0
+
+collections:
+  robot_memory:
+    vector_size: 384
+    distance_metric: cosine
+    num_shards: 1
+    replication_factor: 1
+
+  sensor_data:
+    vector_size: 384
+    distance_metric: cosine
+    num_shards: 1
+    replication_factor: 1
+
+  long_term_memory:
+    vector_size: 384
+    distance_metric: cosine
+    num_shards: 2
+    replication_factor: 1
+
+indexing:
+  batch_size: 100
+  num_workers: 4
+  quantization: none
+
+logging:
+  level: INFO
+  file: logs/cortex_client.log
+  max_bytes: 10485760
+  backup_count: 5
