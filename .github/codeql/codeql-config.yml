@@ -1,0 +1,20 @@
+name: "CodeQL Config"
+disable-default-queries: false
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+paths-ignore:
+  - '**/tests/**'
+  - '**/test_*.rs'
+  - '**/*_test.rs'
+  - '**/benches/**'
+
+paths:
+  - src
+  - Cargo.toml
+
+config:
+  - packages:
+      - codeql/cpp-queries
+      - codeql/rust-queries
