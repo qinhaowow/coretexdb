@@ -101,6 +101,16 @@ mod encryption {
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use std::collections::HashMap;
+    use aes_gcm::{
+        Aes256Gcm, Key, KeyInit, Nonce,
+        aead::{Aead, OsRng},
+    };
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use hex;
+    
+    type HmacSha256 = Hmac<Sha256>;
     
     #[derive(Debug, Clone)]
     pub struct EncryptionKey {
@@ -110,13 +120,67 @@ mod encryption {
         pub expires_at: Option<u64>,
     }
     
+    impl EncryptionKey {
+        pub fn from_bytes(id: String, key_bytes: Vec<u8>) -> Self {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            Self {
+                id,
+                key: key_bytes,
+                created_at: now,
+                expires_at: None,
+            }
+        }
+        
+        pub fn key_hash(&self) -> String {
+            let mut mac = HmacSha256::new_from_slice(&self.key)
+                .expect("HMAC can take key of any size");
+            mac.update(b"key_verification");
+            hex::encode(mac.finalize().into_bytes())
+        }
+    }
+    
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct EncryptedData {
         pub key_id: String,
         pub algorithm: String,
         pub iv: Vec<u8>,
         pub ciphertext: Vec<u8>,
-        pub auth_tag: Option<Vec<u8>>,
+        pub auth_tag: Vec<u8>,
+    }
+    
+    impl EncryptedData {
+        pub fn to_base64(&self) -> String {
+            let combined = [
+                &self.iv[..],
+                &self.ciphertext[..],
+                &self.auth_tag[..],
+            ].concat();
+            BASE64.encode(&combined)
+        }
+        
+        pub fn from_base64(key_id: &str, data: &str) -> Result<Self, String> {
+            let combined = BASE64.decode(data)
+                .map_err(|e| format!("Base64 decode error: {}", e))?;
+            
+            if combined.len() < 12 + 16 {
+                return Err("Invalid encrypted data length".to_string());
+            }
+            
+            let iv = combined[..12].to_vec();
+            let auth_tag = combined[combined.len() - 16..].to_vec();
+            let ciphertext = combined[12..combined.len() - 16].to_vec();
+            
+            Ok(Self {
+                key_id: key_id.to_string(),
+                algorithm: "AES-256-GCM".to_string(),
+                iv,
+                ciphertext,
+                auth_tag,
+            })
+        }
     }
     
     pub struct KeyManager {
@@ -201,16 +265,30 @@ mod encryption {
             let key = self.key_manager.get_primary_key().await
                 .ok_or("No encryption key available")?;
             
-            let iv: Vec<u8> = (0..16).map(|_| rand::random::<u8>()).collect();
+            if key.key.len() != 32 {
+                return Err("Key must be 256 bits (32 bytes)".to_string());
+            }
             
-            let ciphertext = self.xor_encrypt(plaintext, &key.key, &iv);
+            let key_array: [u8; 32] = key.key.clone().try_into()
+                .map_err(|_| "Invalid key length")?;
+            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_array));
+            
+            let mut nonce_bytes = [0u8; 12];
+            OsRng.fill_bytes(&mut nonce_bytes);
+            let nonce = Nonce::from_slice(&nonce_bytes);
+            
+            let ciphertext = cipher.encrypt(nonce, plaintext)
+                .map_err(|e| format!("Encryption failed: {}", e))?;
+            
+            let auth_tag = ciphertext[ciphertext.len() - 16..].to_vec();
+            let encrypted_bytes = ciphertext[..ciphertext.len() - 16].to_vec();
             
             Ok(EncryptedData {
                 key_id: key.id,
                 algorithm: "AES-256-GCM".to_string(),
-                iv,
-                ciphertext,
-                auth_tag: None,
+                iv: nonce_bytes.to_vec(),
+                ciphertext: encrypted_bytes,
+                auth_tag,
             })
         }
     
@@ -218,21 +296,29 @@ mod encryption {
             let key = self.key_manager.get_key(&encrypted.key_id).await
                 .ok_or("Encryption key not found")?;
             
-            let plaintext = self.xor_encrypt(&encrypted.ciphertext, &key.key, &encrypted.iv);
-            
-            Ok(plaintext)
-        }
-    
-        fn xor_encrypt(&self, data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-            let mut result = Vec::with_capacity(data.len());
-            
-            for (i, byte) in data.iter().enumerate() {
-                let key_byte = key[i % key.len()];
-                let iv_byte = iv[i % iv.len()];
-                result.push(byte ^ key_byte ^ iv_byte);
+            if key.key.len() != 32 {
+                return Err("Key must be 256 bits (32 bytes)".to_string());
             }
             
-            result
+            let key_array: [u8; 32] = key.key.clone().try_into()
+                .map_err(|_| "Invalid key length")?;
+            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_array));
+            
+            if encrypted.iv.len() != 12 {
+                return Err("Invalid nonce length".to_string());
+            }
+            
+            let mut nonce_array = [0u8; 12];
+            nonce_array.copy_from_slice(&encrypted.iv);
+            let nonce = Nonce::from_slice(&nonce_array);
+            
+            let mut combined = encrypted.ciphertext.clone();
+            combined.extend_from_slice(&encrypted.auth_tag);
+            
+            let plaintext = cipher.decrypt(nonce, combined.as_ref())
+                .map_err(|e| format!("Decryption failed: {}", e))?;
+            
+            Ok(plaintext)
         }
     
         pub async fn encrypt_vector(&self, vector: &[f32]) -> Result<EncryptedData, String> {
@@ -252,6 +338,22 @@ mod encryption {
                 .collect();
             
             Ok(floats)
+        }
+        
+        pub async fn encrypt_string(&self, text: &str) -> Result<String, String> {
+            let encrypted = self.encrypt(text.as_bytes()).await?;
+            Ok(encrypted.to_base64())
+        }
+        
+        pub async fn decrypt_string(&self, encrypted_base64: &str) -> Result<String, String> {
+            let key = self.key_manager.get_primary_key().await
+                .ok_or("No encryption key available")?;
+            
+            let encrypted = EncryptedData::from_base64(&key.id, encrypted_base64)?;
+            let plaintext = self.decrypt(&encrypted).await?;
+            
+            String::from_utf8(plaintext)
+                .map_err(|e| format!("Invalid UTF-8: {}", e))
         }
     }
 }
