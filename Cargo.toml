@@ -89,6 +89,13 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 # Python绑定
 pyo3 = { version = "0.19", features = ["extension-module", "abi3-py38"], optional = true }
 
+# gRPC
+tonic = "0.10"
+prost = "0.11"
+
+# 向量索引
+hnsw = "0.4"
+
 [dev-dependencies]
 tempfile = "3.0"
 rstest = "0.16"
