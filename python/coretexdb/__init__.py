@@ -31,6 +31,7 @@ print(results)
 
 from .core import CortexDB
 from .client import CortexDBClient, AsyncCortexDBClient
+from .grpc_client import CortexDBGrpcClient, AsyncCortexDBGrpcClient
 from .version import __version__
 from . import integrations
 from . import protocol
@@ -39,6 +40,8 @@ __all__ = [
     "CortexDB", 
     "CortexDBClient", 
     "AsyncCortexDBClient",
+    "CortexDBGrpcClient",
+    "AsyncCortexDBGrpcClient",
     "integrations",
     "protocol",
     "__version__"
