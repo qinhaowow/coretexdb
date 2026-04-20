@@ -4,7 +4,7 @@ LangChain integration for CortexDB
 
 from typing import List, Dict, Any, Optional, Iterable, Tuple
 import numpy as np
-from cortexdb import CortexDBClient
+from .. import CortexDBClient
 
 # Lazy import for optional langchain dependency
 try:

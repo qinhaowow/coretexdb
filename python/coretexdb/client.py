@@ -8,7 +8,7 @@ import numpy as np
 import requests
 import aiohttp
 from pydantic import BaseModel, Field
-from cortexdb.protocol import (
+from .protocol import (
     CollectionConfig,
     VectorInsert,
     SearchQuery,
