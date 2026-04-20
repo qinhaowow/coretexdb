@@ -26,6 +26,8 @@ pub use network::{NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRang
 mod tls {
     use std::sync::Arc;
     use tokio::sync::RwLock;
+    use std::path::Path;
+    use std::fs;
     
     #[derive(Debug, Clone)]
     pub struct TlsConfig {
@@ -54,6 +56,34 @@ mod tls {
         }
     }
     
+    impl TlsConfig {
+        pub fn from_files(cert_path: &str, key_path: &str) -> Result<Self, String> {
+            if !Path::new(cert_path).exists() {
+                return Err(format!("Certificate file not found: {}", cert_path));
+            }
+            if !Path::new(key_path).exists() {
+                return Err(format!("Key file not found: {}", key_path));
+            }
+            Ok(Self {
+                cert_path: cert_path.to_string(),
+                key_path: key_path.to_string(),
+                ca_path: None,
+                verify_client: false,
+                min_version: TlsVersion::TLSv1_3,
+            })
+        }
+        
+        pub fn for_development() -> Self {
+            Self {
+                cert_path: "cert.pem".to_string(),
+                key_path: "key.pem".to_string(),
+                ca_path: None,
+                verify_client: false,
+                min_version: TlsVersion::TLSv1_2,
+            }
+        }
+    }
+    
     pub struct TlsServer {
         config: TlsConfig,
     }
@@ -61,6 +91,10 @@ mod tls {
     impl TlsServer {
         pub fn new(config: TlsConfig) -> Self {
             Self { config }
+        }
+    
+        pub fn from_config(config: TlsConfig) -> Result<Self, String> {
+            Ok(Self { config })
         }
     
         pub fn generate_self_signed_cert(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
@@ -79,6 +113,16 @@ mod tls {
     
         pub fn config(&self) -> &TlsConfig {
             &self.config
+        }
+        
+        pub fn load_cert_chain(&self) -> Result<Vec<u8>, String> {
+            fs::read(&self.config.cert_path)
+                .map_err(|e| format!("Failed to read certificate: {}", e))
+        }
+        
+        pub fn load_private_key(&self) -> Result<Vec<u8>, String> {
+            fs::read(&self.config.key_path)
+                .map_err(|e| format!("Failed to read private key: {}", e))
         }
     }
     
