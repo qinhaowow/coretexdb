@@ -23,6 +23,9 @@ pub mod coretex_monitoring;
 pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
+pub mod coretex_python;
+
+pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, DistanceMetric, IndexConfig, IndexType, CoreTexError, Result}; 
 pub use coretex_storage::{StorageEngine, MemoryStorage, PersistentStorage}; 
