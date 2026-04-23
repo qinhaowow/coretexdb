@@ -105,6 +105,16 @@ rustls = "0.21"
 hyper = { version = "0.14", features = ["full"] }
 http-body = "0.4"
 
+# CPU Features
+cpufeatures = "0.2"
+
+# WebSocket
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# Compression
+flate2 = "1.0"
+
 [dev-dependencies]
 tempfile = "3.0"
 rstest = "0.16"

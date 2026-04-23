@@ -176,11 +176,14 @@ impl HNSWIndex {
             })
             .collect();
         
-        // Sort by distance (ascending)
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
-        
-        // Take top k results
+        Self::sort_results(&mut results);
         results.into_iter().take(k).collect()
+    }
+
+    fn sort_results(results: &mut Vec<SearchResult>) {
+        results.sort_by(|a, b| {
+            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 }
 

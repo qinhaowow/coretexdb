@@ -30,6 +30,23 @@ pub mod coretex_incremental;
 pub mod coretex_cdc;
 pub mod coretex_transaction;
 pub mod coretex_edge;
+pub mod coretex_simd;
+pub mod coretex_websocket;
+pub mod coretex_failover;
+pub mod coretex_permissions;
+pub mod coretex_tracing;
+pub mod coretex_persistence;
+pub mod coretex_backup;
+pub mod coretex_monitoring_v2;
+
+#[cfg(test)]
+mod coretex_bm25_tests;
+#[cfg(test)]
+mod coretex_security_tests;
+#[cfg(test)]
+mod coretex_transaction_tests;
+#[cfg(test)]
+mod coretex_embedding_tests;
 
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
 pub use coretex_incremental::{IncrementalIndex, IndexUpdate, IndexType, IndexConfig};
@@ -70,6 +87,8 @@ pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, A
 pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser};
 pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
+pub use coretex_simd::{simd_utils, SimdCapabilities};
+pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats}; 
 
 pub struct CoreTexDB {
     pub storage: Arc<RwLock<Box<dyn StorageEngine>>>,
@@ -323,8 +342,14 @@ impl CoreTexDB {
             })
             .collect();
 
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        Self::sort_search_results(&mut results);
         Ok(results.into_iter().take(k).collect())
+    }
+
+    fn sort_search_results(results: &mut Vec<SearchResult>) {
+        results.sort_by(|a, b| {
+            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     pub async fn get_vectors_count(&self, collection: &str) -> Result<usize> {

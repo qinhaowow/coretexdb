@@ -109,13 +109,19 @@ impl BM25Index {
             scores.push((doc_id.clone(), score));
         }
 
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Self::sort_scores(&mut scores);
         scores.truncate(top_k);
 
         Ok(scores
             .into_iter()
             .map(|(id, score)| BM25Result { id, score })
             .collect())
+    }
+
+    fn sort_scores(scores: &mut Vec<(String, f32)>) {
+        scores.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     fn calculate_score(
@@ -171,7 +177,7 @@ impl BM25Index {
             scores.push((doc_id.clone(), score));
         }
 
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Self::sort_scores(&mut scores);
         scores.truncate(top_k);
 
         Ok(scores
