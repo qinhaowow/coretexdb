@@ -8,11 +8,18 @@ from typing import List, Dict, Any, Optional, Union
 import numpy as np
 
 try:
-    import coretexdb_pb2
-    import coretexdb_pb2_grpc
+    from . import coretexdb_pb2
+    from . import coretexdb_pb2_grpc
+    CORETEXDB_PROTOBUF_AVAILABLE = True
 except ImportError:
-    coretexdb_pb2 = None
-    coretexdb_pb2_grpc = None
+    try:
+        import coretexdb_pb2
+        import coretexdb_pb2_grpc
+        CORETEXDB_PROTOBUF_AVAILABLE = True
+    except ImportError:
+        coretexdb_pb2 = None
+        coretexdb_pb2_grpc = None
+        CORETEXDB_PROTOBUF_AVAILABLE = False
 
 
 class CortexDBGrpcClient:
@@ -28,16 +35,11 @@ class CortexDBGrpcClient:
     ):
         """
         Initialize CortexDB gRPC client
-
-        Args:
-            host: Hostname of the CortexDB server
-            port: Port of the CortexDB gRPC server
-            timeout: Request timeout in seconds
         """
-        if coretexdb_pb2 is None:
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
             raise ImportError(
                 "gRPC protobuf modules not found. "
-                "Please install coretexdb with gRPC support: pip install coretexdb[grpc]"
+                "Please install coretexdb with gRPC support or generate protobuf files."
             )
 
         self.host = host
@@ -48,6 +50,9 @@ class CortexDBGrpcClient:
 
     def connect(self):
         """Establish connection to the gRPC server"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+        
         address = f"{self.host}:{self.port}"
         self.channel = grpc.insecure_channel(address)
         self.stub = coretexdb_pb2_grpc.CoretexServiceStub(self.channel)
@@ -64,8 +69,11 @@ class CortexDBGrpcClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def _to_vector_data(self, vectors: List[np.ndarray], metadata: Optional[List[Dict]] = None) -> List[coretexdb_pb2.VectorData]:
+    def _to_vector_data(self, vectors: List[np.ndarray], metadata: Optional[List[Dict]] = None) -> List:
         """Convert numpy arrays to VectorData protobuf messages"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         result = []
         for i, vec in enumerate(vectors):
             vec_list = vec.tolist() if isinstance(vec, np.ndarray) else list(vec)
@@ -79,6 +87,9 @@ class CortexDBGrpcClient:
 
     def health_check(self) -> Dict[str, str]:
         """Check if the server is healthy"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.Empty()
         response = self.stub.HealthCheck(request, timeout=self.timeout)
         return {
@@ -92,17 +103,10 @@ class CortexDBGrpcClient:
         dimension: int,
         metric: str = "cosine"
     ) -> Dict[str, Any]:
-        """
-        Create a new collection
-
-        Args:
-            name: Collection name
-            dimension: Vector dimension
-            metric: Distance metric (cosine, euclidean, dot)
-
-        Returns:
-            Dict with success status and message
-        """
+        """Create a new collection"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.CreateCollectionRequest(
             name=name,
             dimension=dimension,
@@ -115,15 +119,10 @@ class CortexDBGrpcClient:
         }
 
     def delete_collection(self, name: str) -> Dict[str, Any]:
-        """
-        Delete a collection
-
-        Args:
-            name: Collection name
-
-        Returns:
-            Dict with success status and message
-        """
+        """Delete a collection"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.DeleteCollectionRequest(name=name)
         response = self.stub.DeleteCollection(request, timeout=self.timeout)
         return {
@@ -132,12 +131,10 @@ class CortexDBGrpcClient:
         }
 
     def list_collections(self) -> List[str]:
-        """
-        List all collections
-
-        Returns:
-            List of collection names
-        """
+        """List all collections"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.Empty()
         response = self.stub.ListCollections(request, timeout=self.timeout)
         return list(response.collections)
@@ -148,17 +145,10 @@ class CortexDBGrpcClient:
         vectors: Union[List[np.ndarray], np.ndarray],
         metadata: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
-        """
-        Insert vectors into a collection
-
-        Args:
-            collection: Collection name
-            vectors: List of vectors or 2D numpy array
-            metadata: Optional list of metadata dicts
-
-        Returns:
-            Dict with inserted IDs and count
-        """
+        """Insert vectors into a collection"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         if isinstance(vectors, np.ndarray):
             vectors = [vectors[i] for i in range(len(vectors))]
 
@@ -180,17 +170,10 @@ class CortexDBGrpcClient:
         query_vector: Union[np.ndarray, List[float]],
         k: int = 10
     ) -> List[Dict[str, Any]]:
-        """
-        Search for similar vectors
-
-        Args:
-            collection: Collection name
-            query_vector: Query vector
-            k: Number of results to return
-
-        Returns:
-            List of search results with id, score, and distance
-        """
+        """Search for similar vectors"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         query_list = query_vector.tolist() if isinstance(query_vector, np.ndarray) else query_vector
 
         request = coretexdb_pb2.SearchRequest(
@@ -214,16 +197,10 @@ class CortexDBGrpcClient:
         collection: str,
         vector_id: str
     ) -> Optional[Dict[str, Any]]:
-        """
-        Get a vector by ID
-
-        Args:
-            collection: Collection name
-            vector_id: Vector ID
-
-        Returns:
-            Dict with vector data or None if not found
-        """
+        """Get a vector by ID"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.GetVectorRequest(
             collection=collection,
             id=vector_id
@@ -243,16 +220,10 @@ class CortexDBGrpcClient:
         collection: str,
         vector_ids: List[str]
     ) -> int:
-        """
-        Delete vectors by IDs
-
-        Args:
-            collection: Collection name
-            vector_ids: List of vector IDs to delete
-
-        Returns:
-            Number of deleted vectors
-        """
+        """Delete vectors by IDs"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.DeleteVectorsRequest(
             collection=collection,
             ids=vector_ids
@@ -261,15 +232,10 @@ class CortexDBGrpcClient:
         return response.deleted_count
 
     def get_collection_info(self, name: str) -> Dict[str, Any]:
-        """
-        Get collection information
-
-        Args:
-            name: Collection name
-
-        Returns:
-            Dict with collection info
-        """
+        """Get collection information"""
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
+            raise ImportError("Protobuf modules not available")
+            
         request = coretexdb_pb2.GetCollectionInfoRequest(name=name)
         response = self.stub.GetCollectionInfo(request, timeout=self.timeout)
         return {
@@ -291,10 +257,10 @@ class AsyncCortexDBGrpcClient:
         port: int = 50051,
         timeout: float = 30.0,
     ):
-        if coretexdb_pb2 is None:
+        if not CORETEXDB_PROTOBUF_AVAILABLE:
             raise ImportError(
                 "gRPC protobuf modules not found. "
-                "Please install coretexdb with gRPC support: pip install coretexdb[grpc]"
+                "Please install coretexdb with gRPC support."
             )
 
         self.host = host
