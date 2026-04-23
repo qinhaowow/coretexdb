@@ -25,6 +25,7 @@ pub mod coretex_compression;
 pub mod coretex_security; 
 pub mod coretex_python;
 pub mod coretex_onnx;
+pub mod coretex_bm25;
 
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError}; 
 
@@ -32,6 +33,7 @@ pub use coretex_core::{Vector, Document, CollectionSchema, DistanceMetric, Index
 pub use coretex_storage::{StorageEngine, MemoryStorage, PersistentStorage}; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
 pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, QueryProcessor, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
+pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition, Document}; 
 pub use coretex_api::rest::{start_server, ApiConfig};
 pub use coretex_api::graphql::{GraphQLExecutor, GraphQLServer, GraphQLRequest, GraphQLResponse}; 
 pub use coretex_cli::run_cli; 
