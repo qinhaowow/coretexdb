@@ -26,8 +26,16 @@ pub mod coretex_security;
 pub mod coretex_python;
 pub mod coretex_onnx;
 pub mod coretex_bm25;
+pub mod coretex_incremental;
+pub mod coretex_cdc;
+pub mod coretex_transaction;
+pub mod coretex_edge;
 
-pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError}; 
+pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
+pub use coretex_incremental::{IncrementalIndex, IndexUpdate, IndexType, IndexConfig};
+pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
+pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog};
+pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, DistanceMetric, IndexConfig, IndexType, CoreTexError, Result}; 
 pub use coretex_storage::{StorageEngine, MemoryStorage, PersistentStorage}; 
