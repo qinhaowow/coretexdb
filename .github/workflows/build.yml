@@ -92,17 +92,24 @@ jobs:
         pip install setuptools wheel numpy pandas pydantic requests aiohttp grpcio grpcio-tools protobuf
 
     - name: Generate protobuf Python code
-      working-directory: repo
       run: |
+        cd repo
         python -m grpc_tools.protoc -I./src/coretex_grpc --python_out=./python --grpc_python_out=./python ./src/coretex_grpc/coretex.proto
+        ls -la python/
 
     - name: Fix protobuf imports
       working-directory: repo/python
       run: |
-        sed -i 's/^import coretexdb_pb2 from /from /g' coretexdb_pb2_grpc.py 2>/dev/null || true
+        if [ -f coretexdb_pb2_grpc.py ]; then
+          sed -i 's/^import coretexdb_pb2 from /from /g' coretexdb_pb2_grpc.py || true
+          cat coretexdb_pb2.py | head -20
+        else
+          echo "Warning: coretexdb_pb2.py not found"
+          ls -la
+        fi
 
-    - name: Build package with setup.py
+    - name: Build package with pip
       working-directory: repo/python
       run: |
-        python setup.py develop
+        pip install -e .
         python -c "import coretexdb; print('Package installed successfully')"
