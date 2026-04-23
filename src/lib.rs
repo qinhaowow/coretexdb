@@ -325,6 +325,276 @@ impl CoreTexDB {
         Ok(collection_data.len())
     }
 
+    pub async fn update_vector(
+        &self,
+        collection: &str,
+        id: &str,
+        vector: Vec<f32>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<bool> {
+        let collections = self.collections.read().await;
+        let schema = collections.get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+        
+        if vector.len() != schema.dimension {
+            return Err(CoreTexError::InvalidDimension(
+                format!("Expected dimension {}, got {}", schema.dimension, vector.len())
+            ));
+        }
+        drop(collections);
+
+        let storage_key = format!("{}:{}", collection, id);
+        
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        if !collection_data.contains_key(id) {
+            return Ok(false);
+        }
+
+        let meta = metadata.unwrap_or(serde_json::json!({}));
+        collection_data.insert(id.to_string(), (vector, meta));
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            index_storage.insert(id.to_string(), vector);
+        }
+
+        Ok(true)
+    }
+
+    pub async fn upsert_vectors(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let collections = self.collections.read().await;
+        let schema = collections.get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+        
+        for (_, vector, _) in &vectors {
+            if vector.len() != schema.dimension {
+                return Err(CoreTexError::InvalidDimension(
+                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
+                ));
+            }
+        }
+        drop(collections);
+
+        let mut inserted = Vec::new();
+        let mut updated = Vec::new();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for (id, vector, metadata) in vectors {
+            if collection_data.contains_key(&id) {
+                collection_data.insert(id.clone(), (vector, metadata));
+                updated.push(id);
+            } else {
+                collection_data.insert(id.clone(), (vector, metadata));
+                inserted.push(id);
+            }
+        }
+
+        drop(data);
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            for (id, vector, _) in &vectors {
+                index_storage.insert(id.clone(), vector.clone());
+            }
+        }
+
+        if let Ok(index) = self.index_manager.get_index(&format!("{}_hnsw", collection)).await {
+            if let Some(idx) = index {
+                let vectors_for_index: Vec<(String, Vec<f32>)> = vectors.iter()
+                    .map(|(id, vec, _)| (id.clone(), vec.clone()))
+                    .collect();
+                let _ = idx.add_batch(vectors_for_index).await;
+                let _ = idx.build().await;
+            }
+        }
+
+        Ok((inserted, updated))
+    }
+
+    pub async fn bulk_insert(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+    ) -> Result<Vec<String>> {
+        let collections = self.collections.read().await;
+        let schema = collections.get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+        
+        for (_, vector, _) in &vectors {
+            if vector.len() != schema.dimension {
+                return Err(CoreTexError::InvalidDimension(
+                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
+                ));
+            }
+        }
+        drop(collections);
+
+        let ids: Vec<String> = vectors.iter().map(|(id, _, _)| id.clone()).collect();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for (id, vector, metadata) in vectors {
+            collection_data.insert(id, (vector, metadata));
+        }
+
+        drop(data);
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            for (id, vector, _) in &vectors {
+                index_storage.insert(id.clone(), vector.clone());
+            }
+        }
+
+        if let Ok(index) = self.index_manager.get_index(&format!("{}_hnsw", collection)).await {
+            if let Some(idx) = index {
+                let vectors_for_index: Vec<(String, Vec<f32>)> = vectors.iter()
+                    .map(|(id, vec, _)| (id.clone(), vec.clone()))
+                    .collect();
+                let _ = idx.add_batch(vectors_for_index).await;
+                let _ = idx.build().await;
+            }
+        }
+
+        Ok(ids)
+    }
+
+    pub async fn bulk_update(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+    ) -> Result<Vec<String>> {
+        let collections = self.collections.read().await;
+        let schema = collections.get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+        
+        for (_, vector, _) in &vectors {
+            if vector.len() != schema.dimension {
+                return Err(CoreTexError::InvalidDimension(
+                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
+                ));
+            }
+        }
+        drop(collections);
+
+        let mut updated_ids = Vec::new();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for (id, vector, metadata) in vectors {
+            if collection_data.contains_key(&id) {
+                collection_data.insert(id.clone(), (vector, metadata));
+                updated_ids.push(id);
+            }
+        }
+
+        drop(data);
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            for (id, vector, _) in &vectors {
+                if updated_ids.contains(&id) {
+                    index_storage.insert(id.clone(), vector.clone());
+                }
+            }
+        }
+
+        Ok(updated_ids)
+    }
+
+    pub async fn bulk_delete(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> Result<Vec<String>> {
+        let mut deleted_ids = Vec::new();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for id in &ids {
+            if collection_data.remove(id).is_some() {
+                deleted_ids.push(id.clone());
+            }
+        }
+
+        drop(data);
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            for id in &deleted_ids {
+                index_storage.remove(id);
+            }
+        }
+
+        Ok(deleted_ids)
+    }
+
+    pub async fn bulk_upsert(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+    ) -> Result<BulkResult> {
+        let collections = self.collections.read().await;
+        let schema = collections.get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+        
+        for (_, vector, _) in &vectors {
+            if vector.len() != schema.dimension {
+                return Err(CoreTexError::InvalidDimension(
+                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
+                ));
+            }
+        }
+        drop(collections);
+
+        let mut inserted = Vec::new();
+        let mut updated = Vec::new();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for (id, vector, metadata) in vectors {
+            if collection_data.contains_key(&id) {
+                collection_data.insert(id.clone(), (vector, metadata));
+                updated.push(id);
+            } else {
+                collection_data.insert(id.clone(), (vector, metadata));
+                inserted.push(id);
+            }
+        }
+
+        drop(data);
+
+        let mut index_data = self.index_data.write().await;
+        if let Some(index_storage) = index_data.get_mut(collection) {
+            for (id, vector, _) in &vectors {
+                index_storage.insert(id.clone(), vector.clone());
+            }
+        }
+
+        Ok(BulkResult {
+            inserted,
+            updated,
+        })
+    }
+
     fn matches_filter(metadata: &serde_json::Value, filter: &serde_json::Value) -> bool {
         if let (Some(metadata_obj), Some(filter_obj)) = (
             metadata.as_object(),
@@ -364,6 +634,12 @@ impl Default for CoreTexDB {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BulkResult {
+    pub inserted: Vec<String>,
+    pub updated: Vec<String>,
 }
 
 #[cfg(test)]

@@ -150,8 +150,11 @@ pub enum CoreTexError {
     #[error("Validation error: {0}")] 
     ValidationError(String), 
     
-    #[error("Configuration error: {0}")] 
-    ConfigError(String), 
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
+    #[error("Invalid dimension: {0}")]
+    InvalidDimension(String),
 } 
 
 pub type Result<T> = std::result::Result<T, CoreTexError>; 
