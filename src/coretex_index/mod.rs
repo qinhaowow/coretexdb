@@ -562,7 +562,248 @@ impl IndexManager {
     }
 }
 
-pub use {IVFIndex, ScalarIndex};
+pub struct PQIndex {
+    vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>>,
+    original_vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
+    metric: String,
+    dimension: usize,
+    n_subquantizers: usize,
+    n_bits: usize,
+    codebooks: std::sync::Arc<tokio::sync::RwLock<Vec<Vec<Vec<f32>>>>>,
+}
+
+impl PQIndex {
+    pub fn new(metric: &str, dimension: usize, n_subquantizers: usize, n_bits: usize) -> Self {
+        Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            metric: metric.to_string(),
+            dimension,
+            n_subquantizers,
+            n_bits,
+            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        }
+    }
+
+    pub async fn train(&self, training_vectors: &[Vec<f32>]) -> Result<(), String> {
+        if training_vectors.is_empty() {
+            return Err("No training vectors provided".to_string());
+        }
+
+        let sub_dim = self.dimension / self.n_subquantizers;
+        if sub_dim == 0 {
+            return Err("Too many subquantizers for the vector dimension".to_string());
+        }
+
+        let mut codebooks = Vec::new();
+
+        for i in 0..self.n_subquantizers {
+            let start = i * sub_dim;
+            let end = if i == self.n_subquantizers - 1 {
+                self.dimension
+            } else {
+                start + sub_dim
+            };
+
+            let mut sub_vectors: Vec<Vec<f32>> = training_vectors
+                .iter()
+                .map(|v| v[start..end].to_vec())
+                .collect();
+
+            let n_centroids = 1 << self.n_bits;
+            let codebook = Self::kmeans(&mut sub_vectors, n_centroids);
+            codebooks.push(codebook);
+        }
+
+        let mut cb = self.codebooks.write().await;
+        *cb = codebooks;
+
+        Ok(())
+    }
+
+    fn kmeans(data: &mut Vec<Vec<f32>>, k: usize) -> Vec<Vec<f32>> {
+        if data.is_empty() || k == 0 {
+            return Vec::new();
+        }
+
+        let dim = data[0].len();
+        let k = k.min(data.len());
+
+        let mut centroids: Vec<Vec<f32>> = data
+            .iter()
+            .step_by(data.len() / k.max(1))
+            .take(k)
+            .cloned()
+            .collect();
+
+        while centroids.len() < k {
+            centroids.push(vec![0.0; dim]);
+        }
+
+        for _ in 0..20 {
+            let mut clusters: Vec<Vec<Vec<f32>>> = vec![Vec::new(); k];
+
+            for vec in data.iter() {
+                let mut min_dist = f32::MAX;
+                let mut best_centroid = 0;
+
+                for (i, centroid) in centroids.iter().enumerate() {
+                    let dist: f32 = vec.iter()
+                        .zip(centroid.iter())
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+
+                    if dist < min_dist {
+                        min_dist = dist;
+                        best_centroid = i;
+                    }
+                }
+
+                clusters[best_centroid].push(vec.clone());
+            }
+
+            for (i, cluster) in clusters.iter().enumerate() {
+                if !cluster.is_empty() {
+                    let dim = cluster[0].len();
+                    let mut new_centroid = vec![0.0; dim];
+                    for vec in cluster {
+                        for (j, val) in vec.iter().enumerate() {
+                            new_centroid[j] += val;
+                        }
+                    }
+                    for val in new_centroid.iter_mut() {
+                        *val /= cluster.len() as f32;
+                    }
+                    centroids[i] = new_centroid;
+                }
+            }
+        }
+
+        centroids
+    }
+
+    pub async fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+        if vector.len() != self.dimension {
+            return Err(format!("Vector dimension {} does not match index dimension {}", vector.len(), self.dimension));
+        }
+
+        let codebook = self.codebooks.read().await;
+        if codebook.is_empty() {
+            return Err("Index not trained. Call train() first.".to_string());
+        }
+
+        let code = self.encode_vector(&vector, &codebook);
+
+        let mut vectors = self.vectors.write().await;
+        vectors.insert(id, code);
+
+        let mut original = self.original_vectors.write().await;
+        original.insert(id, vector);
+
+        Ok(())
+    }
+
+    fn encode_vector(&self, vector: &[f32], codebook: &[Vec<Vec<f32>>]) -> Vec<u8> {
+        let sub_dim = self.dimension / self.n_subquantizers;
+        let mut code = Vec::with_capacity(self.n_subquantizers);
+
+        for (i, sub_codebook) in codebook.iter().enumerate() {
+            let start = i * sub_dim;
+            let end = if i == self.n_subquantizers - 1 {
+                self.dimension
+            } else {
+                start + sub_dim
+            };
+
+            let sub_vector = &vector[start..end];
+
+            let mut min_dist = f32::MAX;
+            let mut best_idx = 0u8;
+
+            for (j, centroid) in sub_codebook.iter().enumerate() {
+                let dist: f32 = sub_vector
+                    .iter()
+                    .zip(centroid.iter())
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
+
+                if dist < min_dist {
+                    min_dist = dist;
+                    best_idx = j as u8;
+                }
+            }
+
+            code.push(best_idx);
+        }
+
+        code
+    }
+
+    pub async fn search(&self, query: &[f32], k: usize) -> Result<Vec<super::SearchResult>, String> {
+        let codebook = self.codebooks.read().await;
+        if codebook.is_empty() {
+            return Err("Index not trained. Call train() first.".to_string());
+        }
+
+        let query_code = self.encode_vector(query, &codebook);
+        let original = self.original_vectors.read().await;
+
+        let mut results: Vec<super::SearchResult> = original
+            .iter()
+            .map(|(id, orig)| {
+                let dist = self.calculate_distance(query, orig);
+                super::SearchResult {
+                    id: id.clone(),
+                    distance: dist,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        results.truncate(k);
+
+        Ok(results)
+    }
+
+    fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
+        match self.metric.as_str() {
+            "cosine" => {
+                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm_a == 0.0 || norm_b == 0.0 {
+                    return 1.0;
+                }
+                1.0 - (dot / (norm_a * norm_b))
+            },
+            "euclidean" => {
+                a.iter().zip(b.iter())
+                    .map(|(x, y)| (x - y).powi(2))
+                    .sum::<f32>()
+                    .sqrt()
+            },
+            _ => {
+                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm_a == 0.0 || norm_b == 0.0 {
+                    return 1.0;
+                }
+                1.0 - (dot / (norm_a * norm_b))
+            }
+        }
+    }
+
+    pub fn compression_ratio(&self) -> f32 {
+        let original_size = self.dimension * 4;
+        let compressed_size = self.n_subquantizers;
+        original_size as f32 / compressed_size as f32
+    }
+}
+
+pub use {IVFIndex, ScalarIndex, PQIndex};
 
 #[cfg(test)]
 mod tests {
