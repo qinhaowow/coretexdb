@@ -48,12 +48,12 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y librocksdb-dev libssl-dev pkg-config
+        sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
 
     - name: Install system dependencies (macOS)
       if: matrix.os == 'macos-latest'
       run: |
-        brew install rocksdb openssl
+        brew install rocksdb openssl protobuf
 
     - name: Build release
       run: cargo build --release --verbose
@@ -89,7 +89,17 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install setuptools wheel numpy pandas pydantic requests aiohttp grpcio grpcio-tools
+        pip install setuptools wheel numpy pandas pydantic requests aiohttp grpcio grpcio-tools protobuf
+
+    - name: Generate protobuf Python code
+      working-directory: repo
+      run: |
+        python -m grpc_tools.protoc -I./src/coretex_grpc --python_out=./python --grpc_python_out=./python ./src/coretex_grpc/coretex.proto
+
+    - name: Fix protobuf imports
+      working-directory: repo/python
+      run: |
+        sed -i 's/^import coretexdb_pb2 from /from /g' coretexdb_pb2_grpc.py 2>/dev/null || true
 
     - name: Build package with setup.py
       working-directory: repo/python
