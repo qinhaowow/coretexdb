@@ -24,6 +24,7 @@ pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
 pub mod coretex_python;
+pub mod coretex_onnx;
 
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError}; 
 

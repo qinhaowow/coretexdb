@@ -82,6 +82,10 @@ hmac = "0.12"
 base64 = "0.21"
 hex = "0.4"
 
+# ONNX推理
+ort = { version = "1.16", default-features = false, features = ["cuda", "tensorrt"] }
+thiserror = "1.0"
+
 # 监控指标
 metrics = { version = "0.21", optional = true }
 metrics-exporter-prometheus = { version = "0.12", optional = true }
