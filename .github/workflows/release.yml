@@ -11,16 +11,8 @@ env:
 
 jobs:
   build-release:
-    name: Build Release (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-pc-windows-gnu
-            os: ubuntu-latest
+    name: Build Release
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -28,39 +20,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
-
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release
 
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: coretex-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/coretex.exe
-            target/${{ matrix.target }}/release/coretex
-
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: build-release
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+      - name: Compress binary
+        run: |
+          tar -czvf coretex-linux-x64.tar.gz target/release/coretex
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           draft: true
-          files: |
-            artifacts/coretex-x86_64-unknown-linux-gnu/coretex
-            artifacts/coretex-x86_64-pc-windows-gnu/coretex.exe
+          files: coretex-linux-x64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
