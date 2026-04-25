@@ -11,6 +11,8 @@ repository = "https://github.com/yourusername/coretexdb"
 keywords = ["vector-database", "ai", "embedding", "similarity-search"]
 categories = ["database", "science", "machine-learning"]
 
+[workspace]
+
 [lib]
 name = "coretexdb"
 path = "src/lib.rs"
@@ -76,15 +78,13 @@ snap = { version = "1.0", optional = true }
 
 # 加密
 aes-gcm = "0.10"
-rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.21"
 hex = "0.4"
 
 # ONNX推理
-ort = { version = "1.16", default-features = false, features = ["cuda", "tensorrt"] }
-thiserror = "1.0"
+# ort = { version = "1.16", default-features = false, features = ["cuda", "tensorrt"] }
 
 # 监控指标
 metrics = { version = "0.21", optional = true }
@@ -112,8 +112,8 @@ cpufeatures = "0.2"
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
 
-# Compression
-flate2 = "1.0"
+# 全文搜索
+tantivy = "0.22"
 
 [dev-dependencies]
 tempfile = "3.0"

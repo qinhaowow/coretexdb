@@ -57,11 +57,9 @@ jobs:
 
     - name: Build release
       run: cargo build --release --verbose
-      continue-on-error: true
 
     - name: Run tests
       run: cargo test --verbose
-      continue-on-error: true
 
   build-python:
     name: Build Python Package

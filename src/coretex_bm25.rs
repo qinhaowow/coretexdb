@@ -120,7 +120,17 @@ impl BM25Index {
 
     fn sort_scores(scores: &mut Vec<(String, f32)>) {
         scores.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            b.1.partial_cmp(&a.1).unwrap_or_else(|| {
+                if a.1.is_nan() && b.1.is_nan() {
+                    std::cmp::Ordering::Equal
+                } else if a.1.is_nan() {
+                    std::cmp::Ordering::Greater
+                } else if b.1.is_nan() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
         });
     }
 

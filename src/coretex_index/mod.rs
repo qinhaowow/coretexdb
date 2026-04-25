@@ -275,7 +275,19 @@ impl ScalarIndex {
             .map(|(id, value)| (*value, id.clone()))
             .collect::<Vec<_>>();
         
-        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        sorted.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or_else(|| {
+                if a.0.is_nan() && b.0.is_nan() {
+                    std::cmp::Ordering::Equal
+                } else if a.0.is_nan() {
+                    std::cmp::Ordering::Greater
+                } else if b.0.is_nan() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+        });
         
         let mut sorted_scalars = self.sorted_scalars.write().unwrap();
         *sorted_scalars = sorted;
@@ -310,7 +322,19 @@ impl VectorIndex for BruteForceIndex {
             .collect();
         
         // Sort by distance (ascending)
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        results.sort_by(|a, b| {
+            a.distance.partial_cmp(&b.distance).unwrap_or_else(|| {
+                if a.distance.is_nan() && b.distance.is_nan() {
+                    std::cmp::Ordering::Equal
+                } else if a.distance.is_nan() {
+                    std::cmp::Ordering::Greater
+                } else if b.distance.is_nan() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+        });
         
         // Take top k results
         Ok(results.into_iter().take(k).collect())
@@ -432,6 +456,45 @@ impl VectorIndex for IVFIndex {
         // In a real IVF implementation, we would run k-means clustering here
         // to compute the centroids
         Ok(())
+    }
+
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
+        let vectors = self.vectors.read().await;
+        let vector_to_cluster = self.vector_to_cluster.read().await;
+        
+        let query_vec = query.to_vec();
+        let calculate_distance = self.calculate_distance;
+        
+        let results = tokio::task::spawn_blocking(move || {
+            let mut search_results: Vec<SearchResult> = vectors
+                .iter()
+                .map(|(id, vec)| {
+                    let distance = calculate_distance(&query_vec, vec);
+                    SearchResult {
+                        id: id.clone(),
+                        distance,
+                    }
+                })
+                .collect();
+            
+            search_results.sort_by(|a, b| {
+                a.distance.partial_cmp(&b.distance).unwrap_or_else(|| {
+                    if a.distance.is_nan() && b.distance.is_nan() {
+                        std::cmp::Ordering::Equal
+                    } else if a.distance.is_nan() {
+                        std::cmp::Ordering::Greater
+                    } else if b.distance.is_nan() {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+            });
+            
+            search_results.into_iter().take(k).collect::<Vec<_>>()
+        }).await?;
+        
+        Ok(results)
     }
     
     async fn clear(&self) -> Result<(), Box<dyn Error>> {
