@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Build release
         run: cargo build --release
