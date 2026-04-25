@@ -12,23 +12,15 @@ env:
 jobs:
   build-release:
     name: Build Release (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            ext: ''
-          - target: x86_64-pc-windows-msvc
+          - target: x86_64-pc-windows-gnu
             os: ubuntu-latest
-            ext: '.exe'
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            ext: ''
-          - target: x86_64-apple-darwin
-            os: ubuntu-latest
-            ext: ''
 
     steps:
       - uses: actions/checkout@v4
@@ -36,96 +28,39 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Rust targets
+      - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
       - name: Build release
-        uses: actions-rs/cargo@v1
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
         with:
-          command: build
-          args: --release --target ${{ matrix.target }}
-
-      - name: Package binaries
-        shell: pwsh
-        run: |
-          $target = "${{ matrix.target }}"
-          $ext = "${{ matrix.ext }}"
-          $dir = "target/$target/release"
-          
-          if (Test-Path "$dir/coretex$ext") {
-            Compress-Archive -Path "$dir/coretex$ext" -DestinationPath "coretex-$target$ext.zip" -Force
-            Write-Host "Created coretex-$target$ext.zip"
-            Get-ChildItem -Filter "*.zip"
-          } else {
-            Write-Host "Binary not found at $dir"
-            Get-ChildItem -Path $dir -ErrorAction SilentlyContinue
-          }
-
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
-        with:
-          files: coretex-${{ matrix.target }}${{ matrix.ext }}.zip
-          draft: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-python:
-    name: Build Python Package
-    runs-on: ubuntu-latest
-    needs: build-release
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build package
-        run: |
-          cd python
-          pip install -e .
-
-      - name: Build wheel
-        run: |
-          pip wheel . -w dist --no-deps
-          ls -la dist/
-
-      - name: Upload Python Package
-        uses: softprops/action-gh-release@v1
-        with:
-          files: python/dist/*
-          draft: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-crates:
-    name: Publish to Crates.io
-    runs-on: ubuntu-latest
-    needs: build-release
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Publish
-        run: |
-          cargo publish --token ${{ secrets.CRATES_TOKEN }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+          name: coretex-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/coretex.exe
+            target/${{ matrix.target }}/release/coretex
 
   create-release:
-    name: Create GitHub Release
+    name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-release, build-python]
+    needs: build-release
     permissions:
       contents: write
 
     steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          draft: false
-          generate_release_notes: true
+          draft: true
+          files: |
+            artifacts/coretex-x86_64-unknown-linux-gnu/coretex
+            artifacts/coretex-x86_64-pc-windows-gnu/coretex.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
