@@ -17,14 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Clean cargo cache
-        run: rm -rf ~/.cargo/registry/cache ~/.cargo/registry/index
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
 
       - name: Compress binary
         run: |
