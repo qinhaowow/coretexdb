@@ -17,8 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Clean cargo cache
+        run: |
+          rm -rf ~/.cargo/registry/index
+          rm -rf ~/.cargo/registry/cache
+          rm -rf ~/.cargo/git/db
+          rm -rf target
+
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
 
       - name: Build release
         run: cargo build --release
