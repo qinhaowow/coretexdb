@@ -38,7 +38,7 @@ pub mod coretex_tracing;
 pub mod coretex_persistence;
 pub mod coretex_backup;
 pub mod coretex_monitoring_v2;
-pub mod coretex_tantivy;
+// pub mod coretex_tantivy;
 pub mod coretex_graph;
 pub mod coretex_hybrid;
 pub mod coretex_rerank;
@@ -95,7 +95,7 @@ pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlg
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
 pub use coretex_simd::{simd_utils, SimdCapabilities};
 pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats}; 
-pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
+// pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
 pub use coretex_graph::{GraphDatabase, GraphNode, GraphEdge, GraphPath, GraphError};
 pub use coretex_hybrid::{
     MultiModalDocument, VectorData, TextData, ScalarValue, TimeSeriesData, GeoLocation,

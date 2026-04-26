@@ -113,7 +113,7 @@ tokio-tungstenite = "0.21"
 futures-util = "0.3"
 
 # 全文搜索
-tantivy = "0.22"
+# tantivy = "0.22"
 
 [dev-dependencies]
 tempfile = "3.0"
