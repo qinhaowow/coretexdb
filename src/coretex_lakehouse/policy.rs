@@ -2,7 +2,7 @@
 //! Implements data migration strategies based on access patterns and time
 
 use crate::coretex_lakehouse::tier::{StorageTier, DocumentMeta, TierConfig};
-use chrono::{DateTime, Utc, Duration};
+use chrono::Utc;
 
 pub trait TieringPolicy: Send + Sync {
     fn determine_tier(&self, doc: &DocumentMeta) -> StorageTier;

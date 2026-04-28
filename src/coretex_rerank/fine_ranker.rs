@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::coretex_rerank::coarse_ranker::CoarseResult;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FineRankerConfig {
     pub rerank_top_k: usize,

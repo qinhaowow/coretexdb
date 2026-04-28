@@ -3,7 +3,7 @@
 
 use crate::coretex_lakehouse::tier::{StorageTier, DocumentMeta, TierConfig};
 use crate::coretex_lakehouse::policy::{TieringPolicy, HybridTieringPolicy};
-use crate::coretex_lakehouse::storage::{StorageBackend, StorageBackendTrait, LocalStorage};
+use crate::coretex_lakehouse::storage::{StorageBackendTrait, LocalStorage};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

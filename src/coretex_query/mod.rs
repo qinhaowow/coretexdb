@@ -1,12 +1,10 @@
 //! Query processing for CortexDB
 
-use async_trait::async_trait;
 use std::error::Error;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::collections::HashMap;
 
-use crate::cortex_index::{VectorIndex, SearchResult, IndexManager};
+use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
 
 #[derive(Debug, Clone)]
 pub enum QueryType {

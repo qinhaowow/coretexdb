@@ -3,7 +3,7 @@
 
 use crate::coretex_hybrid::{HybridQuery, MultiModalResult, FusedResult};
 use crate::coretex_rerank::coarse_ranker::{CoarseRanker, CoarseResult, CoarseRankerConfig};
-use crate::coretex_rerank::fine_ranker::{FineRanker, FineResult, FineRankerConfig, RerankDocument};
+use crate::coretex_rerank::fine_ranker::{FineRanker, FineRankerConfig, RerankDocument};
 use std::collections::HashMap;
 
 pub struct TwoStageSearchPipeline {

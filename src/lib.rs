@@ -55,16 +55,16 @@ mod coretex_transaction_tests;
 mod coretex_embedding_tests;
 
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
-pub use coretex_incremental::{IncrementalIndex, IndexUpdate, IndexType, IndexConfig};
+pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
 pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
 pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
-pub use coretex_core::{Vector, Document, CollectionSchema, DistanceMetric, IndexConfig, IndexType, CoreTexError, Result}; 
+pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result}; 
 pub use coretex_storage::{StorageEngine, MemoryStorage, PersistentStorage}; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
-pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, QueryProcessor, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
-pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition, Document}; 
+pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
+pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
 pub use coretex_api::rest::{start_server, ApiConfig};
 pub use coretex_api::graphql::{GraphQLExecutor, GraphQLServer, GraphQLRequest, GraphQLResponse}; 
 pub use coretex_cli::run_cli; 
@@ -188,10 +188,10 @@ impl CoreTexDB {
             name: name.to_string(),
             dimension,
             distance_metric: match metric {
-                "euclidean" => DistanceMetric::Euclidean,
-                "dotproduct" => DistanceMetric::DotProduct,
-                "manhattan" => DistanceMetric::Manhattan,
-                _ => DistanceMetric::Cosine,
+                "euclidean" => coretex_core::DistanceMetric::Euclidean,
+                "dotproduct" => coretex_core::DistanceMetric::DotProduct,
+                "manhattan" => coretex_core::DistanceMetric::Manhattan,
+                _ => coretex_core::DistanceMetric::Cosine,
             },
             indexes: vec![],
             metadata_schema: None,
@@ -259,13 +259,6 @@ impl CoreTexDB {
         let mut data = self.data.write().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let metric = match schema.distance_metric {
-            DistanceMetric::Cosine => "cosine",
-            DistanceMetric::Euclidean => "euclidean",
-            DistanceMetric::DotProduct => "dotproduct",
-            DistanceMetric::Manhattan => "manhattan",
-        };
 
         let index_name = format!("{}_hnsw", collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
@@ -341,7 +334,7 @@ impl CoreTexDB {
                     .filter(|r| {
                         if let Some(cd) = collection_data {
                             if let Some((_, metadata)) = cd.get(&r.id) {
-                                return self.matches_filter(metadata, &filter_obj);
+                                return Self::matches_filter(metadata, &filter_obj);
                             }
                         }
                         true
@@ -398,16 +391,15 @@ impl CoreTexDB {
         let collections = self.collections.read().await;
         let schema = collections.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
+
         if vector.len() != schema.dimension {
-            return Err(CoreTexError::InvalidDimension(
-                format!("Expected dimension {}, got {}", schema.dimension, vector.len())
-            ));
+            return Err(CoreTexError::DimensionMismatch {
+                expected: schema.dimension,
+                actual: vector.len()
+            });
         }
         drop(collections);
 
-        let storage_key = format!("{}:{}", collection, id);
-        
         let mut data = self.data.write().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
@@ -419,9 +411,9 @@ impl CoreTexDB {
         let meta = metadata.unwrap_or(serde_json::json!({}));
         collection_data.insert(id.to_string(), (vector, meta));
 
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            index_storage.insert(id.to_string(), vector);
+        let index_name = format!("{}_hnsw", collection);
+        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+            let _ = index.add(id, &vector).await;
         }
 
         Ok(true)
@@ -435,12 +427,13 @@ impl CoreTexDB {
         let collections = self.collections.read().await;
         let schema = collections.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
+
         for (_, vector, _) in &vectors {
             if vector.len() != schema.dimension {
-                return Err(CoreTexError::InvalidDimension(
-                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
-                ));
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: schema.dimension,
+                    actual: vector.len()
+                });
             }
         }
         drop(collections);
@@ -462,25 +455,6 @@ impl CoreTexDB {
             }
         }
 
-        drop(data);
-
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            for (id, vector, _) in &vectors {
-                index_storage.insert(id.clone(), vector.clone());
-            }
-        }
-
-        if let Ok(index) = self.index_manager.get_index(&format!("{}_hnsw", collection)).await {
-            if let Some(idx) = index {
-                let vectors_for_index: Vec<(String, Vec<f32>)> = vectors.iter()
-                    .map(|(id, vec, _)| (id.clone(), vec.clone()))
-                    .collect();
-                let _ = idx.add_batch(vectors_for_index).await;
-                let _ = idx.build().await;
-            }
-        }
-
         Ok((inserted, updated))
     }
 
@@ -492,43 +466,25 @@ impl CoreTexDB {
         let collections = self.collections.read().await;
         let schema = collections.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
+
         for (_, vector, _) in &vectors {
             if vector.len() != schema.dimension {
-                return Err(CoreTexError::InvalidDimension(
-                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
-                ));
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: schema.dimension,
+                    actual: vector.len()
+                });
             }
         }
         drop(collections);
-
-        let ids: Vec<String> = vectors.iter().map(|(id, _, _)| id.clone()).collect();
 
         let mut data = self.data.write().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
+        let mut ids = Vec::new();
         for (id, vector, metadata) in vectors {
-            collection_data.insert(id, (vector, metadata));
-        }
-
-        drop(data);
-
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            for (id, vector, _) in &vectors {
-                index_storage.insert(id.clone(), vector.clone());
-            }
-        }
-
-        if let Ok(index) = self.index_manager.get_index(&format!("{}_hnsw", collection)).await {
-            if let Some(idx) = index {
-                let vectors_for_index: Vec<(String, Vec<f32>)> = vectors.iter()
-                    .map(|(id, vec, _)| (id.clone(), vec.clone()))
-                    .collect();
-                let _ = idx.add_batch(vectors_for_index).await;
-                let _ = idx.build().await;
-            }
+            collection_data.insert(id.clone(), (vector, metadata));
+            ids.push(id.clone());
         }
 
         Ok(ids)
@@ -542,37 +498,26 @@ impl CoreTexDB {
         let collections = self.collections.read().await;
         let schema = collections.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
+
         for (_, vector, _) in &vectors {
             if vector.len() != schema.dimension {
-                return Err(CoreTexError::InvalidDimension(
-                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
-                ));
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: schema.dimension,
+                    actual: vector.len()
+                });
             }
         }
         drop(collections);
-
-        let mut updated_ids = Vec::new();
 
         let mut data = self.data.write().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
+        let mut updated_ids = Vec::new();
         for (id, vector, metadata) in vectors {
             if collection_data.contains_key(&id) {
                 collection_data.insert(id.clone(), (vector, metadata));
                 updated_ids.push(id);
-            }
-        }
-
-        drop(data);
-
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            for (id, vector, _) in &vectors {
-                if updated_ids.contains(&id) {
-                    index_storage.insert(id.clone(), vector.clone());
-                }
             }
         }
 
@@ -596,15 +541,6 @@ impl CoreTexDB {
             }
         }
 
-        drop(data);
-
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            for id in &deleted_ids {
-                index_storage.remove(id);
-            }
-        }
-
         Ok(deleted_ids)
     }
 
@@ -616,12 +552,13 @@ impl CoreTexDB {
         let collections = self.collections.read().await;
         let schema = collections.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
+
         for (_, vector, _) in &vectors {
             if vector.len() != schema.dimension {
-                return Err(CoreTexError::InvalidDimension(
-                    format!("Expected dimension {}, got {}", schema.dimension, vector.len())
-                ));
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: schema.dimension,
+                    actual: vector.len(),
+                });
             }
         }
         drop(collections);
@@ -640,15 +577,6 @@ impl CoreTexDB {
             } else {
                 collection_data.insert(id.clone(), (vector, metadata));
                 inserted.push(id);
-            }
-        }
-
-        drop(data);
-
-        let mut index_data = self.index_data.write().await;
-        if let Some(index_storage) = index_data.get_mut(collection) {
-            for (id, vector, _) in &vectors {
-                index_storage.insert(id.clone(), vector.clone());
             }
         }
 
@@ -713,9 +641,9 @@ mod tests {
     async fn test_create_and_list_collection() {
         let db = CoreTexDB::new();
         db.init().await.unwrap();
-        
+
         db.create_collection("test", 128, "cosine").await.unwrap();
-        
+
         let collections = db.list_collections().await.unwrap();
         assert!(collections.contains(&"test".to_string()));
     }
@@ -724,19 +652,19 @@ mod tests {
     async fn test_insert_and_search() {
         let db = CoreTexDB::new();
         db.init().await.unwrap();
-        
+
         db.create_collection("test", 4, "cosine").await.unwrap();
-        
+
         let vectors = vec![
             ("vec1".to_string(), vec![1.0, 0.0, 0.0, 0.0], serde_json::json!({"text": "hello"})),
             ("vec2".to_string(), vec![0.0, 1.0, 0.0, 0.0], serde_json::json!({"text": "world"})),
             ("vec3".to_string(), vec![0.9, 0.1, 0.0, 0.0], serde_json::json!({"text": "hi"})),
         ];
-        
+
         db.insert_vectors("test", vectors).await.unwrap();
-        
+
         let results = db.search("test", vec![1.0, 0.0, 0.0, 0.0], 2, None).await.unwrap();
-        
+
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "vec1");
     }
@@ -745,37 +673,37 @@ mod tests {
     async fn test_delete_collection() {
         let db = CoreTexDB::new();
         db.init().await.unwrap();
-        
+
         db.create_collection("test", 128, "cosine").await.unwrap();
         db.delete_collection("test").await.unwrap();
-        
+
         let collections = db.list_collections().await.unwrap();
         assert!(!collections.contains(&"test".to_string()));
     }
-    
+
     #[tokio::test]
     async fn test_full_workflow() {
         let db = CoreTexDB::new();
         db.init().await.unwrap();
-        
+
         db.create_collection("test_workflow", 4, "cosine").await.unwrap();
-        
+
         let vectors = vec![
             ("v1".to_string(), vec![1.0, 0.0, 0.0, 0.0], serde_json::json!({"label": "a"})),
             ("v2".to_string(), vec![0.0, 1.0, 0.0, 0.0], serde_json::json!({"label": "b"})),
             ("v3".to_string(), vec![0.0, 0.0, 1.0, 0.0], serde_json::json!({"label": "c"})),
         ];
-        
+
         db.insert_vectors("test_workflow", vectors).await.unwrap();
-        
+
         let count = db.get_vectors_count("test_workflow").await.unwrap();
         assert_eq!(count, 3);
-        
+
         let results = db.search("test_workflow", vec![1.0, 0.0, 0.0, 0.0], 2, None).await.unwrap();
         assert!(!results.is_empty());
-        
+
         db.delete_collection("test_workflow").await.unwrap();
-        
+
         let collections = db.list_collections().await.unwrap();
         assert!(!collections.contains(&"test_workflow".to_string()));
     }

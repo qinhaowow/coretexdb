@@ -2,9 +2,9 @@
 //! Coordinates multiple retrievers for unified multi-modal search
 
 use crate::coretex_hybrid::document::MultiModalDocument;
-use crate::coretex_hybrid::query::{HybridQuery, DistanceMetric, FilterOperator, ScalarFilterValue};
+use crate::coretex_hybrid::query::{HybridQuery, DistanceMetric, FilterOperator};
 use crate::coretex_hybrid::fusion::{ScoreFusionEngine, MultiModalResult, ScoreFusion, FusedResult};
-use crate::coretex_index::{SearchResult, BruteForceIndex, HNSWIndex};
+use crate::coretex_index::SearchResult;
 use crate::coretex_bm25::BM25Index;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,6 +70,13 @@ impl HybridRetriever {
             let mut index = self.vector_index.write().await;
             if let Some(ref mut idx) = *index {
                 idx.search(&vector.values, 1, DistanceMetric::Cosine);
+            }
+        }
+
+        if let Some(ref text) = doc.text {
+            let mut index = self.text_index.write().await;
+            if let Some(ref mut idx) = *index {
+                idx.search(&text.content, 1);
             }
         }
 
@@ -180,23 +187,69 @@ impl Default for HybridRetriever {
 }
 
 pub struct BruteForceVectorAdapter {
-    index: BruteForceIndex,
+    index: Arc<RwLock<Vec<(String, Vec<f32>)>>>,
+    metric: String,
 }
 
 impl BruteForceVectorAdapter {
-    pub fn new(dimension: usize) -> Self {
-        let index = BruteForceIndex::new(dimension);
-        Self { index }
+    pub fn new(metric: &str) -> Self {
+        Self {
+            index: Arc::new(RwLock::new(Vec::new())),
+            metric: metric.to_string(),
+        }
     }
 
-    pub fn add(&self, id: &str, vector: &[f32]) -> Result<(), String> {
-        self.index.add(id, vector).map_err(|e| e.to_string())
+    pub async fn add(&self, id: &str, vector: &[f32]) {
+        let mut index = self.index.write().await;
+        index.push((id.to_string(), vector.to_vec()));
     }
 }
 
 impl VectorRetriever for BruteForceVectorAdapter {
     fn search(&self, vector: &[f32], k: usize, _metric: DistanceMetric) -> Vec<SearchResult> {
-        self.index.search(vector, k)
+        let index = self.index.blocking_read();
+        let mut results: Vec<SearchResult> = index
+            .iter()
+            .map(|(id, vec)| {
+                let distance = calculate_distance(vector, vec, &self.metric);
+                SearchResult {
+                    id: id.clone(),
+                    distance,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        results.into_iter().take(k).collect()
+    }
+}
+
+fn calculate_distance(a: &[f32], b: &[f32], metric: &str) -> f32 {
+    match metric {
+        "cosine" => {
+            let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+            let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm_a == 0.0 || norm_b == 0.0 {
+                return 1.0;
+            }
+            1.0 - (dot_product / (norm_a * norm_b))
+        }
+        "euclidean" => {
+            a.iter().zip(b.iter())
+                .map(|(x, y)| (x - y).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        }
+        _ => {
+            let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+            let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm_a == 0.0 || norm_b == 0.0 {
+                return 1.0;
+            }
+            1.0 - (dot_product / (norm_a * norm_b))
+        }
     }
 }
 
@@ -205,26 +258,25 @@ pub struct BM25TextAdapter {
 }
 
 impl BM25TextAdapter {
-    pub fn new() -> Self {
+    pub fn new(k1: f32, b: f32) -> Self {
         Self {
-            index: BM25Index::with_defaults(),
+            index: BM25Index::new(k1, b),
         }
     }
 
-    pub fn add(&self, id: &str, text: &str) {
-        let index = &self.index;
-        tokio::runtime::Handle::current().block_on(async {
-            index.add_document(id, text).await;
-        });
+    pub async fn add(&self, id: &str, text: &str) -> Result<(), String> {
+        let doc = crate::coretex_bm25::Document::new(id.to_string(), text.to_string());
+        self.index.add_document(doc).await
     }
 }
 
 impl TextRetriever for BM25TextAdapter {
     fn search(&self, query: &str, k: usize) -> Vec<TextSearchResult> {
-        let index = &self.index;
-        tokio::runtime::Handle::current().block_on(async {
-            index.search(query, k)
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            self.index.search(query, k)
                 .await
+                .unwrap_or_default()
                 .into_iter()
                 .map(|r| TextSearchResult { id: r.id, score: r.score })
                 .collect()
