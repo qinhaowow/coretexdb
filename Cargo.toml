@@ -98,8 +98,7 @@ pyo3 = { version = "0.19", features = ["extension-module", "abi3-py38"], optiona
 tonic = "0.10"
 prost = "0.11"
 
-# 向量索引
-hnsw = "0.4"
+# 向量索引（使用自定义 HNSWIndex 实现）
 
 # TLS/SSL
 rustls = "0.21"
