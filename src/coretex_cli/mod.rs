@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::net::SocketAddr;
 
-use coretexdb::{CoreTexDB, DbConfig, ApiConfig, start_server};
+use crate::{CoreTexDB, DbConfig, ApiConfig, start_server};
 
 /// Run the CLI
 pub fn run_cli() -> Result<(), Box<dyn Error>> {

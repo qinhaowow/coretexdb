@@ -176,14 +176,18 @@ impl GraphDatabase {
             }
 
             if !node_ids.is_empty() {
-                let nodes: Vec<GraphNode> = node_ids
-                    .iter()
-                    .filter_map(|id| self.get_node(id).await)
-                    .collect();
-                let edges: Vec<GraphEdge> = edge_ids
-                    .iter()
-                    .filter_map(|id| self.get_edge(id).await)
-                    .collect();
+                let mut nodes = Vec::new();
+                for id in &node_ids {
+                    if let Some(node) = self.get_node(id).await {
+                        nodes.push(node);
+                    }
+                }
+                let mut edges = Vec::new();
+                for id in &edge_ids {
+                    if let Some(edge) = self.get_edge(id).await {
+                        edges.push(edge);
+                    }
+                }
 
                 if !nodes.is_empty() {
                     paths.push(GraphPath {
@@ -251,14 +255,18 @@ impl GraphDatabase {
                 let mut all_nodes = node_ids.clone();
                 all_nodes.push(current.to_string());
 
-                let nodes: Vec<GraphNode> = all_nodes
-                    .iter()
-                    .filter_map(|id| self.get_node(id).await)
-                    .collect();
-                let edges: Vec<GraphEdge> = edge_ids
-                    .iter()
-                    .filter_map(|id| self.get_edge(id).await)
-                    .collect();
+                let mut nodes = Vec::new();
+                for id in &all_nodes {
+                    if let Some(node) = self.get_node(id).await {
+                        nodes.push(node);
+                    }
+                }
+                let mut edges = Vec::new();
+                for id in &edge_ids {
+                    if let Some(edge) = self.get_edge(id).await {
+                        edges.push(edge);
+                    }
+                }
 
                 if !nodes.is_empty() {
                     paths.push(GraphPath {
@@ -368,14 +376,18 @@ impl GraphDatabase {
         path_nodes.reverse();
         path_edges.reverse();
 
-        let nodes: Vec<GraphNode> = path_nodes
-            .iter()
-            .filter_map(|id| self.get_node(id).await)
-            .collect();
-        let edges: Vec<GraphEdge> = path_edges
-            .iter()
-            .filter_map(|id| self.get_edge(id).await)
-            .collect();
+        let mut nodes = Vec::new();
+        for id in &path_nodes {
+            if let Some(node) = self.get_node(id).await {
+                nodes.push(node);
+            }
+        }
+        let mut edges = Vec::new();
+        for id in &path_edges {
+            if let Some(edge) = self.get_edge(id).await {
+                edges.push(edge);
+            }
+        }
         let total_weight = *distances.get(end).unwrap_or(&0.0);
 
         Some(GraphPath {

@@ -4,7 +4,7 @@ use std::error::Error;
 use std::net::SocketAddr;
 use tonic::transport::Server;
 
-use crate::coretex_grpc::coretex_service_server::CoretexServiceServer;
+use crate::coretex_grpc::coretex_service::coretex_service_server::CoretexServiceServer;
 use crate::{CoreTexDB, CoretexService};
 
 pub async fn start_grpc_server(

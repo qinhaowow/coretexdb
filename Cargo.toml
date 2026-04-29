@@ -22,11 +22,12 @@ name = "coretex"
 path = "src/main.rs"
 
 [features]
-default = []
-python = ["dep:pyo3"]
-full = ["dep:rocksdb", "compression", "metrics"]
+default = ["rocksdb", "compression", "metrics"]
+python = ["dep:pyo3", "dep:pyo3-asyncio"]
+full = ["rocksdb", "compression", "metrics"]
 compression = ["dep:flate2", "dep:snap"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+rocksdb = ["dep:rocksdb"]
 
 [dependencies]
 # 异步运行时
@@ -34,7 +35,7 @@ tokio = { version = "1.0", features = ["full"] }
 async-trait = "0.1"
 
 # Web框架
-axum = "0.6"
+axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors", "trace", "compression-full"] }
 
@@ -85,7 +86,7 @@ base64 = "0.21"
 hex = "0.4"
 
 # ONNX推理
-# ort = { version = "1.16", default-features = false, features = ["cuda", "tensorrt"] }
+ort = { version = "=2.0.0-rc.12", default-features = false }
 
 # 监控指标
 metrics = { version = "0.21", optional = true }
@@ -93,6 +94,7 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 
 # Python绑定
 pyo3 = { version = "0.19", features = ["extension-module", "abi3-py38"], optional = true }
+pyo3-asyncio = { version = "0.19", features = ["tokio"], optional = true }
 
 # gRPC
 tonic = "0.10"
@@ -111,14 +113,20 @@ cpufeatures = "0.2"
 # WebSocket
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+futures = "0.3"
+
+# HTTP 客户端
+reqwest = "0.11"
 
 # 全文搜索
 # tantivy = "0.22"
 
+[build-dependencies]
+tonic-build = "0.10"
+
 [dev-dependencies]
 tempfile = "3.0"
 rstest = "0.16"
-reqwest = "0.11"
 tokio-test = "0.4"
 
 [profile.dev]

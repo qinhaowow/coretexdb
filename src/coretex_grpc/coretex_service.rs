@@ -2,9 +2,10 @@
 
 use tonic::{Request, Response, Status};
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use crate::{CoreTexDB, SearchResult};
+use crate::CoreTexDB;
 
 pub struct CoretexService {
     db: Arc<RwLock<CoreTexDB>>,
@@ -20,7 +21,7 @@ impl CoretexService {
 
 tonic::include_proto!("coretex");
 
-impl coretex_service_server::CoretexService for CoretexService {
+impl self::coretex_service_server::CoretexService for CoretexService {
     async fn create_collection(
         &self,
         request: Request<CreateCollectionRequest>,
@@ -57,7 +58,7 @@ impl coretex_service_server::CoretexService for CoretexService {
 
     async fn list_collections(
         &self,
-        _request: Request<()>,
+        _request: Request<Empty>,
     ) -> Result<Response<ListCollectionsResponse>, Status> {
         let db = self.db.read().await;
         let collections = db.list_collections()
@@ -110,9 +111,9 @@ impl coretex_service_server::CoretexService for CoretexService {
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
         
-        let results: Vec<SearchResultProto> = results
+        let results: Vec<SearchResult> = results
             .into_iter()
-            .map(|r| SearchResultProto {
+            .map(|r| SearchResult {
                 id: r.id,
                 score: 1.0 - r.distance,
                 distance: r.distance,
@@ -186,7 +187,7 @@ impl coretex_service_server::CoretexService for CoretexService {
 
     async fn health_check(
         &self,
-        _request: Request<()>,
+        _request: Request<Empty>,
     ) -> Result<Response<HealthResponse>, Status> {
         Ok(Response::new(HealthResponse {
             status: "healthy".to_string(),

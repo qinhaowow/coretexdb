@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock,broadcast};
-use tokio::stream::Stream;
+use futures::stream::Stream;
 use std::pin::Pin;
 use std::future::Future;
 use std::collections::VecDeque;

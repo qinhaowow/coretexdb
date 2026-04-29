@@ -239,7 +239,7 @@ impl TransactionManager {
         wal.get_history(key)
     }
 
-    pub async fn get WAL_entries(&self, from_lsn: u64) -> Vec<WalEntry> {
+    pub async fn get_wal_entries(&self, from_lsn: u64) -> Vec<WalEntry> {
         let wal = self.wal.read().await;
         wal.get_entries_from(from_lsn)
     }

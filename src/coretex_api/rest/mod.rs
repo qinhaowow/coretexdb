@@ -227,7 +227,7 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error>> {
     println!("  GET  /api/collections/:name/count        - Get vectors count");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve::serve(listener, app).await?;
 
     Ok(())
 }

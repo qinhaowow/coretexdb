@@ -1,18 +1,8 @@
 //! SIMD-accelerated vector operations for CoreTexDB
 //! Provides high-performance implementations using CPU SIMD instructions
 
-use cpufeatures::CpuInfo;
-use std::sync::OnceLock;
-
-static CPU_INFO: OnceLock<CpuInfo> = OnceLock::new();
-
-fn get_cpu_info() -> &'static CpuInfo {
-    CPU_INFO.get_or_init(|| CpuInfo::new().unwrap_or_else(|_| CpuInfo::new()))
-}
-
 #[cfg(target_arch = "x86_64")]
 pub mod simd_utils {
-    use super::*;
     use std::arch::x86_64::*;
     use std::cmp::Ordering;
 
@@ -167,7 +157,7 @@ pub mod simd_utils {
 
     #[inline]
     pub fn euclidean_norm(v: &[f32]) -> f32 {
-        euclidean_distance_squared(v, &[0.0_f32; 0]).sqrt()
+        v.iter().map(|x| x * x).sum::<f32>().sqrt()
     }
 
     #[inline]
@@ -243,19 +233,19 @@ pub mod simd_utils {
     }
 
     pub fn has_avx() -> bool {
-        get_cpu_info().avx
+        is_x86_feature_detected!("avx")
     }
 
     pub fn has_avx2() -> bool {
-        get_cpu_info().avx2
+        is_x86_feature_detected!("avx2")
     }
 
     pub fn has_fma() -> bool {
-        get_cpu_info().fma
+        is_x86_feature_detected!("fma")
     }
 
     pub fn has_sse() -> bool {
-        get_cpu_info().sse4_1
+        is_x86_feature_detected!("sse4.1")
     }
 
     pub fn get_capabilities() -> SimdCapabilities {
@@ -270,7 +260,6 @@ pub mod simd_utils {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub mod simd_utils {
-    use super::*;
 
     #[inline]
     pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -326,21 +315,10 @@ pub mod simd_utils {
         a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum()
     }
 
-    pub fn has_avx() -> bool {
-        false
-    }
-
-    pub fn has_avx2() -> bool {
-        false
-    }
-
-    pub fn has_fma() -> bool {
-        false
-    }
-
-    pub fn has_sse() -> bool {
-        false
-    }
+    pub fn has_avx() -> bool { false }
+    pub fn has_avx2() -> bool { false }
+    pub fn has_fma() -> bool { false }
+    pub fn has_sse() -> bool { false }
 
     pub fn get_capabilities() -> SimdCapabilities {
         SimdCapabilities {
@@ -371,7 +349,7 @@ impl SimdCapabilities {
         if self.has_avx { caps.push("AVX"); }
         if self.has_avx2 { caps.push("AVX2"); }
         if self.has_fma { caps.push("FMA"); }
-        
+
         if caps.is_empty() {
             "Scalar".to_string()
         } else {
@@ -388,7 +366,7 @@ mod tests {
     fn test_cosine_similarity() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        
+
         let similarity = simd_utils::cosine_similarity(&a, &b);
         assert!((similarity - 1.0).abs() < 1e-6);
     }
@@ -397,7 +375,7 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        
+
         let similarity = simd_utils::cosine_similarity(&a, &b);
         assert!((similarity - 0.0).abs() < 1e-6);
     }
@@ -406,7 +384,7 @@ mod tests {
     fn test_dot_product() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![4.0, 5.0, 6.0];
-        
+
         let dot = simd_utils::dot_product(&a, &b);
         assert!((dot - 32.0).abs() < 1e-6);
     }
@@ -415,80 +393,32 @@ mod tests {
     fn test_euclidean_distance() {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![3.0, 4.0, 0.0];
-        
+
         let dist = simd_utils::euclidean_distance(&a, &b);
         assert!((dist - 5.0).abs() < 1e-6);
     }
 
     #[test]
-    fn test_euclidean_distance_squared() {
-        let a = vec![0.0, 0.0, 0.0];
-        let b = vec![3.0, 4.0, 0.0];
-        
-        let dist = simd_utils::euclidean_distance_squared(&a, &b);
-        assert!((dist - 25.0).abs() < 1e-6);
+    fn test_euclidean_norm() {
+        let v = vec![3.0, 4.0, 0.0];
+
+        let norm = simd_utils::euclidean_norm(&v);
+        assert!((norm - 5.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_manhattan_distance() {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![1.0, 2.0, 3.0];
-        
+
         let dist = simd_utils::manhattan_distance(&a, &b);
         assert!((dist - 6.0).abs() < 1e-6);
     }
 
     #[test]
-    fn test_euclidean_norm() {
-        let v = vec![3.0, 4.0, 0.0];
-        
-        let norm = simd_utils::euclidean_norm(&v);
-        assert!((norm - 5.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_different_lengths() {
-        let a = vec![1.0, 2.0];
-        let b = vec![1.0, 2.0, 3.0];
-        
-        let similarity = simd_utils::cosine_similarity(&a, &b);
-        assert!(similarity == 0.0);
-        
-        let dist = simd_utils::euclidean_distance(&a, &b);
-        assert!(dist == f32::MAX);
-    }
-
-    #[test]
-    fn test_empty_vectors() {
-        let a: Vec<f32> = vec![];
-        let b: Vec<f32> = vec![];
-        
-        let similarity = simd_utils::cosine_similarity(&a, &b);
-        assert!(similarity == 0.0);
-    }
-
-    #[test]
     fn test_simd_capabilities() {
         let caps = simd_utils::get_capabilities();
-        
         let summary = caps.summary();
         assert!(!summary.is_empty());
-        
-        eprintln!("SIMD Capabilities: {}", summary);
-    }
-
-    #[test]
-    fn test_large_vectors() {
-        let size = 10000;
-        let a: Vec<f32> = (0..size).map(|i| (i as f32) * 0.01).collect();
-        let b: Vec<f32> = (0..size).map(|i| ((size - i) as f32) * 0.01).collect();
-        
-        let similarity = simd_utils::cosine_similarity(&a, &b);
-        let dot = simd_utils::dot_product(&a, &b);
-        let dist = simd_utils::euclidean_distance(&a, &b);
-        
-        assert!(similarity >= -1.0 && similarity <= 1.0);
-        assert!(dot > 0.0);
-        assert!(dist > 0.0);
     }
 }

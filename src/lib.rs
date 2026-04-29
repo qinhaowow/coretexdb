@@ -23,6 +23,7 @@ pub mod coretex_monitoring;
 pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
+#[cfg(feature = "python")]
 pub mod coretex_python;
 pub mod coretex_onnx;
 pub mod coretex_bm25;
@@ -54,6 +55,7 @@ mod coretex_transaction_tests;
 #[cfg(test)]
 mod coretex_embedding_tests;
 
+#[cfg(feature = "python")]
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
 pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
 pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
@@ -69,7 +71,7 @@ pub use coretex_api::rest::{start_server, ApiConfig};
 pub use coretex_api::graphql::{GraphQLExecutor, GraphQLServer, GraphQLRequest, GraphQLResponse}; 
 pub use coretex_cli::run_cli; 
 pub use coretex_utils::{
-    WriteAheadLog, TransactionManager, LockManager, Transaction, TransactionOperation, TransactionState,
+    LockManager, Transaction, TransactionOperation, TransactionState,
     ClusterManager, ClusterNode, NodeRole, NodeState, Shard,
     BackupManager, MonitoringService, Metrics,
     cosine_similarity, euclidean_distance, normalize_vector, parse_vector, random_vector,

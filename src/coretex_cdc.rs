@@ -321,7 +321,7 @@ impl VectorSyncHandler {
         let mut vector = Vec::new();
         
         for (target_field, source_value) in self.field_mapping.iter() {
-            if let Some(value) = data.get(source_field) {
+            if let Some(value) = data.get(source_value) {
                 if let Ok(float_val) = source_value.parse::<f32>() {
                     vector.push(float_val);
                 }

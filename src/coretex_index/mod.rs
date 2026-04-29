@@ -869,8 +869,6 @@ impl PQIndex {
     }
 }
 
-pub use {IVFIndex, ScalarIndex, PQIndex};
-
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

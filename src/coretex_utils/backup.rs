@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tokio::io::AsyncWriteExt;
 use std::collections::HashMap;
 
-use crate::CortexDB;
+use crate::CoreTexDB;
 
 pub struct BackupManager {
     backup_dir: String,
@@ -20,7 +20,7 @@ impl BackupManager {
         }
     }
 
-    pub async fn create_backup(&self, db: &CortexDB, name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_backup(&self, db: &CoreTexDB, name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let backup_name = format!("{}_{}", name, timestamp);
         let backup_path = Path::new(&self.backup_dir).join(&backup_name);
@@ -60,7 +60,7 @@ impl BackupManager {
         Ok(backup_name)
     }
 
-    pub async fn restore_backup(&self, db: &CortexDB, backup_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn restore_backup(&self, db: &CoreTexDB, backup_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let backup_path = Path::new(&self.backup_dir).join(backup_name);
         
         if !backup_path.exists() {

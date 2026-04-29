@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
+use ndarray::Array2;
 
 #[derive(Error, Debug)]
 pub enum OnnxError {
@@ -26,11 +27,13 @@ pub struct OnnxInference {
 
 impl OnnxInference {
     pub fn new(model_path: &str) -> Result<Self, OnnxError> {
-        let session = ort::Session::from_file(model_path)
+        let session = ort::SessionBuilder::new()
+            .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?
+            .with_model_from_file(model_path)
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?;
 
-        let input_name = session.inputs()[0].name.clone();
-        let output_name = session.outputs()[0].name.clone();
+        let input_name = session.inputs[0].name.to_string();
+        let output_name = session.outputs[0].name.to_string();
 
         Ok(Self {
             session,
@@ -41,11 +44,13 @@ impl OnnxInference {
     }
 
     pub fn from_bytes(model_bytes: &[u8]) -> Result<Self, OnnxError> {
-        let session = ort::Session::from_memory(model_bytes)
+        let session = ort::SessionBuilder::new()
+            .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?
+            .with_model_from_memory(model_bytes)
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?;
 
-        let input_name = session.inputs()[0].name.clone();
-        let output_name = session.outputs()[0].name.clone();
+        let input_name = session.inputs[0].name.to_string();
+        let output_name = session.outputs[0].name.to_string();
 
         Ok(Self {
             session,
@@ -64,26 +69,29 @@ impl OnnxInference {
         let batch_size = 1;
         let seq_length = input_ids.len();
 
-        let input_ids_tensor = ort::Tensor::from_array(
-            [batch_size, seq_length],
+        let input_ids_array = Array2::from_shape_vec(
+            (batch_size, seq_length),
             input_ids.to_vec(),
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
+        let input_ids_tensor = ort::Tensor::from_array(input_ids_array)
+            .map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
-        let attention_mask_tensor = ort::Tensor::from_array(
-            [batch_size, seq_length],
+        let attention_mask_array = Array2::from_shape_vec(
+            (batch_size, seq_length),
             attention_mask.to_vec(),
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
+        let attention_mask_tensor = ort::Tensor::from_array(attention_mask_array)
+            .map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
         let outputs = self.session.run(
-            ort::inputs! {
-                self.input_name.clone() => input_ids_tensor,
-                "attention_mask".to_string() => attention_mask_tensor,
-            }
-            .map_err(|e| OnnxError::InferenceError(e.to_string()))?
+            vec![
+                input_ids_tensor.into(),
+                attention_mask_tensor.into(),
+            ]
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
-        let output_tensor = outputs[0].as_tensor().map_err(|e| OnnxError::InferenceError(e.to_string()))?;
-        let mut embeddings: Vec<f32> = output_tensor.view().iter().cloned().collect();
+        let output_tensor = outputs[0].try_extract::<f32>().map_err(|e| OnnxError::InferenceError(e.to_string()))?;
+        let mut embeddings: Vec<f32> = output_tensor.view_data().iter().cloned().collect();
 
         if self.normalize {
             Self::normalize_vector(&mut embeddings);

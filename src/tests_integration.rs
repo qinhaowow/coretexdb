@@ -1,6 +1,6 @@
 //! Integration tests for CoreTexDB
 
-use coretexdb::{CoreTexDB, DbConfig};
+use crate::{CoreTexDB, DbConfig};
 
 #[tokio::test]
 async fn test_full_workflow() {
