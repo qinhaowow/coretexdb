@@ -1,4 +1,4 @@
-//! Tests for storage engines
+/// Tests for storage engines
 
 use super::*;
 use tokio::test;
@@ -47,6 +47,7 @@ async fn test_memory_storage() {
     assert_eq!(count, 0);
 }
 
+#[cfg(feature = "rocksdb")]
 #[test]
 async fn test_persistent_storage() {
     // Create a temporary directory for testing

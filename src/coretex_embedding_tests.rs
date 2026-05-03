@@ -3,6 +3,14 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EmbeddingConfig;
+    use crate::TextEmbeddingService;
+    use crate::EmbeddingRouter;
+    use crate::EmbeddingRequest;
+    use crate::DataType;
+    use crate::StreamingEmbedder;
+    use crate::StreamingStats;
+    use crate::EmbeddingResponse;
 
     #[tokio::test]
     async fn test_embedding_config_default() {

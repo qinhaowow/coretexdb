@@ -3,6 +3,12 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use crate::BM25Index;
+    use crate::Document;
+    use crate::MetadataFilter;
+    use crate::HybridQueryEngine;
+    use crate::coretex_bm25::VectorSearchResult;
 
     #[tokio::test]
     async fn test_bm25_basic_search() {

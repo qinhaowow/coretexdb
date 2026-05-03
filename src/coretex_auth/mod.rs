@@ -555,16 +555,16 @@ mod tests {
         assert!(has_read);
     }
 
-    #[test]
-    fn test_rate_limiter() {
+    #[tokio::test]
+    async fn test_rate_limiter() {
         let limiter = RateLimiter::new(5, 60);
         
         for i in 0..5 {
-            let result = limiter.blocking_check("test_user");
+            let result = limiter.check_rate_limit("test_user").await;
             assert!(result.is_ok(), "Request {} should pass", i);
         }
         
-        let result = limiter.blocking_check("test_user");
+        let result = limiter.check_rate_limit("test_user").await;
         assert!(result.is_err());
     }
 }

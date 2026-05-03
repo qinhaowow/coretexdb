@@ -1,4 +1,4 @@
-//! Tests for vector indexes
+/// Tests for vector indexes
 
 use super::*;
 use tokio::test;

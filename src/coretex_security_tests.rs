@@ -4,6 +4,13 @@
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use crate::KeyManager;
+    use crate::EncryptionService;
+    use crate::EncryptedData;
+    use crate::TlsConfig;
+    use crate::TlsServer;
+    use crate::TlsClient;
+    use crate::coretex_security::tls::TlsVersion;
 
     #[tokio::test]
     async fn test_encryption_service_basic() {

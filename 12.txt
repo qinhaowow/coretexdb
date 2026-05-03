@@ -209,6 +209,12 @@ warning: unexpected `cfg` condition value: `wasm`
     = help: consider adding `wasm` as a feature in `Cargo.toml`
     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
 
+warning: unused import: `std::cmp::Ordering`
+ --> src/coretex_simd.rs:7:9
+  |
+7 |     use std::cmp::Ordering;
+  |         ^^^^^^^^^^^^^^^^^^
+
 warning: unused import: `Duration`
  --> src/coretex_failover.rs:6:17
   |
@@ -255,6 +261,37 @@ warning: unexpected `cfg` condition value: `s3`
     = help: consider adding `s3` as a feature in `Cargo.toml`
     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
 
+     Running `/home/runner/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name coretexdb --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=b01a7827d7023143 -C extra-filename=-4b7bbad4972df408 --out-dir /home/runner/work/coretexdb/coretexdb/target/debug/deps -L dependency=/home/runner/work/coretexdb/coretexdb/target/debug/deps --extern aes_gcm=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libaes_gcm-1b7260eafc918b8f.rlib --extern anyhow=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libanyhow-81e0f801a5d79612.rlib --extern async_trait=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libasync_trait-d5f7b178ddd1f263.so --extern axum=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libaxum-a6b597d9d7eb3d06.rlib --extern base64=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libbase64-df3838031a8300ae.rlib --extern bincode=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libbincode-66a0b3c698e5729a.rlib --extern chrono=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libchrono-ee602a81ba613e2c.rlib --extern clap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libclap-25e2732020e9da04.rlib --extern config=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libconfig-ee276648939498bf.rlib --extern cpufeatures=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libcpufeatures-e124fef1b1d91f00.rlib --extern crossbeam=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libcrossbeam-3290a70a1ebd177e.rlib --extern dashmap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libdashmap-100823e9eb3927c8.rlib --extern flate2=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libflate2-5989e2e50df03ee7.rlib --extern futures=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libfutures-e20b1336bb0484ff.rlib --extern futures_util=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libfutures_util-6ad3ecbaee2ed335.rlib --extern hex=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhex-1558f6adc06e3fa8.rlib --extern hmac=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhmac-12261011bb826eb1.rlib --extern http_body=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhttp_body-c889fafcb0d0c05c.rlib --extern hyper=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhyper-4ed8fffd74546961.rlib --extern lazy_static=/home/runner/work/coretexdb/coretexdb/target/debug/deps/liblazy_static-16fab28a6111f0f1.rlib --extern metrics=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libmetrics-56e5df29e349d7b9.rlib --extern metrics_exporter_prometheus=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libmetrics_exporter_prometheus-61ef70c2c23bb7f7.rlib --extern ndarray=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libndarray-1279af165970bb28.rlib --extern parking_lot=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libparking_lot-474ce00eaec763f7.rlib --extern prost=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libprost-8c61f9a5c8041209.rlib --extern rand=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librand-922d9e5af96fc4c5.rlib --extern rayon=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librayon-c5ec777116e3d16d.rlib --extern regex=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libregex-829d9ecbeb7edd23.rlib --extern reqwest=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libreqwest-a9bba5bb0b615bfa.rlib --extern rstest=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librstest-b59eb603ce4666c6.rlib --extern rustls=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librustls-10c14eecd9971933.rlib --extern serde=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libserde-e2302dbf3c2d1dbd.rlib --extern serde_json=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libserde_json-a85d4ab856d5fe04.rlib --extern sha2=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libsha2-42a662609f4ae4a5.rlib --extern snap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libsnap-6826823be4191925.rlib --extern tempfile=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtempfile-95f1b888e12ccacf.rlib --extern thiserror=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libthiserror-63ea8c111a939ddd.rlib --extern tokio=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio-15790a76d6f9d96d.rlib --extern tokio_test=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio_test-9ece20cf8c90f960.rlib --extern tokio_tungstenite=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio_tungstenite-8438f02b7f3fcefb.rlib --extern toml=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtoml-5b5c121ad54b44c2.rlib --extern tonic=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtonic-17dbac3661a1f7f9.rlib --extern tower=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtower-4fe1500878817010.rlib --extern tower_http=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtower_http-1c1aa19c5c306e2c.rlib --extern tracing=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtracing-377212d57da59fe4.rlib --extern tracing_subscriber=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtracing_subscriber-0b6e43dfa673d897.rlib --extern uuid=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libuuid-0c1d1974c98239a4.rlib -L native=/home/runner/work/coretexdb/coretexdb/target/debug/build/ring-242d57cb20548677/out -L native=/home/runner/work/coretexdb/coretexdb/target/debug/build/zstd-sys-7c113293e8308d39/out`
+error[E0753]: expected outer doc comment
+ --> src/coretex_storage/tests.rs:1:1
+  |
+1 | //! Tests for storage engines
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 |
+3 | use super::*;
+  | ------------- the inner doc comment doesn't annotate this `use` import
+  |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+  |
+1 - //! Tests for storage engines
+1 + /// Tests for storage engines
+  |
+
+error[E0753]: expected outer doc comment
+ --> src/coretex_index/tests.rs:1:1
+  |
+1 | //! Tests for vector indexes
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 |
+3 | use super::*;
+  | ------------- the inner doc comment doesn't annotate this `use` import
+  |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+  |
+1 - //! Tests for vector indexes
+1 + /// Tests for vector indexes
+  |
+
 warning: variable does not need to be mutable
    --> src/coretex_ann/mod.rs:265:13
     |
@@ -288,6 +325,1613 @@ warning: variable does not need to be mutable
     |                            ----^^^^
     |                            |
     |                            help: remove this `mut`
+
+error[E0433]: cannot find type `BM25Index` in this scope
+ --> src/coretex_bm25_tests.rs:9:20
+  |
+9 |         let bm25 = BM25Index::new(1.5, 0.75);
+  |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+  |
+help: consider importing this struct through its public re-export
+  |
+5 +     use crate::BM25Index;
+  |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:11:27
+   |
+11 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:16:27
+   |
+16 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:21:27
+   |
+21 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+  --> src/coretex_bm25_tests.rs:34:20
+   |
+34 |         let bm25 = BM25Index::new(1.5, 0.75);
+   |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::BM25Index;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+  --> src/coretex_bm25_tests.rs:43:20
+   |
+43 |         let bm25 = BM25Index::new(1.5, 0.75);
+   |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::BM25Index;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:47:27
+   |
+47 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+  --> src/coretex_bm25_tests.rs:57:20
+   |
+57 |         let bm25 = BM25Index::new(1.5, 0.75);
+   |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::BM25Index;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:59:27
+   |
+59 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+  --> src/coretex_bm25_tests.rs:71:20
+   |
+71 |         let bm25 = BM25Index::new(1.5, 0.75);
+   |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::BM25Index;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:73:27
+   |
+73 |         bm25.add_document(Document::new(
+   |                           ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+  --> src/coretex_bm25_tests.rs:85:20
+   |
+85 |         let bm25 = BM25Index::new(1.5, 0.75);
+   |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::BM25Index;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:88:13
+   |
+88 |             Document::new("doc1".to_string(), "first document".to_string()),
+   |             ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:89:13
+   |
+89 |             Document::new("doc2".to_string(), "second document".to_string()),
+   |             ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `Document` in this scope
+  --> src/coretex_bm25_tests.rs:90:13
+   |
+90 |             Document::new("doc3".to_string(), "third document".to_string()),
+   |             ^^^^^^^^ use of undeclared type `Document`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::Document;
+   |
+ 5 +     use crate::coretex_bm25::Document;
+   |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+   --> src/coretex_bm25_tests.rs:100:20
+    |
+100 |         let bm25 = BM25Index::new(1.5, 0.75);
+    |                    ^^^^^^^^^ use of undeclared type `BM25Index`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::BM25Index;
+    |
+
+error[E0433]: cannot find type `Document` in this scope
+   --> src/coretex_bm25_tests.rs:102:24
+    |
+102 |         let mut doc1 = Document::new("doc1".to_string(), "rust programming".to_string());
+    |                        ^^^^^^^^ use of undeclared type `Document`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Document;
+    |
+  5 +     use crate::coretex_bm25::Document;
+    |
+
+error[E0433]: cannot find type `Document` in this scope
+   --> src/coretex_bm25_tests.rs:105:24
+    |
+105 |         let mut doc2 = Document::new("doc2".to_string(), "python programming".to_string());
+    |                        ^^^^^^^^ use of undeclared type `Document`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Document;
+    |
+  5 +     use crate::coretex_bm25::Document;
+    |
+
+error[E0433]: cannot find type `Document` in this scope
+   --> src/coretex_bm25_tests.rs:108:24
+    |
+108 |         let mut doc3 = Document::new("doc3".to_string(), "machine learning".to_string());
+    |                        ^^^^^^^^ use of undeclared type `Document`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Document;
+    |
+  5 +     use crate::coretex_bm25::Document;
+    |
+
+error[E0433]: cannot find type `MetadataFilter` in this scope
+   --> src/coretex_bm25_tests.rs:115:22
+    |
+115 |         let filter = MetadataFilter::new().eq("category", "programming");
+    |                      ^^^^^^^^^^^^^^ use of undeclared type `MetadataFilter`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::MetadataFilter;
+    |
+
+error[E0433]: cannot find type `Document` in this scope
+   --> src/coretex_bm25_tests.rs:125:22
+    |
+125 |         let tokens = Document::tokenize("Hello, World! This is a TEST.");
+    |                      ^^^^^^^^ use of undeclared type `Document`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Document;
+    |
+  5 +     use crate::coretex_bm25::Document;
+    |
+
+error[E0433]: cannot find type `Arc` in this scope
+   --> src/coretex_bm25_tests.rs:137:20
+    |
+137 |         let bm25 = Arc::new(BM25Index::new(1.5, 0.75));
+    |                    ^^^ use of undeclared type `Arc`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Arc;
+    |
+  5 +     use std::sync::Arc;
+    |
+
+error[E0433]: cannot find type `BM25Index` in this scope
+   --> src/coretex_bm25_tests.rs:137:29
+    |
+137 |         let bm25 = Arc::new(BM25Index::new(1.5, 0.75));
+    |                             ^^^^^^^^^ use of undeclared type `BM25Index`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::BM25Index;
+    |
+
+error[E0433]: cannot find type `Document` in this scope
+   --> src/coretex_bm25_tests.rs:139:27
+    |
+139 |         bm25.add_document(Document::new(
+    |                           ^^^^^^^^ use of undeclared type `Document`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::Document;
+    |
+  5 +     use crate::coretex_bm25::Document;
+    |
+
+error[E0433]: cannot find type `HybridQueryEngine` in this scope
+   --> src/coretex_bm25_tests.rs:144:22
+    |
+144 |         let engine = HybridQueryEngine::new(bm25, 0.5, 0.5);
+    |                      ^^^^^^^^^^^^^^^^^ use of undeclared type `HybridQueryEngine`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::HybridQueryEngine;
+    |
+
+error[E0422]: cannot find struct, variant or union type `VectorSearchResult` in this scope
+   --> src/coretex_bm25_tests.rs:147:13
+    |
+147 |             VectorSearchResult {
+    |             ^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this struct
+    |
+  5 +     use crate::coretex_bm25::VectorSearchResult;
+    |
+
+error[E0422]: cannot find struct, variant or union type `VectorSearchResult` in this scope
+   --> src/coretex_bm25_tests.rs:152:13
+    |
+152 |             VectorSearchResult {
+    |             ^^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this struct
+    |
+  5 +     use crate::coretex_bm25::VectorSearchResult;
+    |
+
+error[E0433]: cannot find type `MetadataFilter` in this scope
+   --> src/coretex_bm25_tests.rs:172:22
+    |
+172 |         let filter = MetadataFilter::new().eq("status", "published");
+    |                      ^^^^^^^^^^^^^^ use of undeclared type `MetadataFilter`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::MetadataFilter;
+    |
+
+error[E0433]: cannot find type `MetadataFilter` in this scope
+   --> src/coretex_bm25_tests.rs:183:22
+    |
+183 |         let filter = MetadataFilter::new().gt("score", 50.0);
+    |                      ^^^^^^^^^^^^^^ use of undeclared type `MetadataFilter`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::MetadataFilter;
+    |
+
+error[E0433]: cannot find type `MetadataFilter` in this scope
+   --> src/coretex_bm25_tests.rs:194:22
+    |
+194 |         let filter = MetadataFilter::new().lt("price", 100.0);
+    |                      ^^^^^^^^^^^^^^ use of undeclared type `MetadataFilter`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::MetadataFilter;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:10:36
+   |
+10 |         let key_manager = Arc::new(KeyManager::new());
+   |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+  --> src/coretex_security_tests.rs:13:35
+   |
+13 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+   |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EncryptionService;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:27:36
+   |
+27 |         let key_manager = Arc::new(KeyManager::new());
+   |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+  --> src/coretex_security_tests.rs:30:35
+   |
+30 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+   |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EncryptionService;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:45:36
+   |
+45 |         let key_manager = Arc::new(KeyManager::new());
+   |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+  --> src/coretex_security_tests.rs:48:35
+   |
+48 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+   |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EncryptionService;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:59:36
+   |
+59 |         let key_manager = Arc::new(KeyManager::new());
+   |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+  --> src/coretex_security_tests.rs:61:35
+   |
+61 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+   |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EncryptionService;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:69:27
+   |
+69 |         let key_manager = KeyManager::new();
+   |                           ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:79:27
+   |
+79 |         let key_manager = KeyManager::new();
+   |                           ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+  --> src/coretex_security_tests.rs:90:27
+   |
+90 |         let key_manager = KeyManager::new();
+   |                           ^^^^^^^^^^ use of undeclared type `KeyManager`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::KeyManager;
+   |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:103:27
+    |
+103 |         let key_manager = KeyManager::new();
+    |                           ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:114:27
+    |
+114 |         let key_manager = KeyManager::new();
+    |                           ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:127:36
+    |
+127 |         let key_manager = Arc::new(KeyManager::new());
+    |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+   --> src/coretex_security_tests.rs:130:35
+    |
+130 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+    |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptionService;
+    |
+
+error[E0433]: cannot find type `EncryptedData` in this scope
+   --> src/coretex_security_tests.rs:139:25
+    |
+139 |         let decrypted = EncryptedData::from_base64(&key.id, &base64).unwrap();
+    |                         ^^^^^^^^^^^^^ use of undeclared type `EncryptedData`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptedData;
+    |
+
+error[E0433]: cannot find type `EncryptedData` in this scope
+   --> src/coretex_security_tests.rs:147:22
+    |
+147 |         let result = EncryptedData::from_base64("key", "invalid-base64!!!");
+    |                      ^^^^^^^^^^^^^ use of undeclared type `EncryptedData`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptedData;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:153:36
+    |
+153 |         let key_manager = Arc::new(KeyManager::new());
+    |                                    ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+   --> src/coretex_security_tests.rs:156:35
+    |
+156 |         let encryption = Arc::new(EncryptionService::new(key_manager));
+    |                                   ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptionService;
+    |
+
+error[E0433]: cannot find type `EncryptedData` in this scope
+   --> src/coretex_security_tests.rs:158:22
+    |
+158 |         let result = EncryptedData::from_base64("key", "YWJjZA==");
+    |                      ^^^^^^^^^^^^^ use of undeclared type `EncryptedData`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptedData;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:164:37
+    |
+164 |         let key_manager1 = Arc::new(KeyManager::new());
+    |                                     ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `KeyManager` in this scope
+   --> src/coretex_security_tests.rs:167:37
+    |
+167 |         let key_manager2 = Arc::new(KeyManager::new());
+    |                                     ^^^^^^^^^^ use of undeclared type `KeyManager`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::KeyManager;
+    |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+   --> src/coretex_security_tests.rs:170:36
+    |
+170 |         let encryption1 = Arc::new(EncryptionService::new(key_manager1));
+    |                                    ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptionService;
+    |
+
+error[E0433]: cannot find type `EncryptionService` in this scope
+   --> src/coretex_security_tests.rs:171:36
+    |
+171 |         let encryption2 = Arc::new(EncryptionService::new(key_manager2));
+    |                                    ^^^^^^^^^^^^^^^^^ use of undeclared type `EncryptionService`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EncryptionService;
+    |
+
+error[E0433]: cannot find type `TlsConfig` in this scope
+   --> src/coretex_security_tests.rs:182:22
+    |
+182 |         let config = TlsConfig::default();
+    |                      ^^^^^^^^^ use of undeclared type `TlsConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsConfig;
+    |
+
+error[E0433]: cannot find type `TlsConfig` in this scope
+   --> src/coretex_security_tests.rs:191:22
+    |
+191 |         let config = TlsConfig::for_development();
+    |                      ^^^^^^^^^ use of undeclared type `TlsConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsConfig;
+    |
+
+error[E0433]: cannot find type `TlsVersion` in this scope
+   --> src/coretex_security_tests.rs:193:40
+    |
+193 |         assert_eq!(config.min_version, TlsVersion::TLSv1_2);
+    |                                        ^^^^^^^^^^ use of undeclared type `TlsVersion`
+    |
+note: enum `crate::coretex_security::tls::TlsVersion` exists but is inaccessible
+   --> src/coretex_security/mod.rs:39:5
+    |
+ 39 |     pub enum TlsVersion {
+    |     ^^^^^^^^^^^^^^^^^^^ not accessible
+
+error[E0433]: cannot find type `TlsConfig` in this scope
+   --> src/coretex_security_tests.rs:199:22
+    |
+199 |         let config = TlsConfig::default();
+    |                      ^^^^^^^^^ use of undeclared type `TlsConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsConfig;
+    |
+
+error[E0433]: cannot find type `TlsServer` in this scope
+   --> src/coretex_security_tests.rs:200:22
+    |
+200 |         let server = TlsServer::new(config.clone());
+    |                      ^^^^^^^^^ use of undeclared type `TlsServer`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsServer;
+    |
+
+error[E0433]: cannot find type `TlsConfig` in this scope
+   --> src/coretex_security_tests.rs:207:22
+    |
+207 |         let config = TlsConfig::default();
+    |                      ^^^^^^^^^ use of undeclared type `TlsConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsConfig;
+    |
+
+error[E0433]: cannot find type `TlsClient` in this scope
+   --> src/coretex_security_tests.rs:208:22
+    |
+208 |         let client = TlsClient::new(config);
+    |                      ^^^^^^^^^ use of undeclared type `TlsClient`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::TlsClient;
+    |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+ --> src/coretex_transaction_tests.rs:9:23
+  |
+9 |         let manager = TransactionManager::new();
+  |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+  |
+help: consider importing one of these structs
+  |
+5 +     use crate::TransactionManager;
+  |
+5 +     use crate::coretex_utils::TransactionManager;
+  |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:11:48
+   |
+11 |         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
+   |                                                ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:18:23
+   |
+18 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:20:48
+   |
+20 |         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
+   |                                                ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:28:23
+   |
+28 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:30:48
+   |
+30 |         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
+   |                                                ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:38:23
+   |
+38 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:47:23
+   |
+47 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:56:23
+   |
+56 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:58:46
+   |
+58 |         let txn1 = manager.begin_transaction(IsolationLevel::ReadCommitted).await.unwrap();
+   |                                              ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:59:46
+   |
+59 |         let txn2 = manager.begin_transaction(IsolationLevel::RepeatableRead).await.unwrap();
+   |                                              ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:66:23
+   |
+66 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:68:48
+   |
+68 |         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
+   |                                                ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:76:23
+   |
+76 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:78:48
+   |
+78 |         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
+   |                                                ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:87:23
+   |
+87 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `TransactionManager` in this scope
+  --> src/coretex_transaction_tests.rs:95:23
+   |
+95 |         let manager = TransactionManager::new();
+   |                       ^^^^^^^^^^^^^^^^^^ use of undeclared type `TransactionManager`
+   |
+help: consider importing one of these structs
+   |
+ 5 +     use crate::TransactionManager;
+   |
+ 5 +     use crate::coretex_utils::TransactionManager;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:98:13
+   |
+98 |             IsolationLevel::ReadUncommitted,
+   |             ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+  --> src/coretex_transaction_tests.rs:99:13
+   |
+99 |             IsolationLevel::ReadCommitted,
+   |             ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+   |
+help: consider importing this enum
+   |
+ 5 +     use crate::coretex_transaction::IsolationLevel;
+   |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+   --> src/coretex_transaction_tests.rs:100:13
+    |
+100 |             IsolationLevel::RepeatableRead,
+    |             ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::IsolationLevel;
+    |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+   --> src/coretex_transaction_tests.rs:101:13
+    |
+101 |             IsolationLevel::Serializable,
+    |             ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::IsolationLevel;
+    |
+
+error[E0433]: cannot find type `IsolationLevel` in this scope
+   --> src/coretex_transaction_tests.rs:102:13
+    |
+102 |             IsolationLevel::Snapshot,
+    |             ^^^^^^^^^^^^^^ use of undeclared type `IsolationLevel`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::IsolationLevel;
+    |
+
+error[E0433]: cannot find type `WriteAheadLog` in this scope
+   --> src/coretex_transaction_tests.rs:113:19
+    |
+113 |         let wal = WriteAheadLog::new(100);
+    |                   ^^^^^^^^^^^^^ use of undeclared type `WriteAheadLog`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::WriteAheadLog;
+    |
+  5 +     use crate::coretex_utils::WriteAheadLog;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:115:20
+    |
+115 |         wal.append(WalEntry {
+    |                    ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:118:24
+    |
+118 |             operation: WalOperation::Begin { txn_id: 1 },
+    |                        ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0433]: cannot find type `WriteAheadLog` in this scope
+   --> src/coretex_transaction_tests.rs:128:19
+    |
+128 |         let wal = WriteAheadLog::new(max_entries);
+    |                   ^^^^^^^^^^^^^ use of undeclared type `WriteAheadLog`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::WriteAheadLog;
+    |
+  5 +     use crate::coretex_utils::WriteAheadLog;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:131:24
+    |
+131 |             wal.append(WalEntry {
+    |                        ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:134:28
+    |
+134 |                 operation: WalOperation::Begin { txn_id: i },
+    |                            ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0433]: cannot find type `WriteAheadLog` in this scope
+   --> src/coretex_transaction_tests.rs:144:19
+    |
+144 |         let wal = WriteAheadLog::new(100);
+    |                   ^^^^^^^^^^^^^ use of undeclared type `WriteAheadLog`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::WriteAheadLog;
+    |
+  5 +     use crate::coretex_utils::WriteAheadLog;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:147:24
+    |
+147 |             wal.append(WalEntry {
+    |                        ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:150:28
+    |
+150 |                 operation: WalOperation::Begin { txn_id: i },
+    |                            ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0433]: cannot find type `WriteAheadLog` in this scope
+   --> src/coretex_transaction_tests.rs:161:23
+    |
+161 |         let mut wal = WriteAheadLog::new(100);
+    |                       ^^^^^^^^^^^^^ use of undeclared type `WriteAheadLog`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::WriteAheadLog;
+    |
+  5 +     use crate::coretex_utils::WriteAheadLog;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:163:20
+    |
+163 |         wal.append(WalEntry {
+    |                    ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:166:24
+    |
+166 |             operation: WalOperation::Insert { 
+    |                        ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:173:20
+    |
+173 |         wal.append(WalEntry {
+    |                    ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:176:24
+    |
+176 |             operation: WalOperation::Update { 
+    |                        ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0433]: cannot find type `WriteAheadLog` in this scope
+   --> src/coretex_transaction_tests.rs:190:23
+    |
+190 |         let mut wal = WriteAheadLog::new(100);
+    |                       ^^^^^^^^^^^^^ use of undeclared type `WriteAheadLog`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::WriteAheadLog;
+    |
+  5 +     use crate::coretex_utils::WriteAheadLog;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:192:20
+    |
+192 |         wal.append(WalEntry {
+    |                    ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:195:24
+    |
+195 |             operation: WalOperation::Insert { 
+    |                        ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0422]: cannot find struct, variant or union type `WalEntry` in this scope
+   --> src/coretex_transaction_tests.rs:202:20
+    |
+202 |         wal.append(WalEntry {
+    |                    ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::coretex_transaction::WalEntry;
+    |
+  5 +     use crate::coretex_utils::wal::WalEntry;
+    |
+
+error[E0433]: cannot find type `WalOperation` in this scope
+   --> src/coretex_transaction_tests.rs:205:24
+    |
+205 |             operation: WalOperation::Update { 
+    |                        ^^^^^^^^^^^^ use of undeclared type `WalOperation`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::WalOperation;
+    |
+
+error[E0433]: cannot find type `SnapshotManager` in this scope
+   --> src/coretex_transaction_tests.rs:222:23
+    |
+222 |         let manager = SnapshotManager::new();
+    |                       ^^^^^^^^^^^^^^^ use of undeclared type `SnapshotManager`
+    |
+help: consider importing this struct
+    |
+  5 +     use crate::coretex_transaction::SnapshotManager;
+    |
+
+error[E0422]: cannot find struct, variant or union type `Snapshot` in this scope
+   --> src/coretex_transaction_tests.rs:224:24
+    |
+224 |         let snapshot = Snapshot {
+    |                        ^^^^^^^^ not found in this scope
+    |
+help: consider importing one of these items
+    |
+  5 +     use crate::Snapshot;
+    |
+  5 +     use crate::coretex_backup::BackupType::Snapshot;
+    |
+  5 +     use crate::coretex_transaction::IsolationLevel::Snapshot;
+    |
+
+error[E0433]: cannot find type `HashMap` in this scope
+   --> src/coretex_transaction_tests.rs:228:19
+    |
+228 |             data: HashMap::new(),
+    |                   ^^^^^^^ use of undeclared type `HashMap`
+    |
+help: consider importing one of these structs
+    |
+  5 +     use crate::HashMap;
+    |
+  5 +     use std::collections::HashMap;
+    |
+
+error[E0433]: cannot find type `TransactionError` in this scope
+   --> src/coretex_transaction_tests.rs:240:21
+    |
+240 |         let error = TransactionError::TransactionNotFound(123);
+    |                     ^^^^^^^^^^^^^^^^ use of undeclared type `TransactionError`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::TransactionError;
+    |
+
+error[E0433]: cannot find type `TransactionError` in this scope
+   --> src/coretex_transaction_tests.rs:244:21
+    |
+244 |         let error = TransactionError::InvalidTransactionState("test".to_string());
+    |                     ^^^^^^^^^^^^^^^^ use of undeclared type `TransactionError`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::TransactionError;
+    |
+
+error[E0433]: cannot find type `TransactionError` in this scope
+   --> src/coretex_transaction_tests.rs:248:21
+    |
+248 |         let error = TransactionError::WriteConflict("conflict".to_string());
+    |                     ^^^^^^^^^^^^^^^^ use of undeclared type `TransactionError`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::TransactionError;
+    |
+
+error[E0433]: cannot find type `TransactionError` in this scope
+   --> src/coretex_transaction_tests.rs:252:21
+    |
+252 |         let error = TransactionError::SnapshotNotFound(456);
+    |                     ^^^^^^^^^^^^^^^^ use of undeclared type `TransactionError`
+    |
+help: consider importing this enum
+    |
+  5 +     use crate::coretex_transaction::TransactionError;
+    |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+ --> src/coretex_embedding_tests.rs:9:22
+  |
+9 |         let config = EmbeddingConfig::default();
+  |                      ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+  |
+help: consider importing this struct through its public re-export
+  |
+5 +     use crate::EmbeddingConfig;
+  |
+
+error[E0422]: cannot find struct, variant or union type `EmbeddingConfig` in this scope
+  --> src/coretex_embedding_tests.rs:17:22
+   |
+17 |         let config = EmbeddingConfig {
+   |                      ^^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingConfig;
+   |
+
+error[E0433]: cannot find type `TextEmbeddingService` in this scope
+  --> src/coretex_embedding_tests.rs:33:23
+   |
+33 |         let service = TextEmbeddingService::new(EmbeddingConfig::default());
+   |                       ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `TextEmbeddingService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::TextEmbeddingService;
+   |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+  --> src/coretex_embedding_tests.rs:33:49
+   |
+33 |         let service = TextEmbeddingService::new(EmbeddingConfig::default());
+   |                                                 ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingConfig;
+   |
+
+error[E0433]: cannot find type `TextEmbeddingService` in this scope
+  --> src/coretex_embedding_tests.rs:49:23
+   |
+49 |         let service = TextEmbeddingService::new(EmbeddingConfig::default());
+   |                       ^^^^^^^^^^^^^^^^^^^^ use of undeclared type `TextEmbeddingService`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::TextEmbeddingService;
+   |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+  --> src/coretex_embedding_tests.rs:49:49
+   |
+49 |         let service = TextEmbeddingService::new(EmbeddingConfig::default());
+   |                                                 ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingConfig;
+   |
+
+error[E0433]: cannot find type `EmbeddingRouter` in this scope
+  --> src/coretex_embedding_tests.rs:71:22
+   |
+71 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+   |                      ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingRouter`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingRouter;
+   |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+  --> src/coretex_embedding_tests.rs:71:43
+   |
+71 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+   |                                           ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingConfig;
+   |
+
+error[E0422]: cannot find struct, variant or union type `EmbeddingRequest` in this scope
+  --> src/coretex_embedding_tests.rs:73:23
+   |
+73 |         let request = EmbeddingRequest {
+   |                       ^^^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingRequest;
+   |
+
+error[E0433]: cannot find type `DataType` in this scope
+  --> src/coretex_embedding_tests.rs:74:24
+   |
+74 |             data_type: DataType::Text,
+   |                        ^^^^^^^^ use of undeclared type `DataType`
+   |
+help: consider importing this enum through its public re-export
+   |
+ 5 +     use crate::DataType;
+   |
+
+error[E0433]: cannot find type `EmbeddingRouter` in this scope
+  --> src/coretex_embedding_tests.rs:93:22
+   |
+93 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+   |                      ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingRouter`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingRouter;
+   |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+  --> src/coretex_embedding_tests.rs:93:43
+   |
+93 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+   |                                           ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingConfig;
+   |
+
+error[E0422]: cannot find struct, variant or union type `EmbeddingRequest` in this scope
+  --> src/coretex_embedding_tests.rs:95:23
+   |
+95 |         let request = EmbeddingRequest {
+   |                       ^^^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 5 +     use crate::EmbeddingRequest;
+   |
+
+error[E0433]: cannot find type `DataType` in this scope
+  --> src/coretex_embedding_tests.rs:96:24
+   |
+96 |             data_type: DataType::Image,
+   |                        ^^^^^^^^ use of undeclared type `DataType`
+   |
+help: consider importing this enum through its public re-export
+   |
+ 5 +     use crate::DataType;
+   |
+
+error[E0433]: cannot find type `EmbeddingRouter` in this scope
+   --> src/coretex_embedding_tests.rs:115:22
+    |
+115 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+    |                      ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingRouter`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EmbeddingRouter;
+    |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+   --> src/coretex_embedding_tests.rs:115:43
+    |
+115 |         let router = EmbeddingRouter::new(EmbeddingConfig::default());
+    |                                           ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EmbeddingConfig;
+    |
+
+error[E0422]: cannot find struct, variant or union type `EmbeddingRequest` in this scope
+   --> src/coretex_embedding_tests.rs:117:23
+    |
+117 |         let request = EmbeddingRequest {
+    |                       ^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EmbeddingRequest;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:118:24
+    |
+118 |             data_type: DataType::PointCloud,
+    |                        ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+error[E0433]: cannot find type `StreamingEmbedder` in this scope
+   --> src/coretex_embedding_tests.rs:131:24
+    |
+131 |         let embedder = StreamingEmbedder::new(EmbeddingConfig::default());
+    |                        ^^^^^^^^^^^^^^^^^ use of undeclared type `StreamingEmbedder`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::StreamingEmbedder;
+    |
+
+error[E0433]: cannot find type `EmbeddingConfig` in this scope
+   --> src/coretex_embedding_tests.rs:131:47
+    |
+131 |         let embedder = StreamingEmbedder::new(EmbeddingConfig::default());
+    |                                               ^^^^^^^^^^^^^^^ use of undeclared type `EmbeddingConfig`
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EmbeddingConfig;
+    |
+
+error[E0422]: cannot find struct, variant or union type `StreamingStats` in this scope
+   --> src/coretex_embedding_tests.rs:147:21
+    |
+147 |         let stats = StreamingStats {
+    |                     ^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::StreamingStats;
+    |
+
+error[E0422]: cannot find struct, variant or union type `EmbeddingResponse` in this scope
+   --> src/coretex_embedding_tests.rs:160:24
+    |
+160 |         let response = EmbeddingResponse {
+    |                        ^^^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this struct through its public re-export
+    |
+  5 +     use crate::EmbeddingResponse;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:173:20
+    |
+173 |         let text = DataType::Text;
+    |                    ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:174:21
+    |
+174 |         let image = DataType::Image;
+    |                     ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:175:21
+    |
+175 |         let audio = DataType::Audio;
+    |                     ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:176:21
+    |
+176 |         let video = DataType::Video;
+    |                     ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+error[E0433]: cannot find type `DataType` in this scope
+   --> src/coretex_embedding_tests.rs:177:26
+    |
+177 |         let pointcloud = DataType::PointCloud;
+    |                          ^^^^^^^^ use of undeclared type `DataType`
+    |
+help: consider importing this enum through its public re-export
+    |
+  5 +     use crate::DataType;
+    |
+
+warning: unused import: `std::fs`
+   --> src/coretex_lakehouse/storage.rs:241:9
+    |
+241 |     use std::fs;
+    |         ^^^^^^^
+
+warning: unused import: `super::*`
+ --> src/coretex_bm25_tests.rs:5:9
+  |
+5 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unused import: `super::*`
+ --> src/coretex_security_tests.rs:5:9
+  |
+5 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unused import: `super::*`
+ --> src/coretex_transaction_tests.rs:5:9
+  |
+5 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unused import: `super::*`
+ --> src/coretex_embedding_tests.rs:5:9
+  |
+5 |     use super::*;
+  |         ^^^^^^^^
 
 warning: unused import: `VectorIndex`
  --> src/coretex_query/mod.rs:7:28
@@ -564,6 +2208,20 @@ warning: unused variable: `roles`
     |
 289 |         let roles = self.roles.read().await;
     |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_roles`
+
+error[E0433]: cannot find type `PersistentStorage` in this scope
+  --> src/coretex_storage/tests.rs:57:23
+   |
+57 |     let mut storage = PersistentStorage::new(db_path);
+   |                       ^^^^^^^^^^^^^^^^^ use of undeclared type `PersistentStorage`
+   |
+note: found an item that was configured out
+  --> src/lib.rs:73:26
+   |
+72 | #[cfg(feature = "rocksdb")]
+   |       ------------------- the item is gated behind the `rocksdb` feature
+73 | pub use coretex_storage::PersistentStorage; 
+   |                          ^^^^^^^^^^^^^^^^^
 
 warning: variable does not need to be mutable
   --> src/coretex_rerank/pipeline.rs:70:68
@@ -1002,34 +2660,69 @@ help: use `'_` for type paths
 115 |     pub fn histogram(&self, name: &str) -> HistogramBuilder<'_> {
     |                                                            ++++
 
-warning: `coretexdb` (lib) generated 132 warnings (run `cargo fix --lib -p coretexdb` to apply 90 suggestions)
-     Running `/Users/runner/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name coretex --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=d2bde6e01b0de169 -C extra-filename=-84ba5ce8a46c72fa --out-dir /Users/runner/work/coretexdb/coretexdb/target/release/deps -C strip=debuginfo -L dependency=/Users/runner/work/coretexdb/coretexdb/target/release/deps --extern aes_gcm=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaes_gcm-762758ee3134b1ca.rlib --extern anyhow=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libanyhow-5dcd032dd1cb01fd.rlib --extern async_trait=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libasync_trait-4d8a059c233bb2ff.dylib --extern axum=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaxum-208a5f4991205c8d.rlib --extern base64=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbase64-dc2c4fbb833f198c.rlib --extern bincode=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbincode-e4438c93507946ec.rlib --extern chrono=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libchrono-4ac1537c3e633bf6.rlib --extern clap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libclap-0cedece7c7a19b27.rlib --extern config=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libconfig-770128ed0df939a8.rlib --extern coretexdb=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcoretexdb-518fb1e196834a21.rlib --extern cpufeatures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcpufeatures-b2132245bf96c393.rlib --extern crossbeam=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcrossbeam-9d802ec13dd4981d.rlib --extern dashmap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libdashmap-3ff320cb16e626df.rlib --extern flate2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libflate2-59e43e923d3a8101.rlib --extern futures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures-d5431e96869656b7.rlib --extern futures_util=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures_util-92ebd6786c4283cd.rlib --extern hex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhex-bd40e781efe199a5.rlib --extern hmac=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhmac-40380d1540569515.rlib --extern http_body=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhttp_body-25f2b6c3080b2a48.rlib --extern hyper=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhyper-93cb9da59f29bf4a.rlib --extern lazy_static=/Users/runner/work/coretexdb/coretexdb/target/release/deps/liblazy_static-459c20c2076bd0e6.rlib --extern metrics=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics-b249ffe9729df8ad.rlib --extern metrics_exporter_prometheus=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics_exporter_prometheus-cea743b532aeb33c.rlib --extern ndarray=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libndarray-ef135fb454ec5a26.rlib --extern parking_lot=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libparking_lot-cc91c6c72d5221d6.rlib --extern prost=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libprost-c53b2aaa25437b6d.rlib --extern rand=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librand-b8857db19f80fb76.rlib --extern rayon=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librayon-aa9f14f391387fb5.rlib --extern regex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libregex-460805fe1f4f5c82.rlib --extern reqwest=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libreqwest-3f79020861292f91.rlib --extern rustls=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librustls-1a7109c008916e31.rlib --extern serde=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde-26ce6655b79278d4.rlib --extern serde_json=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde_json-c934e5c1fb75d7d3.rlib --extern sha2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsha2-6fade43203a3db1c.rlib --extern snap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsnap-0ce6d4410ac9b8ee.rlib --extern thiserror=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libthiserror-f72b576b88c4c12a.rlib --extern tokio=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio-26665f2e3f339ccf.rlib --extern tokio_tungstenite=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio_tungstenite-56b5ec498fecdad0.rlib --extern toml=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtoml-ef8aa237c4ab52de.rlib --extern tonic=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtonic-02b11b0f6468f4c0.rlib --extern tower=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower-60d46dbee2a6bf15.rlib --extern tower_http=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower_http-ccb7ee5680a9a055.rlib --extern tracing=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing-068d879869774dee.rlib --extern tracing_subscriber=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing_subscriber-5318d248a887965f.rlib --extern uuid=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libuuid-7c91a47dafabc0d5.rlib -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/ring-15dfcd6d07b24cfb/out -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/zstd-sys-74a1b536b02c81c9/out`
-error[E0271]: expected `{async block@src/main.rs:8:1: 8:15}` to be a future that resolves to `Result<(), Box<dyn Error>>`, but it resolves to `Result<(), Box<dyn Error + Send + Sync>>`
- --> src/main.rs:8:1
-  |
-8 | #[tokio::main]
-  | ^^^^^^^^^^^^^^ expected trait `std::error::Error`, found trait `std::error::Error + Send + Sync`
-  |
-  = note: expected enum `Result<_, Box<dyn std::error::Error>>`
-             found enum `Result<_, Box<dyn std::error::Error + Send + Sync>>`
-  = note: required for the cast from `&{async block@src/main.rs:8:1: 8:15}` to `&dyn Future<Output = Result<(), Box<dyn std::error::Error>>>`
-  = note: this error originates in the attribute macro `tokio::main` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0599]: no method named `blocking_check` found for struct `coretex_auth::RateLimiter` in the current scope
+   --> src/coretex_auth/mod.rs:563:34
+    |
+491 | pub struct RateLimiter {
+    | ---------------------- method `blocking_check` not found for this struct
+...
+563 |             let result = limiter.blocking_check("test_user");
+    |                                  ^^^^^^^^^^^^^^ method not found in `coretex_auth::RateLimiter`
 
-error[E0308]: mismatched types
-  --> src/main.rs:10:5
-   |
- 9 | async fn main() -> Result<(), Box<dyn std::error::Error>> {
-   |                    -------------------------------------- expected `Result<(), Box<(dyn std::error::Error + 'static)>>` because of return type
-10 |     run_cli()
-   |     ^^^^^^^^^ expected trait `std::error::Error`, found trait `std::error::Error + Send + Sync`
-   |
-   = note: expected enum `Result<_, Box<(dyn std::error::Error + 'static)>>`
-              found enum `Result<_, Box<dyn std::error::Error + Send + Sync>>`
+error[E0599]: no method named `blocking_check` found for struct `coretex_auth::RateLimiter` in the current scope
+   --> src/coretex_auth/mod.rs:567:30
+    |
+491 | pub struct RateLimiter {
+    | ---------------------- method `blocking_check` not found for this struct
+...
+567 |         let result = limiter.blocking_check("test_user");
+    |                              ^^^^^^^^^^^^^^ method not found in `coretex_auth::RateLimiter`
 
-Some errors have detailed explanations: E0271, E0308.
-For more information about an error, try `rustc --explain E0271`.
-error: could not compile `coretexdb` (bin "coretex") due to 2 previous errors
+warning: unused variable: `min_lon`
+   --> src/coretex_gis/mod.rs:440:32
+    |
+440 |         let (min_lat, max_lat, min_lon, max_lon) = point.bounding_box(10.0);
+    |                                ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_lon`
+
+warning: unused variable: `max_lon`
+   --> src/coretex_gis/mod.rs:440:41
+    |
+440 |         let (min_lat, max_lat, min_lon, max_lon) = point.bounding_box(10.0);
+    |                                         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_lon`
+
+warning: unused variable: `has_admin`
+   --> src/coretex_auth/mod.rs:553:13
+    |
+553 |         let has_admin = auth.has_permission(&user_id, Permission::Admin).await;
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_has_admin`
+
+warning: unused variable: `backup_id`
+   --> src/coretex_backup.rs:548:13
+    |
+548 |         let backup_id = manager.create_backup("test_backup", BackupType::Full).await.unwrap();
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_backup_id`
+
+warning: variable does not need to be mutable
+   --> src/coretex_lakehouse/policy.rs:168:13
+    |
+168 |         let mut recent_doc = DocumentMeta::new("doc1".to_string(), "test".to_string());
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `old_doc`
+   --> src/coretex_lakehouse/policy.rs:170:13
+    |
+170 |         let old_doc = DocumentMeta::new("doc2".to_string(), "test".to_string());
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_old_doc`
+
+Some errors have detailed explanations: E0422, E0433, E0599, E0753.
+For more information about an error, try `rustc --explain E0422`.
+warning: `coretexdb` (lib test) generated 103 warnings (92 duplicates)
+error: could not compile `coretexdb` (lib test) due to 141 previous errors; 103 warnings emitted
 
 Caused by:
-  process didn't exit successfully: `/Users/runner/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name coretex --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=d2bde6e01b0de169 -C extra-filename=-84ba5ce8a46c72fa --out-dir /Users/runner/work/coretexdb/coretexdb/target/release/deps -C strip=debuginfo -L dependency=/Users/runner/work/coretexdb/coretexdb/target/release/deps --extern aes_gcm=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaes_gcm-762758ee3134b1ca.rlib --extern anyhow=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libanyhow-5dcd032dd1cb01fd.rlib --extern async_trait=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libasync_trait-4d8a059c233bb2ff.dylib --extern axum=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaxum-208a5f4991205c8d.rlib --extern base64=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbase64-dc2c4fbb833f198c.rlib --extern bincode=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbincode-e4438c93507946ec.rlib --extern chrono=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libchrono-4ac1537c3e633bf6.rlib --extern clap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libclap-0cedece7c7a19b27.rlib --extern config=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libconfig-770128ed0df939a8.rlib --extern coretexdb=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcoretexdb-518fb1e196834a21.rlib --extern cpufeatures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcpufeatures-b2132245bf96c393.rlib --extern crossbeam=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcrossbeam-9d802ec13dd4981d.rlib --extern dashmap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libdashmap-3ff320cb16e626df.rlib --extern flate2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libflate2-59e43e923d3a8101.rlib --extern futures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures-d5431e96869656b7.rlib --extern futures_util=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures_util-92ebd6786c4283cd.rlib --extern hex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhex-bd40e781efe199a5.rlib --extern hmac=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhmac-40380d1540569515.rlib --extern http_body=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhttp_body-25f2b6c3080b2a48.rlib --extern hyper=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhyper-93cb9da59f29bf4a.rlib --extern lazy_static=/Users/runner/work/coretexdb/coretexdb/target/release/deps/liblazy_static-459c20c2076bd0e6.rlib --extern metrics=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics-b249ffe9729df8ad.rlib --extern metrics_exporter_prometheus=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics_exporter_prometheus-cea743b532aeb33c.rlib --extern ndarray=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libndarray-ef135fb454ec5a26.rlib --extern parking_lot=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libparking_lot-cc91c6c72d5221d6.rlib --extern prost=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libprost-c53b2aaa25437b6d.rlib --extern rand=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librand-b8857db19f80fb76.rlib --extern rayon=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librayon-aa9f14f391387fb5.rlib --extern regex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libregex-460805fe1f4f5c82.rlib --extern reqwest=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libreqwest-3f79020861292f91.rlib --extern rustls=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librustls-1a7109c008916e31.rlib --extern serde=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde-26ce6655b79278d4.rlib --extern serde_json=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde_json-c934e5c1fb75d7d3.rlib --extern sha2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsha2-6fade43203a3db1c.rlib --extern snap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsnap-0ce6d4410ac9b8ee.rlib --extern thiserror=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libthiserror-f72b576b88c4c12a.rlib --extern tokio=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio-26665f2e3f339ccf.rlib --extern tokio_tungstenite=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio_tungstenite-56b5ec498fecdad0.rlib --extern toml=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtoml-ef8aa237c4ab52de.rlib --extern tonic=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtonic-02b11b0f6468f4c0.rlib --extern tower=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower-60d46dbee2a6bf15.rlib --extern tower_http=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower_http-ccb7ee5680a9a055.rlib --extern tracing=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing-068d879869774dee.rlib --extern tracing_subscriber=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing_subscriber-5318d248a887965f.rlib --extern uuid=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libuuid-7c91a47dafabc0d5.rlib -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/ring-15dfcd6d07b24cfb/out -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/zstd-sys-74a1b536b02c81c9/out` (exit status: 1)
+  process didn't exit successfully: `/home/runner/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name coretexdb --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=b01a7827d7023143 -C extra-filename=-4b7bbad4972df408 --out-dir /home/runner/work/coretexdb/coretexdb/target/debug/deps -L dependency=/home/runner/work/coretexdb/coretexdb/target/debug/deps --extern aes_gcm=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libaes_gcm-1b7260eafc918b8f.rlib --extern anyhow=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libanyhow-81e0f801a5d79612.rlib --extern async_trait=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libasync_trait-d5f7b178ddd1f263.so --extern axum=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libaxum-a6b597d9d7eb3d06.rlib --extern base64=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libbase64-df3838031a8300ae.rlib --extern bincode=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libbincode-66a0b3c698e5729a.rlib --extern chrono=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libchrono-ee602a81ba613e2c.rlib --extern clap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libclap-25e2732020e9da04.rlib --extern config=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libconfig-ee276648939498bf.rlib --extern cpufeatures=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libcpufeatures-e124fef1b1d91f00.rlib --extern crossbeam=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libcrossbeam-3290a70a1ebd177e.rlib --extern dashmap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libdashmap-100823e9eb3927c8.rlib --extern flate2=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libflate2-5989e2e50df03ee7.rlib --extern futures=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libfutures-e20b1336bb0484ff.rlib --extern futures_util=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libfutures_util-6ad3ecbaee2ed335.rlib --extern hex=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhex-1558f6adc06e3fa8.rlib --extern hmac=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhmac-12261011bb826eb1.rlib --extern http_body=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhttp_body-c889fafcb0d0c05c.rlib --extern hyper=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libhyper-4ed8fffd74546961.rlib --extern lazy_static=/home/runner/work/coretexdb/coretexdb/target/debug/deps/liblazy_static-16fab28a6111f0f1.rlib --extern metrics=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libmetrics-56e5df29e349d7b9.rlib --extern metrics_exporter_prometheus=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libmetrics_exporter_prometheus-61ef70c2c23bb7f7.rlib --extern ndarray=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libndarray-1279af165970bb28.rlib --extern parking_lot=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libparking_lot-474ce00eaec763f7.rlib --extern prost=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libprost-8c61f9a5c8041209.rlib --extern rand=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librand-922d9e5af96fc4c5.rlib --extern rayon=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librayon-c5ec777116e3d16d.rlib --extern regex=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libregex-829d9ecbeb7edd23.rlib --extern reqwest=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libreqwest-a9bba5bb0b615bfa.rlib --extern rstest=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librstest-b59eb603ce4666c6.rlib --extern rustls=/home/runner/work/coretexdb/coretexdb/target/debug/deps/librustls-10c14eecd9971933.rlib --extern serde=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libserde-e2302dbf3c2d1dbd.rlib --extern serde_json=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libserde_json-a85d4ab856d5fe04.rlib --extern sha2=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libsha2-42a662609f4ae4a5.rlib --extern snap=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libsnap-6826823be4191925.rlib --extern tempfile=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtempfile-95f1b888e12ccacf.rlib --extern thiserror=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libthiserror-63ea8c111a939ddd.rlib --extern tokio=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio-15790a76d6f9d96d.rlib --extern tokio_test=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio_test-9ece20cf8c90f960.rlib --extern tokio_tungstenite=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtokio_tungstenite-8438f02b7f3fcefb.rlib --extern toml=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtoml-5b5c121ad54b44c2.rlib --extern tonic=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtonic-17dbac3661a1f7f9.rlib --extern tower=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtower-4fe1500878817010.rlib --extern tower_http=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtower_http-1c1aa19c5c306e2c.rlib --extern tracing=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtracing-377212d57da59fe4.rlib --extern tracing_subscriber=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libtracing_subscriber-0b6e43dfa673d897.rlib --extern uuid=/home/runner/work/coretexdb/coretexdb/target/debug/deps/libuuid-0c1d1974c98239a4.rlib -L native=/home/runner/work/coretexdb/coretexdb/target/debug/build/ring-242d57cb20548677/out -L native=/home/runner/work/coretexdb/coretexdb/target/debug/build/zstd-sys-7c113293e8308d39/out` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+warning: `coretexdb` (lib) generated 133 warnings (run `cargo fix --lib -p coretexdb` to apply 91 suggestions)
 Error: Process completed with exit code 101.

@@ -3,6 +3,15 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use crate::TransactionManager;
+    use crate::coretex_transaction::IsolationLevel;
+    use crate::coretex_utils::WriteAheadLog;
+    use crate::coretex_transaction::WalEntry;
+    use crate::coretex_transaction::WalOperation;
+    use crate::coretex_transaction::SnapshotManager;
+    use crate::Snapshot;
+    use crate::coretex_transaction::TransactionError;
 
     #[tokio::test]
     async fn test_transaction_begin() {
