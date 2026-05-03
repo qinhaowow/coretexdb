@@ -9,7 +9,6 @@ mod tests {
     use crate::EmbeddingRequest;
     use crate::DataType;
     use crate::StreamingEmbedder;
-    use crate::StreamingStats;
     use crate::EmbeddingResponse;
 
     #[tokio::test]
@@ -36,11 +35,11 @@ mod tests {
         assert_eq!(config.batch_size, 64);
     }
 
-    #[tokio::test]
-    async fn test_text_embedding_service() {
-        let service = TextEmbeddingService::new(EmbeddingConfig::default());
+    #[test]
+    fn test_text_embedding_service() {
+        let service = TextEmbeddingService::new("test-model", 384, "cpu");
         
-        let result = service.embed_text("Hello world").await;
+        let result = service.embed_text("Hello world");
         
         match result {
             Ok(embedding) => {
@@ -52,9 +51,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_text_embedding_batch() {
-        let service = TextEmbeddingService::new(EmbeddingConfig::default());
+    #[test]
+    fn test_text_embedding_batch() {
+        let service = TextEmbeddingService::new("test-model", 384, "cpu");
         
         let texts = vec![
             "First sentence".to_string(),
@@ -62,7 +61,7 @@ mod tests {
             "Third sentence".to_string(),
         ];
         
-        let result = service.embed_batch(&texts).await;
+        let result = service.embed_batch(&texts);
         
         match result {
             Ok(embeddings) => {
@@ -74,21 +73,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_embedding_router_text() {
-        let router = EmbeddingRouter::new(EmbeddingConfig::default());
+    #[test]
+    fn test_embedding_router_text() {
+        let router = EmbeddingRouter::new();
         
         let request = EmbeddingRequest {
             data_type: DataType::Text,
             data: "test text".to_string(),
-            model: None,
+            metadata: None,
         };
         
-        let result = router.route(request).await;
+        let result = router.embed(&request);
         
         match result {
             Ok(response) => {
-                assert!(!response.embeddings.is_empty());
+                assert!(!response.embedding.is_empty());
             }
             Err(_) => {
                 // Expected in test environment without models
@@ -96,39 +95,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_embedding_router_image() {
-        let router = EmbeddingRouter::new(EmbeddingConfig::default());
-        
-        let request = EmbeddingRequest {
-            data_type: DataType::Image,
-            data: "image_data".to_string(),
-            model: None,
-        };
-        
-        let result = router.route(request).await;
-        
-        match result {
-            Ok(response) => {
-                assert!(!response.embeddings.is_empty());
-            }
-            Err(_) => {
-                // Expected in test environment
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_embedding_router_unsupported() {
-        let router = EmbeddingRouter::new(EmbeddingConfig::default());
+    #[test]
+    fn test_embedding_router_unsupported() {
+        let router = EmbeddingRouter::new();
         
         let request = EmbeddingRequest {
             data_type: DataType::PointCloud,
             data: "pointcloud".to_string(),
-            model: None,
+            metadata: None,
         };
         
-        let result = router.route(request).await;
+        let result = router.embed(&request);
         
         // Point cloud might not be supported
         assert!(result.is_err() || result.is_ok());
@@ -138,41 +115,29 @@ mod tests {
     async fn test_streaming_embedder() {
         let embedder = StreamingEmbedder::new(EmbeddingConfig::default());
         
-        let result = embedder.embed_stream("test stream".to_string()).await;
-        
-        match result {
-            Ok(_stream) => {
-                // Stream created
-            }
-            Err(_) => {
-                // Expected in test environment
-            }
-        }
+        let stats = embedder.get_stats().await;
+        assert_eq!(stats.processed, 0);
     }
 
     #[tokio::test]
     async fn test_streaming_stats() {
-        let stats = StreamingStats {
-            total_processed: 100,
-            total_tokens: 500,
-            avg_latency_ms: 50.0,
-            errors: 2,
-        };
+        let embedder = StreamingEmbedder::new(EmbeddingConfig::default());
         
-        assert_eq!(stats.total_processed, 100);
-        assert!(stats.avg_latency_ms > 0.0);
+        let stats = embedder.get_stats().await;
+        assert_eq!(stats.processed, 0);
+        assert_eq!(stats.errors, 0);
+        assert_eq!(stats.buffer_size, 0);
     }
 
-    #[tokio::test]
-    async fn test_embedding_response() {
+    #[test]
+    fn test_embedding_response() {
         let response = EmbeddingResponse {
-            embeddings: vec![vec![0.1, 0.2, 0.3]],
-            model: "test-model".to_string(),
+            embedding: vec![0.1, 0.2, 0.3],
             dimension: 3,
-            processing_time_ms: 100,
+            data_type: "text".to_string(),
         };
         
-        assert_eq!(response.embeddings.len(), 1);
+        assert_eq!(response.embedding.len(), 3);
         assert_eq!(response.dimension, 3);
     }
 

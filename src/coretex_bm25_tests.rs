@@ -5,9 +5,9 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use crate::BM25Index;
-    use crate::Document;
     use crate::MetadataFilter;
     use crate::HybridQueryEngine;
+    use crate::coretex_bm25::Document;
     use crate::coretex_bm25::VectorSearchResult;
 
     #[tokio::test]
@@ -118,7 +118,6 @@ mod tests {
         bm25.add_document(doc2).await.unwrap();
         bm25.add_document(doc3).await.unwrap();
         
-        let filter = MetadataFilter::new().eq("category", "programming");
         let results = bm25.search_with_filter("programming", 10, |fields| {
             fields.get("category") == Some(&"programming".to_string())
         }).await.unwrap();
@@ -128,14 +127,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_document_tokenize() {
-        let tokens = Document::tokenize("Hello, World! This is a TEST.");
+        let doc = Document::new("test".to_string(), "Hello, World! This is a TEST.".to_string());
         
-        assert!(tokens.contains(&"hello".to_string()));
-        assert!(tokens.contains(&"world".to_string()));
-        assert!(tokens.contains(&"this".to_string()));
-        assert!(tokens.contains(&"is".to_string()));
-        assert!(tokens.contains(&"a".to_string()));
-        assert!(tokens.contains(&"test".to_string()));
+        assert!(doc.tokens.contains(&"hello".to_string()));
+        assert!(doc.tokens.contains(&"world".to_string()));
+        assert!(doc.tokens.contains(&"this".to_string()));
+        assert!(doc.tokens.contains(&"is".to_string()));
+        assert!(doc.tokens.contains(&"a".to_string()));
+        assert!(doc.tokens.contains(&"test".to_string()));
     }
 
     #[tokio::test]

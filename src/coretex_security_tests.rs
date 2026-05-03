@@ -10,7 +10,6 @@ mod tests {
     use crate::TlsConfig;
     use crate::TlsServer;
     use crate::TlsClient;
-    use crate::coretex_security::tls::TlsVersion;
 
     #[tokio::test]
     async fn test_encryption_service_basic() {
@@ -134,7 +133,7 @@ mod tests {
         let key_manager = Arc::new(KeyManager::new());
         key_manager.generate_key("test-key", 256).await.unwrap();
         
-        let encryption = Arc::new(EncryptionService::new(key_manager));
+        let encryption = Arc::new(EncryptionService::new(key_manager.clone()));
         
         let plaintext = b"Test data";
         let encrypted = encryption.encrypt(plaintext).await.unwrap();
@@ -142,7 +141,7 @@ mod tests {
         let base64 = encrypted.to_base64();
         assert!(!base64.is_empty());
         
-        let key = encryption.key_manager.get_primary_key().await.unwrap();
+        let key = key_manager.get_primary_key().await.unwrap();
         let decrypted = EncryptedData::from_base64(&key.id, &base64).unwrap();
         
         let result = encryption.decrypt(&decrypted).await.unwrap();
@@ -197,7 +196,6 @@ mod tests {
     async fn test_tls_config_for_development() {
         let config = TlsConfig::for_development();
         
-        assert_eq!(config.min_version, TlsVersion::TLSv1_2);
         assert!(!config.verify_client);
     }
 

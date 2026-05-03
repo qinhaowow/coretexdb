@@ -1,9 +1,8 @@
 /// Tests for vector indexes
 
 use super::*;
-use tokio::test;
 
-#[test]
+#[tokio::test]
 async fn test_brute_force_index() {
     // Create a new brute force index
     let index = BruteForceIndex::new("cosine");
@@ -40,7 +39,7 @@ async fn test_brute_force_index() {
     assert_eq!(results.len(), 0);
 }
 
-#[test]
+#[tokio::test]
 async fn test_hnsw_index() {
     // Create a new HNSW index
     let index = HNSWIndex::new("cosine");
@@ -66,7 +65,7 @@ async fn test_hnsw_index() {
     index.clear().await.unwrap();
 }
 
-#[test]
+#[tokio::test]
 async fn test_ivf_index() {
     // Create a new IVF index
     let index = IVFIndex::new("cosine");
@@ -92,7 +91,7 @@ async fn test_ivf_index() {
     index.clear().await.unwrap();
 }
 
-#[test]
+#[tokio::test]
 async fn test_scalar_index() {
     // Create a new scalar index
     let index = ScalarIndex::new();
@@ -118,7 +117,7 @@ async fn test_scalar_index() {
     index.clear().await.unwrap();
 }
 
-#[test]
+#[tokio::test]
 async fn test_index_manager() {
     // Create a new index manager
     let manager = IndexManager::new();

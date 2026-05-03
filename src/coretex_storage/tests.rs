@@ -1,9 +1,8 @@
 /// Tests for storage engines
 
 use super::*;
-use tokio::test;
 
-#[test]
+#[tokio::test]
 async fn test_memory_storage() {
     // Create a new memory storage
     let mut storage = MemoryStorage::new();
@@ -48,7 +47,7 @@ async fn test_memory_storage() {
 }
 
 #[cfg(feature = "rocksdb")]
-#[test]
+#[tokio::test]
 async fn test_persistent_storage() {
     // Create a temporary directory for testing
     let temp_dir = tempfile::tempdir().unwrap();
