@@ -282,7 +282,7 @@ impl GeoIndex {
         
         if let Some(meta) = metadata {
             let mut md = self.metadata.write().await;
-            md.insert(id, meta);
+            md.insert(id.clone(), meta);
         }
 
         drop(points);

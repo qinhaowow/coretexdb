@@ -289,7 +289,7 @@ impl GraphDatabase {
                     edge_ids.push(edge.id.clone());
                     weight += edge.weight;
 
-                    self.dfs_recursive(
+                    Box::pin(self.dfs_recursive(
                         &neighbor.id,
                         max_depth,
                         node_ids.clone(),
@@ -297,7 +297,7 @@ impl GraphDatabase {
                         weight,
                         visited,
                         paths,
-                    )
+                    ))
                     .await;
 
                     node_ids.pop();

@@ -303,7 +303,7 @@ impl IndexOptimizer {
             }
             ANNAlgorithm::IVF => {
                 let n = num_vectors as f64;
-                let nlist = 100.0;
+                let nlist: f64 = 100.0;
                 n * nlist.log2() / 5_000_000.0
             }
             _ => num_vectors as f64 / 100_000.0,

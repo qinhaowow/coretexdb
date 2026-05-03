@@ -79,11 +79,21 @@ pub struct CollectionInfo {
     pub count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GraphQLResolver {
     pub field_name: String,
     pub type_name: String,
     pub resolver_fn: ResolverFunction,
+}
+
+impl std::fmt::Debug for GraphQLResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphQLResolver")
+            .field("field_name", &self.field_name)
+            .field("type_name", &self.type_name)
+            .field("resolver_fn", &"<function>")
+            .finish()
+    }
 }
 
 pub type ResolverFunction = Arc<dyn Fn(&GraphQLContext, &str, &HashMap<String, serde_json::Value>) -> Result<serde_json::Value, String> + Send + Sync>;
@@ -122,7 +132,7 @@ impl GraphQLExecutor {
                     field_type: GraphQLTypeRef::Named("Collection".to_string()),
                     args: vec![GraphQLArg {
                         name: "name".to_string(),
-                        field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                        arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                         default_value: None,
                     }],
                 }),
@@ -132,17 +142,17 @@ impl GraphQLExecutor {
                     args: vec![
                         GraphQLArg {
                             name: "collection".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                         GraphQLArg {
                             name: "vector".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("Float".to_string()))))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("Float".to_string()))))),
                             default_value: None,
                         },
                         GraphQLArg {
                             name: "limit".to_string(),
-                            field_type: GraphQLTypeRef::Named("Int".to_string()),
+                            arg_type: GraphQLTypeRef::Named("Int".to_string()),
                             default_value: Some(serde_json::json!(10)),
                         },
                     ],
@@ -153,12 +163,12 @@ impl GraphQLExecutor {
                     args: vec![
                         GraphQLArg {
                             name: "collection".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                         GraphQLArg {
                             name: "id".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                     ],
@@ -175,12 +185,12 @@ impl GraphQLExecutor {
                     args: vec![
                         GraphQLArg {
                             name: "name".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                         GraphQLArg {
                             name: "dimension".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("Int".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("Int".to_string()))),
                             default_value: None,
                         },
                     ],
@@ -191,12 +201,12 @@ impl GraphQLExecutor {
                     args: vec![
                         GraphQLArg {
                             name: "collection".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                         GraphQLArg {
                             name: "vectors".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("VectorInput".to_string()))))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("VectorInput".to_string()))))),
                             default_value: None,
                         },
                     ],
@@ -207,7 +217,7 @@ impl GraphQLExecutor {
                     args: vec![
                         GraphQLArg {
                             name: "name".to_string(),
-                            field_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
+                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
                             default_value: None,
                         },
                     ],

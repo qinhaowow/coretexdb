@@ -13,6 +13,7 @@ pub enum TransactionState {
     Aborted,
 }
 
+#[derive(Clone)]
 pub struct Transaction {
     pub id: u64,
     pub state: TransactionState,

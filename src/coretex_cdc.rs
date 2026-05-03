@@ -237,9 +237,9 @@ impl CdcEngine {
     }
 
     pub async fn start_sync(&self, source_name: &str) -> Result<(), CdcError> {
-        let sources = self.source_connectors.read().await;
+        let mut sources = self.source_connectors.write().await;
         
-        if let Some(source) = sources.get(source_name) {
+        if let Some(source) = sources.get_mut(source_name) {
             let _ = source.connect().await?;
         }
         
@@ -307,7 +307,7 @@ impl VectorSyncHandler {
                     timestamp: *timestamp,
                 })
             },
-            CdcEvent::Delete { table, key, timestamp } => {
+            CdcEvent::Delete { table, key, timestamp, .. } => {
                 Some(VectorSyncEvent::Delete {
                     id: key.clone(),
                     timestamp: *timestamp,

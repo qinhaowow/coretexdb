@@ -151,6 +151,8 @@ mod encryption {
     use sha2::Sha256;
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use hex;
+    use rand::RngCore;
+    use serde::{Deserialize, Serialize};
     
     type HmacSha256 = Hmac<Sha256>;
     
@@ -177,7 +179,7 @@ mod encryption {
         }
         
         pub fn key_hash(&self) -> String {
-            let mut mac = HmacSha256::new_from_slice(&self.key)
+            let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(&self.key)
                 .expect("HMAC can take key of any size");
             mac.update(b"key_verification");
             hex::encode(mac.finalize().into_bytes())
@@ -403,7 +405,7 @@ mod encryption {
 mod audit {
     use std::sync::Arc;
     use tokio::sync::RwLock;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
     
@@ -464,6 +466,10 @@ mod audit {
         }
     
         pub async fn log(&self, event: AuditEvent) {
+            if self.persistent_storage {
+                self.persist_event(&event).await;
+            }
+            
             let mut events = self.events.write().await;
             
             if events.len() >= self.max_events {
@@ -471,10 +477,6 @@ mod audit {
             }
             
             events.push_back(event);
-            
-            if self.persistent_storage {
-                self.persist_event(&event).await;
-            }
         }
     
         async fn persist_event(&self, _event: &AuditEvent) {

@@ -1,5 +1,10 @@
 [source.crates-io]
-replace-with = "ustc"
+replace-with = "tuna"
 
-[source.ustc]
-registry = "https://mirrors.ustc.edu.cn/crates.io-index"
+[source.tuna]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+
+[env]
+PROTOC = "g:\\cerebros\\CoretexDB\\protoc\\bin\\protoc.exe"
+LIBCLANG_PATH = "C:\\Users\\QH\\AppData\\Roaming\\Python\\Python311\\site-packages\\clang\\native\\libclang.dll"
+RUSTFLAGS = "--cap-lints warn"

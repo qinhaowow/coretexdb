@@ -63,25 +63,27 @@ impl DataExporter {
     }
 
     fn get_headers<T: serde::Serialize>(item: &T) -> Vec<String> {
-        if let Some(obj) = serde_json::to_value(item).ok().and_then(|v| v.as_object()) {
-            obj.keys().cloned().collect()
-        } else {
-            vec!["value".to_string()]
+        if let Ok(value) = serde_json::to_value(item) {
+            if let Some(obj) = value.as_object() {
+                return obj.keys().cloned().collect();
+            }
         }
+        vec!["value".to_string()]
     }
 
     fn get_values<T: serde::Serialize>(item: &T) -> Vec<String> {
-        if let Some(obj) = serde_json::to_value(item).ok().and_then(|v| v.as_object()) {
-            obj.values()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => format!("\"{}\"", s.replace('"', "\"\"")),
-                    serde_json::Value::Null => "".to_string(),
-                    other => other.to_string(),
-                })
-                .collect()
-        } else {
-            vec![serde_json::to_string(item).unwrap_or_default()]
+        if let Ok(value) = serde_json::to_value(item) {
+            if let Some(obj) = value.as_object() {
+                return obj.values()
+                    .map(|v| match v {
+                        serde_json::Value::String(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+                        serde_json::Value::Null => "".to_string(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+            }
         }
+        vec![serde_json::to_string(item).unwrap_or_default()]
     }
 }
 
@@ -249,7 +251,7 @@ impl CollectionExporter {
         }
     }
 
-    pub fn export_collection<T: serde::Serialize>(
+    pub fn export_collection<T: serde::Serialize + std::fmt::Debug>(
         &self,
         collection_name: &str,
         data: &[T],

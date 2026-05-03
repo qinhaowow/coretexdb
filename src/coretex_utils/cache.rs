@@ -118,7 +118,7 @@ pub struct TimedLRUCache<K, V> {
     misses: u64,
 }
 
-impl<K: Hash + Clone + Eq, V> TimedLRUCache<K, V> {
+impl<K: Hash + Clone + Eq, V: Clone> TimedLRUCache<K, V> {
     pub fn new(capacity: usize, ttl: Duration) -> Self {
         Self {
             capacity,
@@ -163,6 +163,15 @@ impl<K: Hash + Clone + Eq, V> TimedLRUCache<K, V> {
 
         self.cache.insert(key.clone(), (value, Instant::now()));
         self.access_order.push_back(key);
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        if let Some((value, _)) = self.cache.remove(key) {
+            self.access_order.retain(|k| k != key);
+            Some(value)
+        } else {
+            None
+        }
     }
 
     pub fn cleanup_expired(&mut self) {
@@ -254,7 +263,7 @@ impl<K: Hash + Clone + Eq + Send + Sync, V: Clone + Send + Sync> AsyncLRUCache<K
     }
 }
 
-impl<K, V> Default for LRUCache<K, V> {
+impl<K: Hash + Clone + Eq, V> Default for LRUCache<K, V> {
     fn default() -> Self {
         Self::new(1000)
     }
@@ -280,7 +289,7 @@ impl<K: Hash + Clone + Eq + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
             return Some(value);
         }
 
-        let l2 = self.l2.read().await;
+        let mut l2 = self.l2.write().await;
         if let Some(ref mut cache) = *l2 {
             if let Some(value) = cache.get(key) {
                 self.l1.put(key.clone(), value.clone()).await;
@@ -293,7 +302,7 @@ impl<K: Hash + Clone + Eq + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
     pub async fn put(&self, key: K, value: V) {
         self.l1.put(key.clone(), value.clone()).await;
         
-        let l2 = self.l2.read().await;
+        let mut l2 = self.l2.write().await;
         if let Some(ref mut cache) = *l2 {
             cache.put(key, value);
         }

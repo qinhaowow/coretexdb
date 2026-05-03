@@ -4,6 +4,7 @@ use tonic::{Request, Response, Status};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use async_trait::async_trait;
 
 use crate::CoreTexDB;
 
@@ -21,6 +22,7 @@ impl CoretexService {
 
 tonic::include_proto!("coretex");
 
+#[async_trait]
 impl self::coretex_service_server::CoretexService for CoretexService {
     async fn create_collection(
         &self,
@@ -88,10 +90,11 @@ impl self::coretex_service_server::CoretexService for CoretexService {
         let ids = db.insert_vectors(&req.collection, vectors)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+        let count = ids.len() as u32;
         
         Ok(Response::new(InsertVectorsResponse {
             ids,
-            count: ids.len() as u32,
+            count,
         }))
     }
 

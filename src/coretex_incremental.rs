@@ -52,8 +52,8 @@ impl Default for IndexConfig {
 }
 
 pub trait IndexTrait: Send + Sync {
-    fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String>;
-    fn remove(&self, id: &str) -> Result<(), String>;
+    fn add(&mut self, id: String, vector: Vec<f32>) -> Result<(), String>;
+    fn remove(&mut self, id: &str) -> Result<(), String>;
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, String>;
     fn size(&self) -> usize;
 }
@@ -114,11 +114,11 @@ impl IncrementalIndex {
         }
 
         {
-            let pending = self.pending_updates.write().await;
+            let mut pending = self.pending_updates.write().await;
             pending.push(IndexUpdate::Insert { id: id.clone(), vector: vector.clone() });
         }
 
-        if let Some(ref idx) = *self.index.read().await {
+        if let Some(ref mut idx) = *self.index.write().await {
             idx.add(id, vector)?;
         }
 
@@ -132,11 +132,11 @@ impl IncrementalIndex {
         }
 
         {
-            let pending = self.pending_updates.write().await;
+            let mut pending = self.pending_updates.write().await;
             pending.push(IndexUpdate::Remove { id: id.to_string() });
         }
 
-        if let Some(ref idx) = *self.index.read().await {
+        if let Some(ref mut idx) = *self.index.write().await {
             idx.remove(id)?;
         }
 
@@ -150,14 +150,14 @@ impl IncrementalIndex {
         }
 
         {
-            let pending = self.pending_updates.write().await;
+            let mut pending = self.pending_updates.write().await;
             pending.push(IndexUpdate::Update { 
                 id: id.to_string(), 
                 vector: vector.clone() 
             });
         }
 
-        if let Some(ref idx) = *self.index.read().await {
+        if let Some(ref mut idx) = *self.index.write().await {
             idx.remove(id)?;
             idx.add(id.to_string(), vector)?;
         }
@@ -184,17 +184,17 @@ impl IncrementalIndex {
         for update in updates {
             match update {
                 IndexUpdate::Insert { id, vector } => {
-                    if let Some(ref idx) = *self.index.read().await {
+                    if let Some(ref mut idx) = *self.index.write().await {
                         idx.add(id, vector)?;
                     }
                 },
                 IndexUpdate::Remove { id } => {
-                    if let Some(ref idx) = *self.index.read().await {
+                    if let Some(ref mut idx) = *self.index.write().await {
                         idx.remove(&id)?;
                     }
                 },
                 IndexUpdate::Update { id, vector } => {
-                    if let Some(ref idx) = *self.index.read().await {
+                    if let Some(ref mut idx) = *self.index.write().await {
                         idx.remove(&id)?;
                         idx.add(id, vector)?;
                     }
@@ -230,12 +230,12 @@ impl BruteForceIndex {
 }
 
 impl IndexTrait for BruteForceIndex {
-    fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+    fn add(&mut self, id: String, vector: Vec<f32>) -> Result<(), String> {
         self.vectors.insert(id, vector);
         Ok(())
     }
 
-    fn remove(&self, id: &str) -> Result<(), String> {
+    fn remove(&mut self, id: &str) -> Result<(), String> {
         self.vectors.remove(id);
         Ok(())
     }
@@ -279,12 +279,12 @@ impl HnswIndex {
 }
 
 impl IndexTrait for HnswIndex {
-    fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+    fn add(&mut self, id: String, vector: Vec<f32>) -> Result<(), String> {
         self.vectors.insert(id, vector);
         Ok(())
     }
 
-    fn remove(&self, id: &str) -> Result<(), String> {
+    fn remove(&mut self, id: &str) -> Result<(), String> {
         self.vectors.remove(id);
         Ok(())
     }
@@ -326,12 +326,12 @@ impl IvfIndex {
 }
 
 impl IndexTrait for IvfIndex {
-    fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+    fn add(&mut self, id: String, vector: Vec<f32>) -> Result<(), String> {
         self.vectors.insert(id, vector);
         Ok(())
     }
 
-    fn remove(&self, id: &str) -> Result<(), String> {
+    fn remove(&mut self, id: &str) -> Result<(), String> {
         self.vectors.remove(id);
         Ok(())
     }
@@ -371,12 +371,12 @@ impl PqIndex {
 }
 
 impl IndexTrait for PqIndex {
-    fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+    fn add(&mut self, id: String, vector: Vec<f32>) -> Result<(), String> {
         self.vectors.insert(id, vector);
         Ok(())
     }
 
-    fn remove(&self, id: &str) -> Result<(), String> {
+    fn remove(&mut self, id: &str) -> Result<(), String> {
         self.vectors.remove(id);
         Ok(())
     }

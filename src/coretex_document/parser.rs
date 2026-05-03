@@ -61,7 +61,7 @@ fn extract_text_from_pdf(data: &[u8]) -> Result<String, String> {
     text.push_str("PDF Document Content\n");
     text.push_str("Note: Full PDF parsing requires pdf-extract or similar crate\n");
     text.push_str(&format!("Document size: {} bytes\n", data.len()));
-    text
+    Ok(text)
 }
 
 pub struct ImageParser;

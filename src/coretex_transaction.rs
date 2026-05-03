@@ -15,14 +15,14 @@ pub struct TransactionManager {
 
 pub type TransactionId = u64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionState {
     Active,
     Committed,
     Aborted,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Transaction {
     pub id: TransactionId,
     pub state: TransactionState,
@@ -32,7 +32,7 @@ pub struct Transaction {
     pub isolation_level: IsolationLevel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsolationLevel {
     ReadUncommitted,
     ReadCommitted,
@@ -131,11 +131,12 @@ impl TransactionManager {
 
         {
             let mut wal = self.wal.write().await;
+            let lsn = wal.entries.len() as u64;
             wal.append(WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: WalOperation::Begin { txn_id },
-                lsn: wal.entries.len() as u64,
+                lsn,
             });
         }
 
@@ -161,11 +162,12 @@ impl TransactionManager {
 
         {
             let mut wal = self.wal.write().await;
+            let lsn = wal.entries.len() as u64;
             wal.append(WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: WalOperation::Commit { txn_id },
-                lsn: wal.entries.len() as u64,
+                lsn,
             });
         }
 
@@ -187,11 +189,12 @@ impl TransactionManager {
 
         {
             let mut wal = self.wal.write().await;
+            let lsn = wal.entries.len() as u64;
             wal.append(WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: WalOperation::Abort { txn_id },
-                lsn: wal.entries.len() as u64,
+                lsn,
             });
         }
 

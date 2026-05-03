@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StorageBackend {
     RocksDB,
     S3,
@@ -169,8 +169,8 @@ impl PersistenceManager {
                     let metadata_count = self.count_files_in_dir(&path.join("metadata")).await;
                     let size_bytes = self.dir_size(&path);
                     
-                    collections.insert(name, CollectionStorage {
-                        name: name.clone(),
+                    collections.insert(name.clone(), CollectionStorage {
+                        name,
                         vector_count,
                         metadata_count,
                         size_bytes,
@@ -226,9 +226,17 @@ impl PersistenceManager {
             .collect();
         
         if self.config.compression_enabled {
-            let compressed = Self::compress_data(&vector_bytes)?;
-            std::fs::write(&vector_path, compressed)
-                .map_err(|e| PersistenceError::IoError(e.to_string()))?;
+            #[cfg(feature = "compression")]
+            {
+                let compressed = Self::compress_data(&vector_bytes)?;
+                std::fs::write(&vector_path, compressed)
+                    .map_err(|e| PersistenceError::IoError(e.to_string()))?;
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                std::fs::write(&vector_path, &vector_bytes)
+                    .map_err(|e| PersistenceError::IoError(e.to_string()))?;
+            }
         } else {
             std::fs::write(&vector_path, &vector_bytes)
                 .map_err(|e| PersistenceError::IoError(e.to_string()))?;
@@ -274,7 +282,10 @@ impl PersistenceManager {
             .map_err(|e| PersistenceError::IoError(e.to_string()))?;
 
         if self.config.compression_enabled {
-            vector_bytes = Self::decompress_data(&vector_bytes)?;
+            #[cfg(feature = "compression")]
+            {
+                vector_bytes = Self::decompress_data(&vector_bytes)?;
+            }
         }
 
         let vector: Vec<f32> = vector_bytes

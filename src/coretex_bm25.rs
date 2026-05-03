@@ -149,7 +149,7 @@ impl BM25Index {
         });
 
         for term in query_tokens {
-            let tf = doc_tf.get(term).unwrap_or(&0) as f32;
+            let tf = *doc_tf.get(term).unwrap_or(&0) as f32;
             let idf_score = idf.get(term).copied().unwrap_or(0.0);
             
             let numerator = tf * (self.k1 + 1.0);

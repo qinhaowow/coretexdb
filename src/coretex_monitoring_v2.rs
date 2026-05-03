@@ -55,21 +55,21 @@ pub struct MetricsCollector {
     alert_sender: broadcast::Sender<Alert>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Counter {
     pub name: String,
     pub value: f64,
     pub labels: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gauge {
     pub name: String,
     pub value: f64,
     pub labels: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Histogram {
     pub name: String,
     pub buckets: HashMap<u64, u64>,
@@ -427,7 +427,6 @@ impl Default for DatabaseMetrics {
 
 impl MetricsCollector {
     pub async fn record_database_metrics(&self, metrics: DatabaseMetrics) {
-        let mut labels = HashMap::new();
         
         self.gauge("coretex_queries_total")
             .label("type", "total")

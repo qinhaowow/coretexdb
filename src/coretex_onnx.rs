@@ -1,6 +1,3 @@
-//! ONNX Runtime inference for CortexDB
-//! Supports text embedding models for vector generation
-
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
@@ -18,22 +15,24 @@ pub enum OnnxError {
     IoError(#[from] std::io::Error),
 }
 
+#[cfg(feature = "onnx")]
 pub struct OnnxInference {
-    session: ort::Session,
+    session: ort::session::Session,
     input_name: String,
     output_name: String,
     normalize: bool,
 }
 
+#[cfg(feature = "onnx")]
 impl OnnxInference {
     pub fn new(model_path: &str) -> Result<Self, OnnxError> {
-        let session = ort::SessionBuilder::new()
+        let mut session = ort::session::Session::builder()
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?
-            .with_model_from_file(model_path)
+            .commit_from_file(model_path)
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?;
 
-        let input_name = session.inputs[0].name.to_string();
-        let output_name = session.outputs[0].name.to_string();
+        let input_name = session.inputs()[0].name().to_string();
+        let output_name = session.outputs()[0].name().to_string();
 
         Ok(Self {
             session,
@@ -44,13 +43,13 @@ impl OnnxInference {
     }
 
     pub fn from_bytes(model_bytes: &[u8]) -> Result<Self, OnnxError> {
-        let session = ort::SessionBuilder::new()
+        let mut session = ort::session::Session::builder()
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?
-            .with_model_from_memory(model_bytes)
+            .commit_from_memory(model_bytes)
             .map_err(|e| OnnxError::ModelLoadError(e.to_string()))?;
 
-        let input_name = session.inputs[0].name.to_string();
-        let output_name = session.outputs[0].name.to_string();
+        let input_name = session.inputs()[0].name().to_string();
+        let output_name = session.outputs()[0].name().to_string();
 
         Ok(Self {
             session,
@@ -65,7 +64,7 @@ impl OnnxInference {
         self
     }
 
-    pub fn infer(&self, input_ids: &[i64], attention_mask: &[i64]) -> Result<Vec<f32>, OnnxError> {
+    pub fn infer(&mut self, input_ids: &[i64], attention_mask: &[i64]) -> Result<Vec<f32>, OnnxError> {
         let batch_size = 1;
         let seq_length = input_ids.len();
 
@@ -73,25 +72,26 @@ impl OnnxInference {
             (batch_size, seq_length),
             input_ids.to_vec(),
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
-        let input_ids_tensor = ort::Tensor::from_array(input_ids_array)
+        let input_ids_tensor = ort::value::Tensor::from_array(input_ids_array)
             .map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
         let attention_mask_array = Array2::from_shape_vec(
             (batch_size, seq_length),
             attention_mask.to_vec(),
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
-        let attention_mask_tensor = ort::Tensor::from_array(attention_mask_array)
+        let attention_mask_tensor = ort::value::Tensor::from_array(attention_mask_array)
             .map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
         let outputs = self.session.run(
-            vec![
-                input_ids_tensor.into(),
-                attention_mask_tensor.into(),
+            ort::inputs![
+                input_ids_tensor,
+                attention_mask_tensor,
             ]
         ).map_err(|e| OnnxError::InferenceError(e.to_string()))?;
 
-        let output_tensor = outputs[0].try_extract::<f32>().map_err(|e| OnnxError::InferenceError(e.to_string()))?;
-        let mut embeddings: Vec<f32> = output_tensor.view_data().iter().cloned().collect();
+        let (_, output_data) = outputs[0].try_extract_tensor::<f32>()
+            .map_err(|e| OnnxError::InferenceError(e.to_string()))?;
+        let mut embeddings: Vec<f32> = output_data.to_vec();
 
         if self.normalize {
             Self::normalize_vector(&mut embeddings);
@@ -100,7 +100,7 @@ impl OnnxInference {
         Ok(embeddings)
     }
 
-    pub fn infer_text(&self, text: &str, tokenizer: &impl Tokenizer) -> Result<Vec<f32>, OnnxError> {
+    pub fn infer_text(&mut self, text: &str, tokenizer: &impl Tokenizer) -> Result<Vec<f32>, OnnxError> {
         let (input_ids, attention_mask) = tokenizer.encode(text);
 
         let result = self.infer(&input_ids, &attention_mask)?;
@@ -108,7 +108,7 @@ impl OnnxInference {
         Ok(result)
     }
 
-    pub fn infer_batch(&self, texts: &[String], tokenizer: &impl Tokenizer) -> Result<Vec<Vec<f32>>, OnnxError> {
+    pub fn infer_batch(&mut self, texts: &[String], tokenizer: &impl Tokenizer) -> Result<Vec<Vec<f32>>, OnnxError> {
         let mut results = Vec::with_capacity(texts.len());
 
         for text in texts {
@@ -137,7 +137,7 @@ pub trait Tokenizer: Send + Sync {
 pub struct BertTokenizer {
     vocab: HashMap<String, i64>,
     reversed_vocab: Vec<String>,
-   unk_token_id: i64,
+    unk_token_id: i64,
     sep_token_id: i64,
     pad_token_id: i64,
     cls_token_id: i64,
@@ -223,7 +223,7 @@ impl BertTokenizer {
 impl Tokenizer for BertTokenizer {
     fn encode(&self, text: &str) -> (Vec<i64>, Vec<i64>) {
         let tokens = self.tokenize(text);
-        
+
         let mut input_ids = vec![self.cls_token_id];
         for token in &tokens {
             input_ids.push(self.get_id(token));
@@ -250,11 +250,13 @@ impl Tokenizer for BertTokenizer {
     }
 }
 
+#[cfg(feature = "onnx")]
 pub struct SentenceTransformer {
     inference: OnnxInference,
     tokenizer: BertTokenizer,
 }
 
+#[cfg(feature = "onnx")]
 impl SentenceTransformer {
     pub fn new(model_path: &str, vocab_path: &str) -> Result<Self, OnnxError> {
         let inference = OnnxInference::new(model_path)?;
@@ -266,11 +268,11 @@ impl SentenceTransformer {
         })
     }
 
-    pub fn encode(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, OnnxError> {
+    pub fn encode(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, OnnxError> {
         self.inference.infer_batch(texts, &self.tokenizer)
     }
 
-    pub fn encode_single(&self, text: &str) -> Result<Vec<f32>, OnnxError> {
+    pub fn encode_single(&mut self, text: &str) -> Result<Vec<f32>, OnnxError> {
         self.inference.infer_text(text, &self.tokenizer)
     }
 }
@@ -291,15 +293,15 @@ a
 is
 are
 "##;
-        
+
         let temp_dir = std::env::temp_dir();
         let vocab_path = temp_dir.join("vocab.txt");
         std::fs::write(&vocab_path, vocab).unwrap();
 
         let tokenizer = BertTokenizer::from_vocab_file(vocab_path.to_str().unwrap()).unwrap();
-        
+
         let (input_ids, attention_mask) = tokenizer.encode("the a is");
-        
+
         assert!(!input_ids.is_empty());
         assert_eq!(input_ids.len(), attention_mask.len());
 

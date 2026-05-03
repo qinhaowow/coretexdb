@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt, BufReader};
 use std::path::PathBuf;
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
@@ -60,7 +60,7 @@ impl WriteAheadLog {
         Ok(())
     }
 
-    pub async fn append(&self, entry: &WalEntry) -> std::io::Result<()> {
+    pub async fn append(&mut self, entry: &WalEntry) -> std::io::Result<()> {
         let serialized = serde_json::to_vec(entry)?;
         let entry_size = serialized.len() as u64;
         
@@ -85,7 +85,7 @@ impl WriteAheadLog {
         Ok(())
     }
 
-    async fn rotate(&self) -> std::io::Result<()> {
+    async fn rotate(&mut self) -> std::io::Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -133,14 +133,16 @@ impl WriteAheadLog {
     }
 
     pub async fn create_entry(
-        &self,
+        &mut self,
         entry_type: WalEntryType,
         collection: &str,
         data: serde_json::Value,
     ) -> std::io::Result<WalEntry> {
-        let mut counter = self.entry_counter.write().await;
-        *counter += 1;
-        let id = *counter;
+        let id = {
+            let mut counter = self.entry_counter.write().await;
+            *counter += 1;
+            *counter
+        };
         
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

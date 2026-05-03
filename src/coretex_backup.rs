@@ -370,7 +370,7 @@ impl BackupManager {
             let dst_path = dst.join(entry.file_name());
             
             if src_path.is_dir() {
-                Self::copy_dir(&src_path, &dst_path).await?;
+                Box::pin(Self::copy_dir(&src_path, &dst_path)).await?;
             } else {
                 fs::copy(&src_path, &dst_path)
                     .await
@@ -391,7 +391,7 @@ impl BackupManager {
                     if meta.is_file() {
                         total += meta.len();
                     } else if meta.is_dir() {
-                        total += Self::dir_size(&entry.path()).await;
+                        total += Box::pin(Self::dir_size(&entry.path())).await;
                     }
                 }
             }

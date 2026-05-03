@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use crate::{CoreTexDB, DbConfig, ApiConfig, start_server};
 
 /// Run the CLI
-pub fn run_cli() -> Result<(), Box<dyn Error>> {
+pub fn run_cli() -> Result<(), Box<dyn Error + Send + Sync>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         run_cli_async().await
@@ -230,10 +230,10 @@ async fn run_cli_async() -> Result<(), Box<dyn Error + Send + Sync>> {
                 Some(("info", info_matches)) => {
                     let name = info_matches.get_one::<String>("name").unwrap();
                     let db_ref = db.clone();
-                    
-                    match db_ref.read().await.get_collection(name).await {
+                    let db_guard = db_ref.read().await;
+                    match db_guard.get_collection(name).await {
                         Ok(schema) => {
-                            let count = db_ref.read().await.get_vectors_count(name).await.unwrap_or(0);
+                            let count = db_guard.get_vectors_count(name).await.unwrap_or(0);
                             println!("Collection: {}", schema.name);
                             println!("  Dimension: {}", schema.dimension);
                             println!("  Distance metric: {:?}", schema.distance_metric);
@@ -289,7 +289,8 @@ async fn run_cli_async() -> Result<(), Box<dyn Error + Send + Sync>> {
                     let id = get_matches.get_one::<String>("id").unwrap();
 
                     let db_ref = db.clone();
-                    match db_ref.read().await.get_vector(collection, id).await {
+                    let db_guard = db_ref.read().await;
+                    match db_guard.get_vector(collection, id).await {
                         Ok(Some((vector, metadata))) => {
                             println!("Vector ID: {}", id);
                             println!("Vector: {:?}", &vector[..10.min(vector.len())]);

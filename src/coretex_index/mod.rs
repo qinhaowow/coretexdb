@@ -17,28 +17,33 @@ pub struct SearchResult {
 #[async_trait]
 pub trait VectorIndex: Send + Sync {
     /// Add a vector to the index
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error>>;
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>>;
     
     /// Remove a vector from the index
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error>>;
+    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>>;
     
     /// Search for similar vectors
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>>;
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>>;
     
     /// Build the index (if needed)
-    async fn build(&self) -> Result<(), Box<dyn Error>>;
+    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
     
     /// Clear the index
-    async fn clear(&self) -> Result<(), Box<dyn Error>>;
+    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    
+    /// Clone the index into a box
+    fn clone_box(&self) -> Box<dyn VectorIndex>;
 }
 
 /// Brute-force index implementation
+#[derive(Clone)]
 pub struct BruteForceIndex {
     vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
     metric: String,
 }
 
 /// HNSW (Hierarchical Navigable Small World) index implementation
+#[derive(Clone)]
 pub struct HNSWIndex {
     vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
     metric: String,
@@ -50,6 +55,7 @@ pub struct HNSWIndex {
 }
 
 /// IVF (Inverted File) index implementation
+#[derive(Clone)]
 pub struct IVFIndex {
     vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
     metric: String,
@@ -61,6 +67,7 @@ pub struct IVFIndex {
 }
 
 /// Scalar index implementation for numerical values
+#[derive(Clone)]
 pub struct ScalarIndex {
     scalars: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, f32>>>,
     sorted_scalars: std::sync::Arc<tokio::sync::RwLock<Vec<(f32, String)>>>, // Sorted list of (value, ID) pairs
@@ -239,7 +246,7 @@ impl IVFIndex {
     
     /// Assign a vector to the nearest centroid
     fn assign_to_cluster(&self, vector: &[f32]) -> usize {
-        let centroids = self.centroids.read().unwrap();
+        let centroids = self.centroids.blocking_read();
         if centroids.is_empty() {
             return 0;
         }
@@ -270,7 +277,7 @@ impl ScalarIndex {
     
     /// Update the sorted list of scalars
     fn update_sorted(&self) {
-        let scalars = self.scalars.read().unwrap();
+        let scalars = self.scalars.blocking_read();
         let mut sorted = scalars.iter()
             .map(|(id, value)| (*value, id.clone()))
             .collect::<Vec<_>>();
@@ -289,25 +296,25 @@ impl ScalarIndex {
             })
         });
         
-        let mut sorted_scalars = self.sorted_scalars.write().unwrap();
+        let mut sorted_scalars = self.sorted_scalars.blocking_write();
         *sorted_scalars = sorted;
     }
 }
 
 #[async_trait]
 impl VectorIndex for BruteForceIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error>> {
+    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         Ok(vectors.remove(id).is_some())
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         let vectors = self.vectors.read().await;
         
         let mut results: Vec<SearchResult> = vectors
@@ -340,32 +347,36 @@ impl VectorIndex for BruteForceIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error>> {
+    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Brute-force index doesn't need building
         Ok(())
     }
     
-    async fn clear(&self) -> Result<(), Box<dyn Error>> {
+    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
         Ok(())
+    }
+    
+    fn clone_box(&self) -> Box<dyn VectorIndex> {
+        Box::new(self.clone())
     }
 }
 
 #[async_trait]
 impl VectorIndex for HNSWIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error>> {
+    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         Ok(vectors.remove(id).is_some())
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         let vectors = self.vectors.read().await;
         
         // For simplicity, we'll use a brute-force approach here
@@ -388,22 +399,26 @@ impl VectorIndex for HNSWIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error>> {
+    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // In a real HNSW implementation, we would build the graph structure here
         // For now, we'll just return Ok(())
         Ok(())
     }
     
-    async fn clear(&self) -> Result<(), Box<dyn Error>> {
+    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
         Ok(())
+    }
+    
+    fn clone_box(&self) -> Box<dyn VectorIndex> {
+        Box::new(self.clone())
     }
 }
 
 #[async_trait]
 impl VectorIndex for IVFIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
         
@@ -415,7 +430,7 @@ impl VectorIndex for IVFIndex {
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error>> {
+    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         let removed = vectors.remove(id).is_some();
         
@@ -427,7 +442,7 @@ impl VectorIndex for IVFIndex {
         Ok(removed)
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         let vectors = self.vectors.read().await;
         let vector_to_cluster = self.vector_to_cluster.read().await;
         
@@ -452,52 +467,13 @@ impl VectorIndex for IVFIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error>> {
+    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // In a real IVF implementation, we would run k-means clustering here
         // to compute the centroids
         Ok(())
     }
 
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
-        let vectors = self.vectors.read().await;
-        let vector_to_cluster = self.vector_to_cluster.read().await;
-        
-        let query_vec = query.to_vec();
-        let calculate_distance = self.calculate_distance;
-        
-        let results = tokio::task::spawn_blocking(move || {
-            let mut search_results: Vec<SearchResult> = vectors
-                .iter()
-                .map(|(id, vec)| {
-                    let distance = calculate_distance(&query_vec, vec);
-                    SearchResult {
-                        id: id.clone(),
-                        distance,
-                    }
-                })
-                .collect();
-            
-            search_results.sort_by(|a, b| {
-                a.distance.partial_cmp(&b.distance).unwrap_or_else(|| {
-                    if a.distance.is_nan() && b.distance.is_nan() {
-                        std::cmp::Ordering::Equal
-                    } else if a.distance.is_nan() {
-                        std::cmp::Ordering::Greater
-                    } else if b.distance.is_nan() {
-                        std::cmp::Ordering::Less
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
-            });
-            
-            search_results.into_iter().take(k).collect::<Vec<_>>()
-        }).await?;
-        
-        Ok(results)
-    }
-    
-    async fn clear(&self) -> Result<(), Box<dyn Error>> {
+    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
         
@@ -506,11 +482,15 @@ impl VectorIndex for IVFIndex {
         
         Ok(())
     }
+    
+    fn clone_box(&self) -> Box<dyn VectorIndex> {
+        Box::new(self.clone())
+    }
 }
 
 #[async_trait]
 impl VectorIndex for ScalarIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         // For scalar index, we'll use the first element of the vector as the scalar value
         if vector.is_empty() {
             return Err("Vector must not be empty for scalar index".into());
@@ -526,7 +506,7 @@ impl VectorIndex for ScalarIndex {
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error>> {
+    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut scalars = self.scalars.write().await;
         let removed = scalars.remove(id).is_some();
         
@@ -538,7 +518,7 @@ impl VectorIndex for ScalarIndex {
         Ok(removed)
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         // For scalar index, we'll use the first element of the query vector as the target value
         if query.is_empty() {
             return Err("Query vector must not be empty for scalar index".into());
@@ -566,13 +546,13 @@ impl VectorIndex for ScalarIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error>> {
+    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Update sorted list
         self.update_sorted();
         Ok(())
     }
     
-    async fn clear(&self) -> Result<(), Box<dyn Error>> {
+    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut scalars = self.scalars.write().await;
         scalars.clear();
         
@@ -580,6 +560,10 @@ impl VectorIndex for ScalarIndex {
         sorted_scalars.clear();
         
         Ok(())
+    }
+    
+    fn clone_box(&self) -> Box<dyn VectorIndex> {
+        Box::new(self.clone())
     }
 }
 
@@ -597,7 +581,7 @@ impl IndexManager {
     }
     
     /// Create a new index
-    pub async fn create_index(&self, name: &str, index_type: &str, metric: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn create_index(&self, name: &str, index_type: &str, metric: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut indexes = self.indexes.write().await;
         
         let index: Box<dyn VectorIndex> = match index_type {
@@ -613,16 +597,16 @@ impl IndexManager {
     }
     
     /// Get an index by name
-    pub async fn get_index(&self, name: &str) -> Result<Option<Box<dyn VectorIndex + 'static>>, Box<dyn Error>> {
+    pub async fn get_index(&self, name: &str) -> Result<Option<Box<dyn VectorIndex + 'static>>, Box<dyn Error + Send + Sync>> {
         let indexes = self.indexes.read().await;
         match indexes.get(name) {
-            Some(index) => Ok(Some(std::boxed::Box::clone(index))),
+            Some(index) => Ok(Some(index.clone_box())),
             None => Ok(None),
         }
     }
     
     /// Delete an index
-    pub async fn delete_index(&self, name: &str) -> Result<bool, Box<dyn Error>> {
+    pub async fn delete_index(&self, name: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut indexes = self.indexes.write().await;
         Ok(indexes.remove(name).is_some())
     }
@@ -762,7 +746,7 @@ impl PQIndex {
         let code = self.encode_vector(&vector, &codebook);
 
         let mut vectors = self.vectors.write().await;
-        vectors.insert(id, code);
+        vectors.insert(id.clone(), code);
 
         let mut original = self.original_vectors.write().await;
         original.insert(id, vector);

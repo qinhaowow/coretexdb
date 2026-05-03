@@ -76,9 +76,10 @@ impl VectorCompressor {
         let original_size = bytes.len();
         
         let compressed = self.algorithm.compress(&bytes)?;
+        let compressed_len = compressed.len();
         
         let compression_ratio = if original_size > 0 {
-            original_size as f64 / compressed.len() as f64
+            original_size as f64 / compressed_len as f64
         } else {
             1.0
         };
@@ -101,7 +102,7 @@ impl VectorCompressor {
         }
         {
             let mut comp = self.compressed_size.write().await;
-            *comp += compressed.len();
+            *comp += compressed_len;
         }
         
         Ok(cv)

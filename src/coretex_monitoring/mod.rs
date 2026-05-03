@@ -70,14 +70,16 @@ impl PrometheusMetrics {
         {
             let counters = self.counters.read().await;
             for (key, value) in counters.iter() {
-                output.push_str(&format!("{} {}\n", key.replace(':', '_'), value));
+                let key_safe = key.replace(':', "_");
+                output.push_str(&format!("{} {}\n", key_safe, value));
             }
         }
         
         {
             let gauges = self.gauges.read().await;
             for (key, value) in gauges.iter() {
-                output.push_str(&format!("{} {}\n", key.replace(':', '_'), value));
+                let key_safe = key.replace(':', "_");
+                output.push_str(&format!("{} {}\n", key_safe, value));
             }
         }
         
@@ -87,8 +89,9 @@ impl PrometheusMetrics {
                 if !values.is_empty() {
                     let sum: f64 = values.iter().sum();
                     let count = values.len() as f64;
-                    output.push_str(&format!("{}_sum {} {}\n", key.replace(':', '_'), sum, count));
-                    output.push_str(&format!("{}_count {} {}\n", key.replace(':', '_'), count, count));
+                    let key_safe = key.replace(':', "_");
+                    output.push_str(&format!("{}_sum {} {}\n", key_safe, sum, count));
+                    output.push_str(&format!("{}_count {} {}\n", key_safe, count, count));
                 }
             }
         }

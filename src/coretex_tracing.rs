@@ -208,15 +208,17 @@ impl SpanBuilder {
     }
 
     pub async fn with_kind(mut self, kind: SpanKind) -> Self {
-        let mut spans = self.tracer.active_spans.write().await;
-        if let Some(span) = spans.get_mut(&self.span_id) {
-            span.span_kind = kind;
+        {
+            let mut spans = self.tracer.active_spans.write().await;
+            if let Some(span) = spans.get_mut(&self.span_id) {
+                span.span_kind = kind;
+            }
         }
         self
     }
 
-    pub async fn start(self) -> &'static str {
-        &self.span_id
+    pub async fn start(self) -> String {
+        self.span_id
     }
 
     pub async fn end(self) {

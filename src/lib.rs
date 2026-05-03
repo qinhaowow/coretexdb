@@ -1,8 +1,13 @@
 //! CoreTexDB - A multimodal vector database for AI applications 
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+
+pub const DB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod coretex_core; 
 pub mod coretex_storage; 
@@ -62,8 +67,10 @@ pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
 pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
-pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result}; 
-pub use coretex_storage::{StorageEngine, MemoryStorage, PersistentStorage}; 
+pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
+pub use coretex_storage::{StorageEngine, MemoryStorage};
+#[cfg(feature = "rocksdb")]
+pub use coretex_storage::PersistentStorage; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
 pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
@@ -128,19 +135,70 @@ pub struct CoreTexDB {
     pub config: DbConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConfig {
     pub data_dir: String,
+    pub bin_dir: String,
+    pub log_dir: String,
+    pub wal_dir: String,
+    pub backup_dir: String,
+    pub include_dir: String,
     pub memory_only: bool,
     pub max_vectors_per_collection: usize,
+    pub create_dirs_on_init: bool,
 }
 
 impl Default for DbConfig {
     fn default() -> Self {
+        let base_dir = "./coretex_data".to_string();
         Self {
-            data_dir: "./data".to_string(),
+            data_dir: format!("{}/data", base_dir),
+            bin_dir: format!("{}/bin", base_dir),
+            log_dir: format!("{}/logs", base_dir),
+            wal_dir: format!("{}/wal", base_dir),
+            backup_dir: format!("{}/backup", base_dir),
+            include_dir: format!("{}/include", base_dir),
             memory_only: false,
             max_vectors_per_collection: 1000000,
+            create_dirs_on_init: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseMetadata {
+    pub version: String,
+    pub created_at: u64,
+    pub last_modified: u64,
+    pub collections: Vec<String>,
+}
+
+impl Default for DatabaseMetadata {
+    fn default() -> Self {
+        Self {
+            version: DB_VERSION.to_string(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            last_modified: 0,
+            collections: vec![],
+        }
+    }
+}
+
+impl DbConfig {
+    pub fn new(base_dir: &str) -> Self {
+        Self {
+            data_dir: format!("{}/data", base_dir),
+            bin_dir: format!("{}/bin", base_dir),
+            log_dir: format!("{}/logs", base_dir),
+            wal_dir: format!("{}/wal", base_dir),
+            backup_dir: format!("{}/backup", base_dir),
+            include_dir: format!("{}/include", base_dir),
+            memory_only: false,
+            max_vectors_per_collection: 1000000,
+            create_dirs_on_init: true,
         }
     }
 }
@@ -162,7 +220,10 @@ impl CoreTexDB {
         let storage: Box<dyn StorageEngine> = if config.memory_only {
             Box::new(MemoryStorage::new())
         } else {
-            Box::new(PersistentStorage::new(&config.data_dir))
+            #[cfg(feature = "rocksdb")]
+            { Box::new(PersistentStorage::new(&config.data_dir)) }
+            #[cfg(not(feature = "rocksdb"))]
+            { Box::new(MemoryStorage::new()) }
         };
         
         Self {
@@ -175,8 +236,90 @@ impl CoreTexDB {
     }
 
     pub async fn init(&self) -> Result<()> {
+        if self.config.create_dirs_on_init && !self.config.memory_only {
+            self.create_directories().await?;
+        }
+        
         let mut storage = self.storage.write().await;
-        storage.init().await.map_err(|e| CoreTexError::StorageError(e.to_string()))
+        storage.init().await.map_err(|e| CoreTexError::StorageError(e.to_string()))?;
+        
+        if !self.config.memory_only {
+            self.init_metadata().await?;
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn create_directories(&self) -> Result<()> {
+        let dirs = vec![
+            &self.config.data_dir,
+            &self.config.bin_dir,
+            &self.config.log_dir,
+            &self.config.wal_dir,
+            &self.config.backup_dir,
+            &self.config.include_dir,
+        ];
+        
+        for dir in dirs {
+            let path = PathBuf::from(dir);
+            if !path.exists() {
+                fs::create_dir_all(&path)
+                    .map_err(|e| CoreTexError::Io(e))?;
+            }
+        }
+        
+        let collections_dir = PathBuf::from(&self.config.data_dir).join("collections");
+        if !collections_dir.exists() {
+            fs::create_dir_all(&collections_dir)
+                .map_err(|e| CoreTexError::Io(e))?;
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn init_metadata(&self) -> Result<()> {
+        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
+        
+        if metadata_path.exists() {
+            let content = fs::read_to_string(&metadata_path)
+                .map_err(|e| CoreTexError::Io(e))?;
+            
+            let _metadata: DatabaseMetadata = serde_json::from_str(&content)
+                .map_err(|e| CoreTexError::ValidationError(format!("Invalid metadata format: {}", e)))?;
+        } else {
+            let metadata = DatabaseMetadata::default();
+            let content = serde_json::to_string_pretty(&metadata)
+                .map_err(|e| CoreTexError::Serialization(e))?;
+            fs::write(&metadata_path, content)
+                .map_err(|e| CoreTexError::Io(e))?;
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn load_metadata(&self) -> Result<DatabaseMetadata> {
+        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
+        
+        if !metadata_path.exists() {
+            return Ok(DatabaseMetadata::default());
+        }
+        
+        let content = fs::read_to_string(&metadata_path)
+            .map_err(|e| CoreTexError::Io(e))?;
+        
+        let metadata: DatabaseMetadata = serde_json::from_str(&content)
+            .map_err(|e| CoreTexError::ValidationError(format!("Invalid metadata format: {}", e)))?;
+        
+        Ok(metadata)
+    }
+    
+    pub async fn save_metadata(&self, metadata: &DatabaseMetadata) -> Result<()> {
+        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
+        let content = serde_json::to_string_pretty(metadata)
+            .map_err(|e| CoreTexError::Serialization(e))?;
+        fs::write(&metadata_path, content)
+            .map_err(|e| CoreTexError::Io(e))?;
+        Ok(())
     }
 
     pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
@@ -411,7 +554,7 @@ impl CoreTexDB {
         }
 
         let meta = metadata.unwrap_or(serde_json::json!({}));
-        collection_data.insert(id.to_string(), (vector, meta));
+        collection_data.insert(id.to_string(), (vector.clone(), meta));
 
         let index_name = format!("{}_hnsw", collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {

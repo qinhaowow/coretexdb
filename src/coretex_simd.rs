@@ -34,45 +34,49 @@ pub mod simd_utils {
         let mut i = 0;
 
         if is_x86_feature_detected!("fma") && is_x86_feature_detected!("avx") {
-            let mut acc0 = _mm256_setzero_ps();
-            let mut acc1 = _mm256_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm256_setzero_ps();
+                let mut acc1 = _mm256_setzero_ps();
 
-            while i + 16 <= len {
-                let a0 = _mm256_loadu_ps(&a[i]);
-                let b0 = _mm256_loadu_ps(&b[i]);
-                let a1 = _mm256_loadu_ps(&a[i + 8]);
-                let b1 = _mm256_loadu_ps(&b[i + 8]);
+                while i + 16 <= len {
+                    let a0 = _mm256_loadu_ps(&a[i]);
+                    let b0 = _mm256_loadu_ps(&b[i]);
+                    let a1 = _mm256_loadu_ps(&a[i + 8]);
+                    let b1 = _mm256_loadu_ps(&b[i + 8]);
 
-                acc0 = _mm256_fmadd_ps(a0, b0, acc0);
-                acc1 = _mm256_fmadd_ps(a1, b1, acc1);
+                    acc0 = _mm256_fmadd_ps(a0, b0, acc0);
+                    acc1 = _mm256_fmadd_ps(a1, b1, acc1);
 
-                i += 16;
+                    i += 16;
+                }
+
+                let sum256 = _mm256_add_ps(acc0, acc1);
+                let mut result = [0.0_f32; 8];
+                _mm256_storeu_ps(result.as_mut_ptr(), sum256);
+                sum += result.iter().sum::<f32>();
             }
-
-            let sum256 = _mm256_add_ps(acc0, acc1);
-            let mut result = [0.0_f32; 8];
-            _mm256_storeu_ps(&mut result, sum256);
-            sum += result.iter().sum::<f32>();
         } else if is_x86_feature_detected!("sse") {
-            let mut acc0 = _mm_setzero_ps();
-            let mut acc1 = _mm_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm_setzero_ps();
+                let mut acc1 = _mm_setzero_ps();
 
-            while i + 8 <= len {
-                let a0 = _mm_loadu_ps(&a[i]);
-                let b0 = _mm_loadu_ps(&b[i]);
-                let a1 = _mm_loadu_ps(&a[i + 4]);
-                let b1 = _mm_loadu_ps(&b[i + 4]);
+                while i + 8 <= len {
+                    let a0 = _mm_loadu_ps(&a[i]);
+                    let b0 = _mm_loadu_ps(&b[i]);
+                    let a1 = _mm_loadu_ps(&a[i + 4]);
+                    let b1 = _mm_loadu_ps(&b[i + 4]);
 
-                acc0 = _mm_mul_ps(a0, b0);
-                acc1 = _mm_mul_ps(a1, b1);
+                    acc0 = _mm_mul_ps(a0, b0);
+                    acc1 = _mm_mul_ps(a1, b1);
 
-                i += 8;
+                    i += 8;
+                }
+
+                let mut result = [0.0_f32; 4];
+                let sum128 = _mm_add_ps(acc0, acc1);
+                _mm_storeu_ps(result.as_mut_ptr(), sum128);
+                sum += result.iter().sum::<f32>();
             }
-
-            let mut result = [0.0_f32; 4];
-            let sum128 = _mm_add_ps(acc0, acc1);
-            _mm_storeu_ps(&mut result, sum128);
-            sum += result.iter().sum::<f32>();
         }
 
         while i < len {
@@ -99,51 +103,55 @@ pub mod simd_utils {
         let mut i = 0;
 
         if is_x86_feature_detected!("fma") && is_x86_feature_detected!("avx") {
-            let mut acc0 = _mm256_setzero_ps();
-            let mut acc1 = _mm256_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm256_setzero_ps();
+                let mut acc1 = _mm256_setzero_ps();
 
-            while i + 16 <= len {
-                let a0 = _mm256_loadu_ps(&a[i]);
-                let b0 = _mm256_loadu_ps(&b[i]);
-                let a1 = _mm256_loadu_ps(&a[i + 8]);
-                let b1 = _mm256_loadu_ps(&b[i + 8]);
+                while i + 16 <= len {
+                    let a0 = _mm256_loadu_ps(&a[i]);
+                    let b0 = _mm256_loadu_ps(&b[i]);
+                    let a1 = _mm256_loadu_ps(&a[i + 8]);
+                    let b1 = _mm256_loadu_ps(&b[i + 8]);
 
-                let diff0 = _mm256_sub_ps(a0, b0);
-                let diff1 = _mm256_sub_ps(a1, b1);
+                    let diff0 = _mm256_sub_ps(a0, b0);
+                    let diff1 = _mm256_sub_ps(a1, b1);
 
-                acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
-                acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+                    acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+                    acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
 
-                i += 16;
+                    i += 16;
+                }
+
+                let sum256 = _mm256_add_ps(acc0, acc1);
+                let mut result = [0.0_f32; 8];
+                _mm256_storeu_ps(result.as_mut_ptr(), sum256);
+                sum += result.iter().sum::<f32>();
             }
-
-            let sum256 = _mm256_add_ps(acc0, acc1);
-            let mut result = [0.0_f32; 8];
-            _mm256_storeu_ps(&mut result, sum256);
-            sum += result.iter().sum::<f32>();
         } else if is_x86_feature_detected!("sse") {
-            let mut acc0 = _mm_setzero_ps();
-            let mut acc1 = _mm_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm_setzero_ps();
+                let mut acc1 = _mm_setzero_ps();
 
-            while i + 8 <= len {
-                let a0 = _mm_loadu_ps(&a[i]);
-                let b0 = _mm_loadu_ps(&b[i]);
-                let a1 = _mm_loadu_ps(&a[i + 4]);
-                let b1 = _mm_loadu_ps(&b[i + 4]);
+                while i + 8 <= len {
+                    let a0 = _mm_loadu_ps(&a[i]);
+                    let b0 = _mm_loadu_ps(&b[i]);
+                    let a1 = _mm_loadu_ps(&a[i + 4]);
+                    let b1 = _mm_loadu_ps(&b[i + 4]);
 
-                let diff0 = _mm_sub_ps(a0, b0);
-                let diff1 = _mm_sub_ps(a1, b1);
+                    let diff0 = _mm_sub_ps(a0, b0);
+                    let diff1 = _mm_sub_ps(a1, b1);
 
-                acc0 = _mm_mul_ps(diff0, diff0);
-                acc1 = _mm_mul_ps(diff1, diff1);
+                    acc0 = _mm_mul_ps(diff0, diff0);
+                    acc1 = _mm_mul_ps(diff1, diff1);
 
-                i += 8;
+                    i += 8;
+                }
+
+                let mut result = [0.0_f32; 4];
+                let sum128 = _mm_add_ps(acc0, acc1);
+                _mm_storeu_ps(result.as_mut_ptr(), sum128);
+                sum += result.iter().sum::<f32>();
             }
-
-            let mut result = [0.0_f32; 4];
-            let sum128 = _mm_add_ps(acc0, acc1);
-            _mm_storeu_ps(&mut result, sum128);
-            sum += result.iter().sum::<f32>();
         }
 
         while i < len {
@@ -171,57 +179,61 @@ pub mod simd_utils {
         let mut i = 0;
 
         if is_x86_feature_detected!("avx") {
-            let mut acc0 = _mm256_setzero_ps();
-            let mut acc1 = _mm256_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm256_setzero_ps();
+                let mut acc1 = _mm256_setzero_ps();
 
-            while i + 16 <= len {
-                let a0 = _mm256_loadu_ps(&a[i]);
-                let b0 = _mm256_loadu_ps(&b[i]);
-                let a1 = _mm256_loadu_ps(&a[i + 8]);
-                let b1 = _mm256_loadu_ps(&b[i + 8]);
+                while i + 16 <= len {
+                    let a0 = _mm256_loadu_ps(&a[i]);
+                    let b0 = _mm256_loadu_ps(&b[i]);
+                    let a1 = _mm256_loadu_ps(&a[i + 8]);
+                    let b1 = _mm256_loadu_ps(&b[i + 8]);
 
-                let diff0 = _mm256_sub_ps(a0, b0);
-                let diff1 = _mm256_sub_ps(a1, b1);
+                    let diff0 = _mm256_sub_ps(a0, b0);
+                    let diff1 = _mm256_sub_ps(a1, b1);
 
-                let abs0 = _mm256_andnot_ps(diff0, diff0);
-                let abs1 = _mm256_andnot_ps(diff1, diff1);
+                    let abs0 = _mm256_andnot_ps(diff0, diff0);
+                    let abs1 = _mm256_andnot_ps(diff1, diff1);
 
-                acc0 = _mm256_add_ps(acc0, abs0);
-                acc1 = _mm256_add_ps(acc1, abs1);
+                    acc0 = _mm256_add_ps(acc0, abs0);
+                    acc1 = _mm256_add_ps(acc1, abs1);
 
-                i += 16;
+                    i += 16;
+                }
+
+                let sum256 = _mm256_add_ps(acc0, acc1);
+                let mut result = [0.0_f32; 8];
+                _mm256_storeu_ps(result.as_mut_ptr(), sum256);
+                sum += result.iter().sum::<f32>();
             }
-
-            let sum256 = _mm256_add_ps(acc0, acc1);
-            let mut result = [0.0_f32; 8];
-            _mm256_storeu_ps(&mut result, sum256);
-            sum += result.iter().sum::<f32>();
         } else if is_x86_feature_detected!("sse") {
-            let mut acc0 = _mm_setzero_ps();
-            let mut acc1 = _mm_setzero_ps();
+            unsafe {
+                let mut acc0 = _mm_setzero_ps();
+                let mut acc1 = _mm_setzero_ps();
 
-            while i + 8 <= len {
-                let a0 = _mm_loadu_ps(&a[i]);
-                let b0 = _mm_loadu_ps(&b[i]);
-                let a1 = _mm_loadu_ps(&a[i + 4]);
-                let b1 = _mm_loadu_ps(&b[i + 4]);
+                while i + 8 <= len {
+                    let a0 = _mm_loadu_ps(&a[i]);
+                    let b0 = _mm_loadu_ps(&b[i]);
+                    let a1 = _mm_loadu_ps(&a[i + 4]);
+                    let b1 = _mm_loadu_ps(&b[i + 4]);
 
-                let diff0 = _mm_sub_ps(a0, b0);
-                let diff1 = _mm_sub_ps(a1, b1);
+                    let diff0 = _mm_sub_ps(a0, b0);
+                    let diff1 = _mm_sub_ps(a1, b1);
 
-                let abs0 = _mm_andnot_ps(diff0, diff0);
-                let abs1 = _mm_andnot_ps(diff1, diff1);
+                    let abs0 = _mm_andnot_ps(diff0, diff0);
+                    let abs1 = _mm_andnot_ps(diff1, diff1);
 
-                acc0 = _mm_add_ps(acc0, abs0);
-                acc1 = _mm_add_ps(acc1, abs1);
+                    acc0 = _mm_add_ps(acc0, abs0);
+                    acc1 = _mm_add_ps(acc1, abs1);
 
-                i += 8;
+                    i += 8;
+                }
+
+                let mut result = [0.0_f32; 4];
+                let sum128 = _mm_add_ps(acc0, acc1);
+                _mm_storeu_ps(result.as_mut_ptr(), sum128);
+                sum += result.iter().sum::<f32>();
             }
-
-            let mut result = [0.0_f32; 4];
-            let sum128 = _mm_add_ps(acc0, acc1);
-            _mm_storeu_ps(&mut result, sum128);
-            sum += result.iter().sum::<f32>();
         }
 
         while i < len {
@@ -248,8 +260,8 @@ pub mod simd_utils {
         is_x86_feature_detected!("sse4.1")
     }
 
-    pub fn get_capabilities() -> SimdCapabilities {
-        SimdCapabilities {
+    pub fn get_capabilities() -> super::SimdCapabilities {
+        super::SimdCapabilities {
             has_avx: has_avx(),
             has_avx2: has_avx2(),
             has_fma: has_fma(),
@@ -320,8 +332,8 @@ pub mod simd_utils {
     pub fn has_fma() -> bool { false }
     pub fn has_sse() -> bool { false }
 
-    pub fn get_capabilities() -> SimdCapabilities {
-        SimdCapabilities {
+    pub fn get_capabilities() -> super::SimdCapabilities {
+        super::SimdCapabilities {
             has_avx: false,
             has_avx2: false,
             has_fma: false,

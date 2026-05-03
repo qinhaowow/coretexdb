@@ -96,9 +96,9 @@ impl TwoPhaseCommit {
         let mut transactions = self.transactions.write().await;
         transactions.insert(tx_id.clone(), transaction);
         
-        for participant in participants {
+        for participant in &participants {
             let mut participants = self.participants.write().await;
-            participants.insert(participant, ParticipantState {
+            participants.insert(participant.clone(), ParticipantState {
                 node_id: participant.clone(),
                 status: ParticipantStatus::Unknown,
                 last_heartbeat: Instant::now(),

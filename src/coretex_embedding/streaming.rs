@@ -54,12 +54,13 @@ impl Stream for EmbeddingStream {
 impl StreamingEmbedder {
     pub fn new(config: EmbeddingConfig) -> Self {
         let (sender, receiver) = mpsc::channel(1000);
+        let batch_size = config.batch_size;
         Self {
             config,
             buffer: Arc::new(RwLock::new(VecDeque::new())),
             sender: Some(sender),
             receiver: Some(receiver),
-            batch_size: config.batch_size,
+            batch_size,
             processed_count: Arc::new(RwLock::new(0)),
             error_count: Arc::new(RwLock::new(0)),
         }
@@ -81,7 +82,7 @@ impl StreamingEmbedder {
         results
     }
 
-    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<StreamResult>> {
+    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<StreamItem>> {
         self.receiver.take()
     }
 

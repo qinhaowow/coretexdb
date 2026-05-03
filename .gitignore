@@ -3,6 +3,13 @@ target/
 **/*.rs.bk 
 Cargo.lock 
 
+# Tools & SDK
+protoc/
+mingw64/
+x86_64-15.2.0/
+LLVM-*.exe
+rustup-init.exe
+
 # Python 
 __pycache__/ 
 *.py[cod] 

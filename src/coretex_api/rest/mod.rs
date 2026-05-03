@@ -2,7 +2,7 @@
 
 use axum::{
     routing::{get, post, delete, put},
-    Json, Router, Extension,
+    Json, Router, extract::State,
 };
 use tower_http::cors::{Any, CorsLayer};
 use serde::{Deserialize, Serialize};
@@ -173,7 +173,7 @@ pub struct ApiState {
     pub db: Arc<RwLock<CoreTexDB>>,
 }
 
-pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error>> {
+pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
     let db = CoreTexDB::new();
     db.init().await.map_err(|e| format!("Failed to init DB: {}", e))?;
 
@@ -181,7 +181,7 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error>> {
         db: Arc::new(RwLock::new(db)),
     };
 
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/health", get(health_check))
         .route("/api/collections", get(list_collections))
         .route("/api/collections", post(create_collection))
@@ -195,15 +195,20 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error>> {
         .route("/api/collections/:name/search", post(search))
         .route("/api/collections/:name/batch-search", post(batch_search))
         .route("/api/collections/:name/count", get(get_vectors_count))
-        .layer(Extension(Arc::new(state)));
+        .with_state(Arc::new(state));
 
-    if config.enable_cors {
+    let app = if config.enable_cors {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any);
-        app = app.layer(cors);
-    }
+        app.layer(
+            tower::ServiceBuilder::new()
+                .layer(cors)
+        )
+    } else {
+        app
+    };
 
     let addr = SocketAddr::new(
         config.address.parse().unwrap(),
@@ -227,7 +232,7 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error>> {
     println!("  GET  /api/collections/:name/count        - Get vectors count");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve::serve(listener, app).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
@@ -240,7 +245,7 @@ async fn health_check() -> Json<HealthResponse> {
 }
 
 async fn list_collections(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
 ) -> Json<ApiResponse<Vec<String>>> {
     let db = state.db.read().await;
     match db.list_collections().await {
@@ -250,7 +255,7 @@ async fn list_collections(
 }
 
 async fn create_collection(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     Json(req): Json<CreateCollectionRequest>,
 ) -> Json<ApiResponse<CollectionInfo>> {
     let db = state.db.read().await;
@@ -271,7 +276,7 @@ async fn create_collection(
 }
 
 async fn get_collection(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<ApiResponse<CollectionInfo>> {
     let db = state.db.read().await;
@@ -292,7 +297,7 @@ async fn get_collection(
 }
 
 async fn delete_collection(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
     let db = state.db.read().await;
@@ -304,7 +309,7 @@ async fn delete_collection(
 }
 
 async fn insert_vectors(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(req): Json<InsertVectorsRequest>,
 ) -> Json<ApiResponse<InsertVectorsResponse>> {
@@ -315,7 +320,7 @@ async fn insert_vectors(
         .map(|v| (v.id, v.vector, v.metadata.unwrap_or(serde_json::json!({}))))
         .collect();
     
-    let ids = vectors.iter().map(|(id, _, _)| id.clone()).collect();
+    let ids: Vec<String> = vectors.iter().map(|(id, _, _)| id.clone()).collect();
     
     match db.insert_vectors(&name, vectors).await {
         Ok(inserted_ids) => Json(ApiResponse::success(InsertVectorsResponse {
@@ -328,7 +333,7 @@ async fn insert_vectors(
 }
 
 async fn get_vector(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
 ) -> Json<ApiResponse<GetVectorResponse>> {
     let db = state.db.read().await;
@@ -345,7 +350,7 @@ async fn get_vector(
 }
 
 async fn delete_vectors(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(req): Json<DeleteVectorsRequest>,
 ) -> Json<ApiResponse<DeleteVectorsResponse>> {
@@ -361,7 +366,7 @@ async fn delete_vectors(
 }
 
 async fn search(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(req): Json<SearchRequest>,
 ) -> Json<ApiResponse<SearchResponse>> {
@@ -370,9 +375,9 @@ async fn search(
     
     match db.search(&name, req.vector, req.k, req.filter).await {
         Ok(results) => {
-            let data = state.db.read().await;
-            let data_lock = data.data.read().await;
-            let collection_data = data_lock.get(&name);
+            let db_guard = state.db.read().await;
+            let data_map = db_guard.data.read().await;
+            let collection_data = data_map.get(&name);
             
             let search_results: Vec<SearchResultItem> = results
                 .into_iter()
@@ -401,7 +406,7 @@ async fn search(
 }
 
 async fn get_vectors_count(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<ApiResponse<usize>> {
     let db = state.db.read().await;
@@ -413,7 +418,7 @@ async fn get_vectors_count(
 }
 
 async fn get_collection_stats(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<ApiResponse<CollectionStats>> {
     let db = state.db.read().await;
@@ -435,7 +440,7 @@ async fn get_collection_stats(
 }
 
 async fn update_vectors(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(req): Json<UpdateVectorsRequest>,
 ) -> Json<ApiResponse<UpdateVectorsResponse>> {
@@ -474,7 +479,7 @@ async fn update_vectors(
 }
 
 async fn batch_search(
-    Extension(state): Extension<Arc<ApiState>>,
+    State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(req): Json<BatchSearchRequest>,
 ) -> Json<ApiResponse<BatchSearchResponse>> {

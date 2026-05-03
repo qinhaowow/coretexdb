@@ -160,7 +160,7 @@ impl AuthService {
         };
         
         let roles_map = self.roles.clone();
-        let roles = roles_map.write().block_in_place();
+        let mut roles = roles_map.blocking_write();
         roles.insert("admin".to_string(), admin_role);
         roles.insert("user".to_string(), user_role);
         roles.insert("reader".to_string(), reader_role);
@@ -195,23 +195,24 @@ impl AuthService {
     }
 
     pub async fn authenticate(&self, username: &str, password: &str) -> Result<AuthToken, String> {
-        let users = self.users.read().await;
-        
-        let user = users
-            .values()
-            .find(|u| u.username == username && u.is_active)
-            .ok_or("Invalid username or password")?;
-        
-        if !self.verify_password(password, &user.password_hash) {
-            return Err("Invalid username or password".to_string());
-        }
-        
-        drop(users);
+        let user_id = {
+            let users = self.users.read().await;
+            let user = users
+                .values()
+                .find(|u| u.username == username && u.is_active)
+                .ok_or("Invalid username or password")?;
+            
+            if !self.verify_password(password, &user.password_hash) {
+                return Err("Invalid username or password".to_string());
+            }
+            
+            user.id.clone()
+        };
         
         let token = self.generate_token(username).await?;
         
         let mut users = self.users.write().await;
-        if let Some(user) = users.get_mut(&user.id) {
+        if let Some(user) = users.get_mut(&user_id) {
             user.last_login = Some(current_timestamp());
         }
         
@@ -333,7 +334,7 @@ impl AuthService {
 
     fn encode_jwt(&self, claims: &TokenClaims) -> Result<String, String> {
         let header = base64_encode(b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
-        let payload = base64_encode(serde_json::to_string(claims).map_err(|e| e.to_string())?);
+        let payload = base64_encode(serde_json::to_string(claims).map_err(|e| e.to_string())?.as_bytes());
         
         let signature = self.hmac_sha256(&format!("{}.{}", header, payload));
         
