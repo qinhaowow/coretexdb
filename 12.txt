@@ -1,0 +1,1035 @@
+warning: unused import: `std::path::Path`
+ --> src/coretex_storage/mod.rs:5:5
+  |
+5 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `bincode`
+ --> src/coretex_storage/mod.rs:8:5
+  |
+8 | use bincode;
+  |     ^^^^^^^
+
+warning: unused import: `SearchResult`
+ --> src/coretex_query/mod.rs:7:41
+  |
+7 | use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
+  |                                         ^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+  --> src/coretex_api/rest/mod.rs:13:5
+   |
+13 | use std::collections::HashMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DbConfig` and `SearchResult`
+  --> src/coretex_api/rest/mod.rs:15:24
+   |
+15 | use crate::{CoreTexDB, DbConfig, SearchResult};
+   |                        ^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `ArgAction`
+ --> src/coretex_cli/mod.rs:3:26
+  |
+3 | use clap::{Command, Arg, ArgAction};
+  |                          ^^^^^^^^^
+
+warning: unused import: `std::net::SocketAddr`
+ --> src/coretex_cli/mod.rs:7:5
+  |
+7 | use std::net::SocketAddr;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DbConfig`
+ --> src/coretex_cli/mod.rs:9:24
+  |
+9 | use crate::{CoreTexDB, DbConfig, ApiConfig, start_server};
+  |                        ^^^^^^^^
+
+warning: unused import: `AsyncReadExt`
+ --> src/coretex_utils/wal.rs:6:32
+  |
+6 | use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt, BufReader};
+  |                                ^^^^^^^^^^^^
+
+warning: unused import: `std::collections::VecDeque`
+ --> src/coretex_utils/wal.rs:8:5
+  |
+8 | use std::collections::VecDeque;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/coretex_utils/backup.rs:4:5
+  |
+4 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::sync::RwLock`
+ --> src/coretex_utils/backup.rs:6:5
+  |
+6 | use tokio::sync::RwLock;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::io::AsyncWriteExt`
+ --> src/coretex_utils/backup.rs:7:5
+  |
+7 | use tokio::io::AsyncWriteExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/coretex_utils/monitoring.rs:5:5
+  |
+5 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `EmbeddingResponse`
+  --> src/coretex_embedding/streaming.rs:11:59
+   |
+11 | use crate::coretex_embedding::{EmbeddingConfig, DataType, EmbeddingResponse};
+   |                                                           ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/coretex_grpc/coretex_service.rs:5:5
+  |
+5 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Instant`
+ --> src/coretex_timeseries/mod.rs:7:27
+  |
+7 | use std::time::{Duration, Instant};
+  |                           ^^^^^^^
+
+warning: variant `IVF_PQ` should have an upper camel case name
+  --> src/coretex_ann/mod.rs:18:5
+   |
+18 |     IVF_PQ,
+   |     ^^^^^^ help: convert the identifier to upper camel case: `IvfPq`
+   |
+   = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: unused import: `Duration`
+ --> src/coretex_auth/mod.rs:8:17
+  |
+8 | use std::time::{Duration, Instant};
+  |                 ^^^^^^^^
+
+warning: unused import: `Duration`
+ --> src/coretex_monitoring/mod.rs:7:17
+  |
+7 | use std::time::{Duration, Instant};
+  |                 ^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/coretex_security/mod.rs:4:5
+  |
+4 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/coretex_security/mod.rs:5:5
+  |
+5 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::sync::RwLock`
+ --> src/coretex_security/mod.rs:6:5
+  |
+6 | use tokio::sync::RwLock;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> src/coretex_security/mod.rs:7:13
+  |
+7 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `SystemTime` and `UNIX_EPOCH`
+ --> src/coretex_security/mod.rs:8:17
+  |
+8 | use std::time::{SystemTime, UNIX_EPOCH};
+  |                 ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/coretex_security/kms.rs:3:5
+  |
+3 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+  --> src/coretex_security/mod.rs:24:9
+   |
+24 |     use std::sync::Arc;
+   |         ^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::sync::RwLock`
+  --> src/coretex_security/mod.rs:25:9
+   |
+25 |     use tokio::sync::RwLock;
+   |         ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::Path`
+ --> src/coretex_onnx.rs:2:5
+  |
+2 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `ndarray::Array2`
+ --> src/coretex_onnx.rs:4:5
+  |
+4 | use ndarray::Array2;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `mpsc`
+ --> src/coretex_cdc.rs:6:19
+  |
+6 | use tokio::sync::{mpsc, RwLock, broadcast};
+  |                   ^^^^
+
+warning: unexpected `cfg` condition value: `embedded`
+   --> src/coretex_edge.rs:304:7
+    |
+304 | #[cfg(feature = "embedded")]
+    |       ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `compression`, `default`, `full`, `metrics`, `onnx`, `python`, and `rocksdb`
+    = help: consider adding `embedded` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `wasm`
+   --> src/coretex_edge.rs:319:7
+    |
+319 | #[cfg(feature = "wasm")]
+    |       ^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `compression`, `default`, `full`, `metrics`, `onnx`, `python`, and `rocksdb`
+    = help: consider adding `wasm` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `Duration`
+ --> src/coretex_failover.rs:6:17
+  |
+6 | use std::time::{Duration, Instant};
+  |                 ^^^^^^^^
+
+warning: unused import: `uuid::Uuid`
+ --> src/coretex_failover.rs:9:5
+  |
+9 | use uuid::Uuid;
+  |     ^^^^^^^^^^
+
+warning: unused import: `std::os::unix::fs::FileTypeExt`
+   --> src/coretex_persistence.rs:456:17
+    |
+456 |             use std::os::unix::fs::FileTypeExt;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration` and `SystemTime`
+ --> src/coretex_backup.rs:7:17
+  |
+7 | use std::time::{Duration, SystemTime};
+  |                 ^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `Duration` and `Instant`
+ --> src/coretex_monitoring_v2.rs:6:17
+  |
+6 | use std::time::{Duration, Instant};
+  |                 ^^^^^^^^  ^^^^^^^
+
+warning: unused import: `std::hash::Hash`
+ --> src/coretex_graph.rs:5:5
+  |
+5 | use std::hash::Hash;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unexpected `cfg` condition value: `s3`
+   --> src/coretex_lakehouse/storage.rs:111:7
+    |
+111 | #[cfg(feature = "s3")]
+    |       ^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `compression`, `default`, `full`, `metrics`, `onnx`, `python`, and `rocksdb`
+    = help: consider adding `s3` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: variable does not need to be mutable
+   --> src/coretex_ann/mod.rs:265:13
+    |
+265 |         let mut params = &mut self.config.parameters;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src/coretex_bm25.rs:70:17
+   |
+70 |             let mut unique_terms: HashSet<String> = doc.tokens.iter().cloned().collect();
+   |                 ----^^^^^^^^^^^^
+   |                 |
+   |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/coretex_tracing.rs:205:33
+    |
+205 |     pub async fn with_attribute(mut self, key: &str, value: &str) -> Self {
+    |                                 ----^^^^
+    |                                 |
+    |                                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/coretex_tracing.rs:210:28
+    |
+210 |     pub async fn with_kind(mut self, kind: SpanKind) -> Self {
+    |                            ----^^^^
+    |                            |
+    |                            help: remove this `mut`
+
+warning: unused import: `VectorIndex`
+ --> src/coretex_query/mod.rs:7:28
+  |
+7 | use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
+  |                            ^^^^^^^^^^^
+
+warning: unused variable: `vector_to_cluster`
+   --> src/coretex_index/mod.rs:447:13
+    |
+447 |         let vector_to_cluster = self.vector_to_cluster.read().await;
+    |             ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vector_to_cluster`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `query_code`
+   --> src/coretex_index/mod.rs:800:13
+    |
+800 |         let query_code = self.encode_vector(query, &codebook);
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_query_code`
+
+warning: unused variable: `params`
+  --> src/coretex_query/mod.rs:95:43
+   |
+95 |     async fn process_scalar_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+   |                                           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_params`
+
+warning: unused variable: `params`
+   --> src/coretex_query/mod.rs:133:42
+    |
+133 |     async fn process_range_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    |                                          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_params`
+
+warning: unused variable: `context`
+   --> src/coretex_api/graphql/mod.rs:325:41
+    |
+325 |     fn execute_collections_query(&self, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_context`
+
+warning: unused variable: `query`
+   --> src/coretex_api/graphql/mod.rs:331:36
+    |
+331 |     fn execute_search_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_query`
+
+warning: unused variable: `context`
+   --> src/coretex_api/graphql/mod.rs:331:49
+    |
+331 |     fn execute_search_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                                 ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_context`
+
+warning: unused variable: `query`
+   --> src/coretex_api/graphql/mod.rs:337:40
+    |
+337 |     fn execute_collection_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                        ^^^^^ help: if this is intentional, prefix it with an underscore: `_query`
+
+warning: unused variable: `context`
+   --> src/coretex_api/graphql/mod.rs:337:53
+    |
+337 |     fn execute_collection_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_context`
+
+warning: unused variable: `context`
+   --> src/coretex_api/graphql/mod.rs:343:45
+    |
+343 |     fn execute_mutation(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
+    |                                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_context`
+
+warning: unused variable: `i`
+   --> src/coretex_cli/mod.rs:387:17
+    |
+387 |             for i in 0..10.min(count) {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unused variable: `now`
+   --> src/coretex_utils/cache.rs:178:13
+    |
+178 |         let now = Instant::now();
+    |             ^^^ help: if this is intentional, prefix it with an underscore: `_now`
+
+warning: unused variable: `dimension`
+   --> src/coretex_ann/mod.rs:313:60
+    |
+313 |     pub fn recommend_parameters(&self, num_vectors: usize, dimension: usize) -> ANNParameters {
+    |                                                            ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dimension`
+
+warning: unused variable: `metric`
+   --> src/coretex_monitoring/mod.rs:281:37
+    |
+281 |     async fn check_threshold(&self, metric: &str, operator: &str, value: f64) -> bool {
+    |                                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_metric`
+
+warning: unused variable: `operator`
+   --> src/coretex_monitoring/mod.rs:281:51
+    |
+281 |     async fn check_threshold(&self, metric: &str, operator: &str, value: f64) -> bool {
+    |                                                   ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_operator`
+
+warning: unused variable: `value`
+   --> src/coretex_monitoring/mod.rs:281:67
+    |
+281 |     async fn check_threshold(&self, metric: &str, operator: &str, value: f64) -> bool {
+    |                                                                   ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: unused variable: `metric`
+   --> src/coretex_monitoring/mod.rs:285:32
+    |
+285 |     async fn check_rate(&self, metric: &str, duration_secs: u64, threshold: f64) -> bool {
+    |                                ^^^^^^ help: if this is intentional, prefix it with an underscore: `_metric`
+
+warning: unused variable: `duration_secs`
+   --> src/coretex_monitoring/mod.rs:285:46
+    |
+285 |     async fn check_rate(&self, metric: &str, duration_secs: u64, threshold: f64) -> bool {
+    |                                              ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_duration_secs`
+
+warning: unused variable: `threshold`
+   --> src/coretex_monitoring/mod.rs:285:66
+    |
+285 |     async fn check_rate(&self, metric: &str, duration_secs: u64, threshold: f64) -> bool {
+    |                                                                  ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_threshold`
+
+warning: unused variable: `name`
+   --> src/coretex_monitoring/mod.rs:325:42
+    |
+325 |     pub async fn create_dashboard(&self, name: &str) -> Result<String, String> {
+    |                                          ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+
+warning: unused variable: `metrics`
+   --> src/coretex_monitoring/mod.rs:329:38
+    |
+329 |     pub async fn push_metrics(&self, metrics: &str) -> Result<(), String> {
+    |                                      ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_metrics`
+
+warning: unused variable: `delete`
+   --> src/coretex_sql/mod.rs:544:36
+    |
+544 |     async fn execute_delete(&self, delete: SQLDelete) -> Result<SQLResult, String> {
+    |                                    ^^^^^^ help: if this is intentional, prefix it with an underscore: `_delete`
+
+warning: unused variable: `create_index`
+   --> src/coretex_sql/mod.rs:548:42
+    |
+548 |     async fn execute_create_index(&self, create_index: SQLCreateIndex) -> Result<SQLResult, String> {
+    |                                          ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_create_index`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:172:24
+    |
+172 |     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                        ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:176:26
+    |
+176 |     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:191:24
+    |
+191 |     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                        ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:195:26
+    |
+195 |     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:210:24
+    |
+210 |     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                        ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `data`
+   --> src/coretex_compression/mod.rs:214:26
+    |
+214 |     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: variable does not need to be mutable
+   --> src/coretex_compression/mod.rs:349:13
+    |
+349 |         let mut min_val = f32::MAX;
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/coretex_compression/mod.rs:350:13
+    |
+350 |         let mut max_val_f = f32::MIN;
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `min_val`
+   --> src/coretex_compression/mod.rs:349:13
+    |
+349 |         let mut min_val = f32::MAX;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_val`
+
+warning: unused variable: `max_val_f`
+   --> src/coretex_compression/mod.rs:350:13
+    |
+350 |         let mut max_val_f = f32::MIN;
+    |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_val_f`
+
+warning: unused variable: `cert`
+   --> src/coretex_security/mod.rs:135:42
+    |
+135 |         pub fn verify_server_cert(&self, cert: &[u8]) -> Result<bool, String> {
+    |                                          ^^^^ help: if this is intentional, prefix it with an underscore: `_cert`
+
+warning: unused variable: `doc_len`
+  --> src/coretex_bm25.rs:61:13
+   |
+61 |         let doc_len = doc.tokens.len() as f32;
+   |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_doc_len`
+
+warning: unused variable: `table`
+   --> src/coretex_cdc.rs:294:32
+    |
+294 |             CdcEvent::Insert { table, key, data, timestamp } => {
+    |                                ^^^^^ help: try ignoring the field: `table: _`
+
+warning: unused variable: `table`
+   --> src/coretex_cdc.rs:302:32
+    |
+302 |             CdcEvent::Update { table, key, new_data, timestamp, .. } => {
+    |                                ^^^^^ help: try ignoring the field: `table: _`
+
+warning: unused variable: `table`
+   --> src/coretex_cdc.rs:310:32
+    |
+310 |             CdcEvent::Delete { table, key, timestamp, .. } => {
+    |                                ^^^^^ help: try ignoring the field: `table: _`
+
+warning: unused variable: `target_field`
+   --> src/coretex_cdc.rs:323:14
+    |
+323 |         for (target_field, source_value) in self.field_mapping.iter() {
+    |              ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_target_field`
+
+warning: unused variable: `value`
+   --> src/coretex_cdc.rs:324:25
+    |
+324 |             if let Some(value) = data.get(source_value) {
+    |                         ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: unused variable: `transaction`
+   --> src/coretex_transaction.rs:209:13
+    |
+209 |         let transaction = active.get(&txn_id)
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_transaction`
+
+warning: unused variable: `conn`
+   --> src/coretex_websocket.rs:271:29
+    |
+271 |                 if let Some(conn) = self.connections.read().await.get(conn_id) {
+    |                             ^^^^ help: if this is intentional, prefix it with an underscore: `_conn`
+
+warning: unused variable: `filter`
+   --> src/coretex_permissions.rs:222:34
+    |
+222 |     fn check_metadata_conditions(filter: &MetadataPermissionFilter, scope: &PermissionScope) -> bool {
+    |                                  ^^^^^^ help: if this is intentional, prefix it with an underscore: `_filter`
+
+warning: unused variable: `roles`
+   --> src/coretex_permissions.rs:289:13
+    |
+289 |         let roles = self.roles.read().await;
+    |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_roles`
+
+warning: variable does not need to be mutable
+  --> src/coretex_rerank/pipeline.rs:70:68
+   |
+70 |     pub fn search_with_callback<F>(&mut self, query: &HybridQuery, mut fetch_docs: F) -> Vec<FusedResult>
+   |                                                                    ----^^^^^^^^^^
+   |                                                                    |
+   |                                                                    help: remove this `mut`
+
+warning: unused variable: `fetch_docs`
+  --> src/coretex_rerank/pipeline.rs:70:68
+   |
+70 |     pub fn search_with_callback<F>(&mut self, query: &HybridQuery, mut fetch_docs: F) -> Vec<FusedResult>
+   |                                                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fetch_docs`
+
+warning: unused variable: `doc`
+   --> src/coretex_lakehouse/policy.rs:129:30
+    |
+129 |     fn determine_tier(&self, doc: &DocumentMeta) -> StorageTier {
+    |                              ^^^ help: if this is intentional, prefix it with an underscore: `_doc`
+
+warning: fields `m`, `ef_construction`, `ef_search`, and `max_level` are never read
+  --> src/coretex_index/mod.rs:51:5
+   |
+47 | pub struct HNSWIndex {
+   |            --------- fields in this struct
+...
+51 |     m: usize, // Maximum number of connections per node
+   |     ^
+52 |     ef_construction: usize, // Size of the dynamic candidate list during construction
+   |     ^^^^^^^^^^^^^^^
+53 |     ef_search: usize, // Size of the dynamic candidate list during search
+   |     ^^^^^^^^^
+54 |     max_level: usize, // Maximum level of the graph
+   |     ^^^^^^^^^
+   |
+   = note: `HNSWIndex` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `nlist` and `nprobe` are never read
+  --> src/coretex_index/mod.rs:63:5
+   |
+59 | pub struct IVFIndex {
+   |            -------- fields in this struct
+...
+63 |     nlist: usize, // Number of clusters
+   |     ^^^^^
+64 |     nprobe: usize, // Number of clusters to probe during search
+   |     ^^^^^^
+   |
+   = note: `IVFIndex` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `select_neighbors` and `sort_results` are never used
+   --> src/coretex_index/mod.rs:174:8
+    |
+123 | impl HNSWIndex {
+    | -------------- associated items in this implementation
+...
+174 |     fn select_neighbors(&self, candidates: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<SearchResult> {
+    |        ^^^^^^^^^^^^^^^^
+...
+190 |     fn sort_results(results: &mut Vec<SearchResult>) {
+    |        ^^^^^^^^^^^^
+
+warning: fields `schema` and `resolvers` are never read
+  --> src/coretex_api/graphql/mod.rs:70:5
+   |
+69 | pub struct GraphQLExecutor {
+   |            --------------- fields in this struct
+70 |     schema: Arc<GraphQLSchema>,
+   |     ^^^^^^
+71 |     resolvers: Arc<RwLock<HashMap<String, GraphQLResolver>>>,
+   |     ^^^^^^^^^
+
+warning: field `current_node_id` is never read
+  --> src/coretex_utils/cluster.rs:36:5
+   |
+34 | pub struct ClusterManager {
+   |            -------------- field in this struct
+35 |     nodes: Arc<RwLock<HashMap<String, ClusterNode>>>,
+36 |     current_node_id: String,
+   |     ^^^^^^^^^^^^^^^
+
+warning: fields `model_name` and `device` are never read
+ --> src/coretex_embedding/text_embedding.rs:7:5
+  |
+6 | pub struct TextEmbeddingService {
+  |            -------------------- fields in this struct
+7 |     model_name: String,
+  |     ^^^^^^^^^^
+8 |     dimension: usize,
+9 |     device: String,
+  |     ^^^^^^
+  |
+  = note: `TextEmbeddingService` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `model_name` and `device` are never read
+ --> src/coretex_embedding/image_embedding.rs:7:5
+  |
+6 | pub struct ImageEmbeddingService {
+  |            --------------------- fields in this struct
+7 |     model_name: String,
+  |     ^^^^^^^^^^
+8 |     dimension: usize,
+9 |     device: String,
+  |     ^^^^^^
+  |
+  = note: `ImageEmbeddingService` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `model_name`, `device`, and `sample_rate` are never read
+  --> src/coretex_embedding/audio_embedding.rs:7:5
+   |
+ 6 | pub struct AudioEmbeddingService {
+   |            --------------------- fields in this struct
+ 7 |     model_name: String,
+   |     ^^^^^^^^^^
+ 8 |     dimension: usize,
+ 9 |     device: String,
+   |     ^^^^^^
+10 |     sample_rate: u32,
+   |     ^^^^^^^^^^^
+   |
+   = note: `AudioEmbeddingService` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `model_name`, `device`, and `frame_sample_rate` are never read
+  --> src/coretex_embedding/video_embedding.rs:7:5
+   |
+ 6 | pub struct VideoEmbeddingService {
+   |            --------------------- fields in this struct
+ 7 |     model_name: String,
+   |     ^^^^^^^^^^
+ 8 |     dimension: usize,
+ 9 |     device: String,
+   |     ^^^^^^
+10 |     frame_sample_rate: u32,
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `VideoEmbeddingService` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `model_name`, `device`, and `max_points` are never read
+  --> src/coretex_embedding/pointcloud_embedding.rs:7:5
+   |
+ 6 | pub struct PointCloudEmbeddingService {
+   |            -------------------------- fields in this struct
+ 7 |     model_name: String,
+   |     ^^^^^^^^^^
+ 8 |     dimension: usize,
+ 9 |     device: String,
+   |     ^^^^^^
+10 |     max_points: usize,
+   |     ^^^^^^^^^^
+   |
+   = note: `PointCloudEmbeddingService` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `config` is never read
+  --> src/coretex_embedding/streaming.rs:14:5
+   |
+13 | pub struct StreamingEmbedder {
+   |            ----------------- field in this struct
+14 |     config: EmbeddingConfig,
+   |     ^^^^^^
+
+warning: field `inner` is never read
+   --> src/coretex_embedding/streaming.rs:238:5
+    |
+237 | pub struct WindowedStreamEmbedder {
+    |            ---------------------- field in this struct
+238 |     inner: StreamingEmbedder,
+    |     ^^^^^
+
+warning: field `bounds` is never read
+   --> src/coretex_gis/mod.rs:206:5
+    |
+204 | struct RTree {
+    |        ----- field in this struct
+205 |     nodes: Vec<RTreeNode>,
+206 |     bounds: GeoBoundingBox,
+    |     ^^^^^^
+
+warning: field `name` is never read
+  --> src/coretex_timeseries/mod.rs:32:5
+   |
+31 | pub struct TimeSeries {
+   |            ---------- field in this struct
+32 |     name: String,
+   |     ^^^^
+
+warning: field `metrics` is never read
+  --> src/coretex_monitoring/mod.rs:27:5
+   |
+26 | pub struct PrometheusMetrics {
+   |            ----------------- field in this struct
+27 |     metrics: Arc<RwLock<HashMap<String, Metric>>>,
+   |     ^^^^^^^
+
+warning: field `metrics` is never read
+   --> src/coretex_monitoring/mod.rs:216:5
+    |
+213 | pub struct AlertManager {
+    |            ------------ field in this struct
+...
+216 |     metrics: Arc<DatabaseMetrics>,
+    |     ^^^^^^^
+
+warning: fields `config` and `http_client` are never read
+   --> src/coretex_monitoring/mod.rs:313:5
+    |
+312 | pub struct GrafanaClient {
+    |            ------------- fields in this struct
+313 |     config: GrafanaConfig,
+    |     ^^^^^^
+314 |     http_client: reqwest::Client,
+    |     ^^^^^^^^^^^
+
+warning: field `max_requests_per_minute` is never read
+   --> src/coretex_security/validation.rs:197:5
+    |
+196 | pub struct RateLimitValidator {
+    |            ------------------ field in this struct
+197 |     max_requests_per_minute: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `policies` is never read
+  --> src/coretex_security/network.rs:32:5
+   |
+31 | pub struct NetworkIsolation {
+   |            ---------------- field in this struct
+32 |     policies: Arc<RwLock<HashSet<String>>>,
+   |     ^^^^^^^^
+
+warning: field `config` is never read
+   --> src/coretex_security/mod.rs:127:9
+    |
+126 |     pub struct TlsClient {
+    |                --------- field in this struct
+127 |         config: TlsConfig,
+    |         ^^^^^^
+
+warning: field `mask_token_id` is never read
+   --> src/coretex_onnx.rs:144:5
+    |
+137 | pub struct BertTokenizer {
+    |            ------------- field in this struct
+...
+144 |     mask_token_id: i64,
+    |     ^^^^^^^^^^^^^
+
+warning: field `dimension` is never read
+   --> src/coretex_incremental.rs:219:5
+    |
+218 | struct BruteForceIndex {
+    |        --------------- field in this struct
+219 |     dimension: usize,
+    |     ^^^^^^^^^
+
+warning: fields `dimension`, `m`, and `ef_construction` are never read
+   --> src/coretex_incremental.rs:264:5
+    |
+263 | struct HnswIndex {
+    |        --------- fields in this struct
+264 |     dimension: usize,
+    |     ^^^^^^^^^
+265 |     m: usize,
+    |     ^
+266 |     ef_construction: usize,
+    |     ^^^^^^^^^^^^^^^
+
+warning: fields `dimension` and `nlist` are never read
+   --> src/coretex_incremental.rs:313:5
+    |
+312 | struct IvfIndex {
+    |        -------- fields in this struct
+313 |     dimension: usize,
+    |     ^^^^^^^^^
+314 |     nlist: usize,
+    |     ^^^^^
+
+warning: field `dimension` is never read
+   --> src/coretex_incremental.rs:360:5
+    |
+359 | struct PqIndex {
+    |        ------- field in this struct
+360 |     dimension: usize,
+    |     ^^^^^^^^^
+
+warning: field `config` is never read
+  --> src/coretex_cdc.rs:12:5
+   |
+ 9 | pub struct CdcEngine {
+   |            --------- field in this struct
+...
+12 |     config: CdcConfig,
+   |     ^^^^^^
+
+warning: fields `connection_string` and `slot_name` are never read
+   --> src/coretex_cdc.rs:100:5
+    |
+ 99 | pub struct PostgresCdcSource {
+    |            ----------------- fields in this struct
+100 |     connection_string: String,
+    |     ^^^^^^^^^^^^^^^^^
+101 |     slot_name: String,
+    |     ^^^^^^^^^
+
+warning: fields `connection_string` and `server_id` are never read
+   --> src/coretex_cdc.rs:140:5
+    |
+139 | pub struct MysqlCdcSource {
+    |            -------------- fields in this struct
+140 |     connection_string: String,
+    |     ^^^^^^^^^^^^^^^^^
+141 |     server_id: u32,
+    |     ^^^^^^^^^
+
+warning: fields `connection_string` and `collection` are never read
+   --> src/coretex_cdc.rs:180:5
+    |
+179 | pub struct MongodbCdcSource {
+    |            ---------------- fields in this struct
+180 |     connection_string: String,
+    |     ^^^^^^^^^^^^^^^^^
+181 |     collection: String,
+    |     ^^^^^^^^^^
+
+warning: field `target_collection` is never read
+   --> src/coretex_cdc.rs:265:5
+    |
+263 | pub struct VectorSyncHandler {
+    |            ----------------- field in this struct
+264 |     cdc_receiver: broadcast::Receiver<CdcEvent>,
+265 |     target_collection: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: field `config` is never read
+  --> src/coretex_edge.rs:12:5
+   |
+ 8 | pub struct EdgeDB {
+   |            ------ field in this struct
+...
+12 |     config: EdgeConfig,
+   |     ^^^^^^
+
+warning: fields `id` and `client_id` are never read
+   --> src/coretex_websocket.rs:140:5
+    |
+139 | struct Connection {
+    |        ---------- fields in this struct
+140 |     id: String,
+    |     ^^
+141 |     client_id: String,
+    |     ^^^^^^^^^
+
+warning: field `server_url` is never read
+   --> src/coretex_websocket.rs:320:5
+    |
+318 | pub struct WebSocketClient {
+    |            --------------- field in this struct
+319 |     client_id: String,
+320 |     server_url: String,
+    |     ^^^^^^^^^^
+
+warning: field `trace_id` is never read
+   --> src/coretex_tracing.rs:201:5
+    |
+198 | pub struct SpanBuilder {
+    |            ----------- field in this struct
+...
+201 |     trace_id: String,
+    |     ^^^^^^^^
+
+warning: field `config` is never read
+  --> src/coretex_lakehouse/lakehouse.rs:18:5
+   |
+12 | pub struct VectorLakehouse {
+   |            --------------- field in this struct
+...
+18 |     config: TierConfig,
+   |     ^^^^^^
+
+warning: comparison is useless due to type limits
+   --> src/coretex_security/validation.rs:143:16
+    |
+143 |             if num > 255 {
+    |                ^^^^^^^^^
+    |
+    = note: `#[warn(unused_comparisons)]` on by default
+
+warning: variable `N` should have a snake case name
+  --> src/coretex_bm25.rs:66:13
+   |
+66 |         let N = docs.len() as f32;
+   |             ^ help: convert the identifier to snake case: `n`
+   |
+   = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src/coretex_monitoring_v2.rs:99:20
+   |
+99 |     pub fn counter(&self, name: &str) -> CounterBuilder {
+   |                    ^^^^^                 ^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |                    |
+   |                    the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+99 |     pub fn counter(&self, name: &str) -> CounterBuilder<'_> {
+   |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src/coretex_monitoring_v2.rs:107:18
+    |
+107 |     pub fn gauge(&self, name: &str) -> GaugeBuilder {
+    |                  ^^^^^                 ^^^^^^^^^^^^ the same lifetime is hidden here
+    |                  |
+    |                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+107 |     pub fn gauge(&self, name: &str) -> GaugeBuilder<'_> {
+    |                                                    ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src/coretex_monitoring_v2.rs:115:22
+    |
+115 |     pub fn histogram(&self, name: &str) -> HistogramBuilder {
+    |                      ^^^^^                 ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                      |
+    |                      the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+115 |     pub fn histogram(&self, name: &str) -> HistogramBuilder<'_> {
+    |                                                            ++++
+
+warning: `coretexdb` (lib) generated 132 warnings (run `cargo fix --lib -p coretexdb` to apply 90 suggestions)
+     Running `/Users/runner/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name coretex --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=d2bde6e01b0de169 -C extra-filename=-84ba5ce8a46c72fa --out-dir /Users/runner/work/coretexdb/coretexdb/target/release/deps -C strip=debuginfo -L dependency=/Users/runner/work/coretexdb/coretexdb/target/release/deps --extern aes_gcm=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaes_gcm-762758ee3134b1ca.rlib --extern anyhow=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libanyhow-5dcd032dd1cb01fd.rlib --extern async_trait=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libasync_trait-4d8a059c233bb2ff.dylib --extern axum=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaxum-208a5f4991205c8d.rlib --extern base64=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbase64-dc2c4fbb833f198c.rlib --extern bincode=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbincode-e4438c93507946ec.rlib --extern chrono=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libchrono-4ac1537c3e633bf6.rlib --extern clap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libclap-0cedece7c7a19b27.rlib --extern config=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libconfig-770128ed0df939a8.rlib --extern coretexdb=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcoretexdb-518fb1e196834a21.rlib --extern cpufeatures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcpufeatures-b2132245bf96c393.rlib --extern crossbeam=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcrossbeam-9d802ec13dd4981d.rlib --extern dashmap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libdashmap-3ff320cb16e626df.rlib --extern flate2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libflate2-59e43e923d3a8101.rlib --extern futures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures-d5431e96869656b7.rlib --extern futures_util=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures_util-92ebd6786c4283cd.rlib --extern hex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhex-bd40e781efe199a5.rlib --extern hmac=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhmac-40380d1540569515.rlib --extern http_body=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhttp_body-25f2b6c3080b2a48.rlib --extern hyper=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhyper-93cb9da59f29bf4a.rlib --extern lazy_static=/Users/runner/work/coretexdb/coretexdb/target/release/deps/liblazy_static-459c20c2076bd0e6.rlib --extern metrics=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics-b249ffe9729df8ad.rlib --extern metrics_exporter_prometheus=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics_exporter_prometheus-cea743b532aeb33c.rlib --extern ndarray=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libndarray-ef135fb454ec5a26.rlib --extern parking_lot=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libparking_lot-cc91c6c72d5221d6.rlib --extern prost=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libprost-c53b2aaa25437b6d.rlib --extern rand=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librand-b8857db19f80fb76.rlib --extern rayon=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librayon-aa9f14f391387fb5.rlib --extern regex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libregex-460805fe1f4f5c82.rlib --extern reqwest=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libreqwest-3f79020861292f91.rlib --extern rustls=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librustls-1a7109c008916e31.rlib --extern serde=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde-26ce6655b79278d4.rlib --extern serde_json=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde_json-c934e5c1fb75d7d3.rlib --extern sha2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsha2-6fade43203a3db1c.rlib --extern snap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsnap-0ce6d4410ac9b8ee.rlib --extern thiserror=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libthiserror-f72b576b88c4c12a.rlib --extern tokio=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio-26665f2e3f339ccf.rlib --extern tokio_tungstenite=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio_tungstenite-56b5ec498fecdad0.rlib --extern toml=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtoml-ef8aa237c4ab52de.rlib --extern tonic=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtonic-02b11b0f6468f4c0.rlib --extern tower=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower-60d46dbee2a6bf15.rlib --extern tower_http=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower_http-ccb7ee5680a9a055.rlib --extern tracing=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing-068d879869774dee.rlib --extern tracing_subscriber=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing_subscriber-5318d248a887965f.rlib --extern uuid=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libuuid-7c91a47dafabc0d5.rlib -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/ring-15dfcd6d07b24cfb/out -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/zstd-sys-74a1b536b02c81c9/out`
+error[E0271]: expected `{async block@src/main.rs:8:1: 8:15}` to be a future that resolves to `Result<(), Box<dyn Error>>`, but it resolves to `Result<(), Box<dyn Error + Send + Sync>>`
+ --> src/main.rs:8:1
+  |
+8 | #[tokio::main]
+  | ^^^^^^^^^^^^^^ expected trait `std::error::Error`, found trait `std::error::Error + Send + Sync`
+  |
+  = note: expected enum `Result<_, Box<dyn std::error::Error>>`
+             found enum `Result<_, Box<dyn std::error::Error + Send + Sync>>`
+  = note: required for the cast from `&{async block@src/main.rs:8:1: 8:15}` to `&dyn Future<Output = Result<(), Box<dyn std::error::Error>>>`
+  = note: this error originates in the attribute macro `tokio::main` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> src/main.rs:10:5
+   |
+ 9 | async fn main() -> Result<(), Box<dyn std::error::Error>> {
+   |                    -------------------------------------- expected `Result<(), Box<(dyn std::error::Error + 'static)>>` because of return type
+10 |     run_cli()
+   |     ^^^^^^^^^ expected trait `std::error::Error`, found trait `std::error::Error + Send + Sync`
+   |
+   = note: expected enum `Result<_, Box<(dyn std::error::Error + 'static)>>`
+              found enum `Result<_, Box<dyn std::error::Error + Send + Sync>>`
+
+Some errors have detailed explanations: E0271, E0308.
+For more information about an error, try `rustc --explain E0271`.
+error: could not compile `coretexdb` (bin "coretex") due to 2 previous errors
+
+Caused by:
+  process didn't exit successfully: `/Users/runner/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name coretex --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg 'feature="compression"' --cfg 'feature="default"' --cfg 'feature="metrics"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compression", "default", "full", "metrics", "onnx", "python", "rocksdb"))' -C metadata=d2bde6e01b0de169 -C extra-filename=-84ba5ce8a46c72fa --out-dir /Users/runner/work/coretexdb/coretexdb/target/release/deps -C strip=debuginfo -L dependency=/Users/runner/work/coretexdb/coretexdb/target/release/deps --extern aes_gcm=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaes_gcm-762758ee3134b1ca.rlib --extern anyhow=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libanyhow-5dcd032dd1cb01fd.rlib --extern async_trait=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libasync_trait-4d8a059c233bb2ff.dylib --extern axum=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libaxum-208a5f4991205c8d.rlib --extern base64=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbase64-dc2c4fbb833f198c.rlib --extern bincode=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libbincode-e4438c93507946ec.rlib --extern chrono=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libchrono-4ac1537c3e633bf6.rlib --extern clap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libclap-0cedece7c7a19b27.rlib --extern config=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libconfig-770128ed0df939a8.rlib --extern coretexdb=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcoretexdb-518fb1e196834a21.rlib --extern cpufeatures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcpufeatures-b2132245bf96c393.rlib --extern crossbeam=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libcrossbeam-9d802ec13dd4981d.rlib --extern dashmap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libdashmap-3ff320cb16e626df.rlib --extern flate2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libflate2-59e43e923d3a8101.rlib --extern futures=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures-d5431e96869656b7.rlib --extern futures_util=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libfutures_util-92ebd6786c4283cd.rlib --extern hex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhex-bd40e781efe199a5.rlib --extern hmac=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhmac-40380d1540569515.rlib --extern http_body=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhttp_body-25f2b6c3080b2a48.rlib --extern hyper=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libhyper-93cb9da59f29bf4a.rlib --extern lazy_static=/Users/runner/work/coretexdb/coretexdb/target/release/deps/liblazy_static-459c20c2076bd0e6.rlib --extern metrics=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics-b249ffe9729df8ad.rlib --extern metrics_exporter_prometheus=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libmetrics_exporter_prometheus-cea743b532aeb33c.rlib --extern ndarray=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libndarray-ef135fb454ec5a26.rlib --extern parking_lot=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libparking_lot-cc91c6c72d5221d6.rlib --extern prost=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libprost-c53b2aaa25437b6d.rlib --extern rand=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librand-b8857db19f80fb76.rlib --extern rayon=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librayon-aa9f14f391387fb5.rlib --extern regex=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libregex-460805fe1f4f5c82.rlib --extern reqwest=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libreqwest-3f79020861292f91.rlib --extern rustls=/Users/runner/work/coretexdb/coretexdb/target/release/deps/librustls-1a7109c008916e31.rlib --extern serde=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde-26ce6655b79278d4.rlib --extern serde_json=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libserde_json-c934e5c1fb75d7d3.rlib --extern sha2=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsha2-6fade43203a3db1c.rlib --extern snap=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libsnap-0ce6d4410ac9b8ee.rlib --extern thiserror=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libthiserror-f72b576b88c4c12a.rlib --extern tokio=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio-26665f2e3f339ccf.rlib --extern tokio_tungstenite=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtokio_tungstenite-56b5ec498fecdad0.rlib --extern toml=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtoml-ef8aa237c4ab52de.rlib --extern tonic=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtonic-02b11b0f6468f4c0.rlib --extern tower=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower-60d46dbee2a6bf15.rlib --extern tower_http=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtower_http-ccb7ee5680a9a055.rlib --extern tracing=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing-068d879869774dee.rlib --extern tracing_subscriber=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libtracing_subscriber-5318d248a887965f.rlib --extern uuid=/Users/runner/work/coretexdb/coretexdb/target/release/deps/libuuid-7c91a47dafabc0d5.rlib -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/ring-15dfcd6d07b24cfb/out -L native=/Users/runner/work/coretexdb/coretexdb/target/release/build/zstd-sys-74a1b536b02c81c9/out` (exit status: 1)
+Error: Process completed with exit code 101.
