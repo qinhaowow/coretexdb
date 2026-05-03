@@ -106,13 +106,13 @@ mod tests {
         let bm25 = BM25Index::new(1.5, 0.75);
         
         let mut doc1 = Document::new("doc1".to_string(), "rust programming".to_string());
-        doc1 = doc1.with_field("category", "programming");
+        doc1 = doc1.with_field("category", "programming".to_string());
         
         let mut doc2 = Document::new("doc2".to_string(), "python programming".to_string());
-        doc2 = doc2.with_field("category", "programming");
+        doc2 = doc2.with_field("category", "programming".to_string());
         
         let mut doc3 = Document::new("doc3".to_string(), "machine learning".to_string());
-        doc3 = doc3.with_field("category", "ai");
+        doc3 = doc3.with_field("category", "ai".to_string());
         
         bm25.add_document(doc1).await.unwrap();
         bm25.add_document(doc2).await.unwrap();
