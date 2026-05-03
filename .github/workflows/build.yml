@@ -49,6 +49,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
+        echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+        echo "protoc path: $(which protoc)"
 
     - name: Install system dependencies (macOS)
       if: matrix.os == 'macos-latest'
