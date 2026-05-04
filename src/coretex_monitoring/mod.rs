@@ -323,11 +323,130 @@ impl GrafanaClient {
     }
 
     pub async fn create_dashboard(&self, name: &str) -> Result<String, String> {
-        Err("Grafana integration requires 'reqwest' feature".to_string())
+        let url = format!("{}/api/dashboards/db", self.config.api_url.trim_end_matches('/'));
+
+        let dashboard = serde_json::json!({
+            "dashboard": {
+                "title": name,
+                "tags": ["coretexdb", "monitoring"],
+                "timezone": "browser",
+                "schemaVersion": 36,
+                "panels": [
+                    {
+                        "title": "Vector Operations",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+                        "targets": [
+                            {
+                                "expr": "rate(coretex_vector_operations_total[1m])",
+                                "legendFormat": "{{operation}}",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Query Latency (p99)",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+                        "targets": [
+                            {
+                                "expr": "histogram_quantile(0.99, rate(coretex_query_duration_seconds_bucket[1m]))",
+                                "legendFormat": "{{query_type}}",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Memory Usage",
+                        "type": "gauge",
+                        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "coretex_memory_usage_bytes",
+                                "legendFormat": "memory",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Active Connections",
+                        "type": "stat",
+                        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "coretex_active_connections",
+                                "legendFormat": "connections",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Error Rate",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "rate(coretex_errors_total[1m])",
+                                "legendFormat": "{{error_type}}",
+                                "refId": "A"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "overwrite": true
+        });
+
+        let auth_header = format!("Bearer {}", self.config.api_key);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .json(&dashboard)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to create Grafana dashboard: {}", e))?;
+
+        let status = response.status();
+        let body = response.text().await
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        if status.is_success() {
+            let parsed: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| format!("Failed to parse response: {}", e))?;
+            let uid = parsed["uid"].as_str()
+                .or_else(|| parsed["dashboard"]["uid"].as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(uid)
+        } else {
+            Err(format!("Grafana API error ({}): {}", status, body))
+        }
     }
 
     pub async fn push_metrics(&self, metrics: &str) -> Result<(), String> {
-        Err("Grafana integration requires 'reqwest' feature".to_string())
+        let url = format!("{}/api/datasources/proxy/1/api/v1/push", self.config.api_url.trim_end_matches('/'));
+
+        let auth_header = format!("Bearer {}", self.config.api_key);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "text/plain")
+            .body(metrics.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Failed to push metrics to Grafana: {}", e))?;
+
+        let status = response.status();
+
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Grafana push metrics error ({}): {}", status, body))
+        }
     }
 }
 

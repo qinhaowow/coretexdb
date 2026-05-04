@@ -20,10 +20,12 @@ pub struct HybridRetriever {
 
 pub trait VectorRetriever: Send + Sync {
     fn search(&self, vector: &[f32], k: usize, metric: DistanceMetric) -> Vec<SearchResult>;
+    fn add_vector(&self, id: &str, vector: &[f32]);
 }
 
 pub trait TextRetriever: Send + Sync {
     fn search(&self, query: &str, k: usize) -> Vec<TextSearchResult>;
+    fn add_text(&self, id: &str, text: &str);
 }
 
 #[derive(Debug, Clone)]
@@ -67,16 +69,16 @@ impl HybridRetriever {
 
     pub async fn index_document(&self, doc: &MultiModalDocument) -> Result<(), String> {
         if let Some(ref vector) = doc.vector {
-            let mut index = self.vector_index.write().await;
-            if let Some(ref mut idx) = *index {
-                idx.search(&vector.values, 1, DistanceMetric::Cosine);
+            let index = self.vector_index.read().await;
+            if let Some(ref idx) = *index {
+                idx.add_vector(&doc.id, &vector.values);
             }
         }
 
         if let Some(ref text) = doc.text {
-            let mut index = self.text_index.write().await;
-            if let Some(ref mut idx) = *index {
-                idx.search(&text.content, 1);
+            let index = self.text_index.read().await;
+            if let Some(ref idx) = *index {
+                idx.add_text(&doc.id, &text.content);
             }
         }
 
@@ -159,10 +161,38 @@ impl HybridRetriever {
             return false;
         };
 
+        let filter_val = serde_json::to_value(&filter.value).unwrap_or(serde_json::Value::Null);
+
         match &filter.operator {
-            FilterOperator::Eq => doc_value == &serde_json::to_value(&filter.value).unwrap_or(serde_json::Value::Null),
-            FilterOperator::Ne => doc_value != &serde_json::to_value(&filter.value).unwrap_or(serde_json::Value::Null),
-            _ => true,
+            FilterOperator::Eq => doc_value == &filter_val,
+            FilterOperator::Ne => doc_value != &filter_val,
+            FilterOperator::Gt => {
+                compare_values(doc_value, &filter_val) == Some(std::cmp::Ordering::Greater)
+            }
+            FilterOperator::Gte => {
+                matches!(compare_values(doc_value, &filter_val), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
+            }
+            FilterOperator::Lt => {
+                compare_values(doc_value, &filter_val) == Some(std::cmp::Ordering::Less)
+            }
+            FilterOperator::Lte => {
+                matches!(compare_values(doc_value, &filter_val), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+            }
+            FilterOperator::In => {
+                if let serde_json::Value::Array(arr) = &filter_val {
+                    arr.contains(doc_value)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Between { and } => {
+                let lower = &filter_val;
+                let upper = serde_json::to_value(and).unwrap_or(serde_json::Value::Null);
+                let cmp_lower = compare_values(doc_value, lower);
+                let cmp_upper = compare_values(doc_value, &upper);
+                matches!(cmp_lower, Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
+                    && matches!(cmp_upper, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+            }
         }
     }
 
@@ -221,6 +251,11 @@ impl VectorRetriever for BruteForceVectorAdapter {
 
         results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
         results.into_iter().take(k).collect()
+    }
+
+    fn add_vector(&self, id: &str, vector: &[f32]) {
+        let mut index = self.index.blocking_write();
+        index.push((id.to_string(), vector.to_vec()));
     }
 }
 
@@ -281,6 +316,37 @@ impl TextRetriever for BM25TextAdapter {
                 .map(|r| TextSearchResult { id: r.id, score: r.score })
                 .collect()
         })
+    }
+
+    fn add_text(&self, id: &str, text: &str) {
+        let doc = crate::coretex_bm25::Document::new(id.to_string(), text.to_string());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let _ = self.index.add_document(doc).await;
+        });
+    }
+}
+
+fn compare_values(a: &serde_json::Value, b: &serde_json::Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (serde_json::Value::Number(an), serde_json::Value::Number(bn)) => {
+            if let (Some(af), Some(bf)) = (an.as_f64(), bn.as_f64()) {
+                af.partial_cmp(&bf)
+            } else if let (Some(ai), Some(bi)) = (an.as_i64(), bn.as_i64()) {
+                Some(ai.cmp(&bi))
+            } else if let (Some(au), Some(bu)) = (an.as_u64(), bn.as_u64()) {
+                Some(au.cmp(&bu))
+            } else {
+                None
+            }
+        }
+        (serde_json::Value::String(as_), serde_json::Value::String(bs_)) => {
+            Some(as_.cmp(bs_))
+        }
+        (serde_json::Value::Bool(ab), serde_json::Value::Bool(bb)) => {
+            Some(ab.cmp(bb))
+        }
+        _ => None,
     }
 }
 

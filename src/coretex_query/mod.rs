@@ -93,6 +93,27 @@ impl DefaultQueryProcessor {
     }
 
     async fn process_scalar_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+        let target = params.vector.as_ref().and_then(|v| v.first().copied()).unwrap_or(0.0);
+        
+        if let Ok(Some(index)) = self.index_manager.get_index(&params.index_name).await {
+            let query_vec = vec![target];
+            let results = index.search(&query_vec, params.top_k).await?;
+            
+            let items: Vec<QueryItem> = results
+                .into_iter()
+                .map(|r| QueryItem {
+                    id: r.id,
+                    score: 1.0 / (1.0 + r.distance),
+                    distance: r.distance,
+                })
+                .collect();
+            
+            return Ok(QueryResult {
+                results: items,
+                execution_time_ms: 0,
+            });
+        }
+        
         Ok(QueryResult {
             results: vec![],
             execution_time_ms: 0,
@@ -131,6 +152,32 @@ impl DefaultQueryProcessor {
     }
 
     async fn process_range_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+        let min_val = params.scalar_min.unwrap_or(f32::MIN);
+        let max_val = params.scalar_max.unwrap_or(f32::MAX);
+        
+        if let Ok(Some(index)) = self.index_manager.get_index(&params.index_name).await {
+            let all_results = index.search(&[0.0f32; 4], usize::MAX).await?;
+            
+            let items: Vec<QueryItem> = all_results
+                .into_iter()
+                .filter(|r| {
+                    let val = r.id.parse::<f32>().unwrap_or(f32::MAX);
+                    val >= min_val && val <= max_val
+                })
+                .map(|r| QueryItem {
+                    id: r.id,
+                    score: 1.0 / (1.0 + r.distance),
+                    distance: r.distance,
+                })
+                .take(params.top_k)
+                .collect();
+            
+            return Ok(QueryResult {
+                results: items,
+                execution_time_ms: 0,
+            });
+        }
+        
         Ok(QueryResult {
             results: vec![],
             execution_time_ms: 0,

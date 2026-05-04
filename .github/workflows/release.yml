@@ -23,7 +23,7 @@ jobs:
           toolchain: nightly
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --features full
 
       - name: Compress binary
         run: |

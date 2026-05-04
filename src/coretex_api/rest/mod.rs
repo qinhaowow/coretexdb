@@ -375,16 +375,14 @@ async fn search(
     
     match db.search(&name, req.vector, req.k, req.filter).await {
         Ok(results) => {
-            let db_guard = state.db.read().await;
-            let data_map = db_guard.data.read().await;
-            let collection_data = data_map.get(&name);
+            let ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+            let vectors = db.get_vectors_by_ids(&name, &ids).await.unwrap_or_default();
+            let vector_map: std::collections::HashMap<String, (Vec<f32>, serde_json::Value)> = vectors.into_iter().collect();
             
             let search_results: Vec<SearchResultItem> = results
                 .into_iter()
                 .map(|r| {
-                    let metadata = collection_data
-                        .and_then(|cd| cd.get(&r.id))
-                        .map(|(_, m)| m.clone());
+                    let metadata = vector_map.get(&r.id).map(|(_, m)| m.clone());
                     
                     SearchResultItem {
                         id: r.id,
@@ -491,15 +489,14 @@ async fn batch_search(
     for query in req.queries {
         match db.search(&name, query, req.k, req.filter.clone()).await {
             Ok(results) => {
-                let data_lock = db.data.read().await;
-                let collection_data = data_lock.get(&name);
+                let ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+                let vectors = db.get_vectors_by_ids(&name, &ids).await.unwrap_or_default();
+                let vector_map: std::collections::HashMap<String, (Vec<f32>, serde_json::Value)> = vectors.into_iter().collect();
                 
                 let search_results: Vec<SearchResultItem> = results
                     .into_iter()
                     .map(|r| {
-                        let metadata = collection_data
-                            .and_then(|cd| cd.get(&r.id))
-                            .map(|(_, m)| m.clone());
+                        let metadata = vector_map.get(&r.id).map(|(_, m)| m.clone());
                         
                         SearchResultItem {
                             id: r.id,
