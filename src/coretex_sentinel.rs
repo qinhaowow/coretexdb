@@ -6,6 +6,8 @@ use tokio::time;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::coretex_failover::{VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse, RaftRpc, HttpRaftRpc};
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SentinelNodeRole {
     Leader,
@@ -84,10 +86,39 @@ pub struct SentinelManager {
     event_sender: broadcast::Sender<SentinelEvent>,
     failover_in_progress: Arc<RwLock<bool>>,
     leader_last_seen: Arc<RwLock<Instant>>,
+    rpc: Arc<dyn RaftRpc>,
 }
 
 impl SentinelManager {
     pub fn new(config: SentinelConfig) -> Self {
+        let (event_sender, _) = broadcast::channel(1000);
+        let rpc = Arc::new(HttpRaftRpc::new(config.election_timeout_ms));
+
+        let local_node = SentinelNode {
+            node_id: config.sentinel_id.clone(),
+            address: config.monitor_address.clone(),
+            port: config.monitor_port,
+            role: SentinelNodeRole::Follower,
+            status: NodeStatus::Online,
+            last_heartbeat: chrono::Utc::now().timestamp(),
+            term: 0,
+            data_lag: 0,
+        };
+
+        Self {
+            config,
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+            local_node: Arc::new(RwLock::new(local_node)),
+            current_term: Arc::new(RwLock::new(0)),
+            voted_for: Arc::new(RwLock::new(None)),
+            event_sender,
+            failover_in_progress: Arc::new(RwLock::new(false)),
+            leader_last_seen: Arc::new(RwLock::new(Instant::now())),
+            rpc,
+        }
+    }
+
+    pub fn with_rpc(config: SentinelConfig, rpc: Arc<dyn RaftRpc>) -> Self {
         let (event_sender, _) = broadcast::channel(1000);
 
         let local_node = SentinelNode {
@@ -110,6 +141,7 @@ impl SentinelManager {
             event_sender,
             failover_in_progress: Arc::new(RwLock::new(false)),
             leader_last_seen: Arc::new(RwLock::new(Instant::now())),
+            rpc,
         }
     }
 
@@ -241,19 +273,73 @@ impl SentinelManager {
             *voted = Some(self.config.sentinel_id.clone());
         }
 
-        let mut local_node = self.local_node.write().await;
-        local_node.role = SentinelNodeRole::Candidate;
-        local_node.term = current_term;
-        drop(local_node);
+        {
+            let mut local_node = self.local_node.write().await;
+            local_node.role = SentinelNodeRole::Candidate;
+            local_node.term = current_term;
+        }
 
         let nodes = self.nodes.read().await;
+        let peer_addresses: Vec<(String, String)> = nodes.iter()
+            .filter(|(id, _)| **id != self.config.sentinel_id)
+            .map(|(id, n)| (id.clone(), format!("{}:{}", n.address, n.port)))
+            .collect();
         let total_nodes = nodes.len() + 1;
         let votes_needed = total_nodes / 2 + 1;
-        let votes = 1;
         drop(nodes);
+
+        let mut votes = 1;
+
+        let vote_req = VoteRequest {
+            candidate_id: self.config.sentinel_id.clone(),
+            term: current_term,
+            last_log_index: 0,
+            last_log_term: 0,
+        };
+
+        let mut vote_futures = Vec::new();
+        for (node_id, addr) in &peer_addresses {
+            let rpc = self.rpc.clone();
+            let req = vote_req.clone();
+            let node_id = node_id.clone();
+            let addr = addr.clone();
+
+            vote_futures.push(tokio::spawn(async move {
+                match rpc.request_vote(&addr, &req).await {
+                    Ok(resp) => (node_id, resp.vote_granted, resp.term),
+                    Err(e) => {
+                        tracing::warn!("Sentinel vote request to {} failed: {}", node_id, e);
+                        (node_id, false, 0)
+                    }
+                }
+            }));
+        }
+
+        for future in vote_futures {
+            if let Ok((node_id, granted, resp_term)) = future.await {
+                let _ = self.event_sender.send(SentinelEvent::NodeStatusChanged {
+                    node_id,
+                    status: if granted { NodeStatus::Online } else { NodeStatus::SubjectiveOffline },
+                });
+
+                if resp_term > current_term {
+                    let mut term = self.current_term.write().await;
+                    *term = resp_term;
+                    let mut in_progress = self.failover_in_progress.write().await;
+                    *in_progress = false;
+                    return None;
+                }
+
+                if granted {
+                    votes += 1;
+                }
+            }
+        }
 
         if votes >= votes_needed {
             self.become_leader(current_term).await;
+            let mut in_progress = self.failover_in_progress.write().await;
+            *in_progress = false;
             return Some(self.config.sentinel_id.clone());
         }
 

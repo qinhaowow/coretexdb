@@ -1,6 +1,6 @@
 [package]
 name = "coretexdb"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A multimodal vector database for AI applications"
@@ -87,6 +87,11 @@ sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.21"
 hex = "0.4"
+argon2 = "0.5"
+rand_core = "0.6"
+
+# RPC
+reqwest = { version = "0.11", features = ["json"] }
 
 # ONNX推理
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray"], optional = true }
@@ -103,6 +108,10 @@ pyo3-asyncio = { version = "0.19", features = ["tokio"], optional = true }
 tonic = "0.10"
 prost = "0.12"
 
+# GraphQL
+async-graphql = "7.0"
+async-graphql-axum = "7.0"
+
 # 向量索引（使用自定义 HNSWIndex 实现）
 
 # TLS/SSL
@@ -117,9 +126,6 @@ cpufeatures = "0.2"
 tokio-tungstenite = { version = "0.21", optional = true }
 futures-util = "0.3"
 futures = "0.3"
-
-# HTTP 客户端
-reqwest = { version = "0.11", features = ["json"] }
 
 # 全文搜索
 # tantivy = "0.22"

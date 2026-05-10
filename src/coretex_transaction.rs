@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 pub struct TransactionManager {
-    active_transactions: Arc<RwLock<HashMap<TransactionId, Transaction>>>,
-    wal: Arc<RwLock<WriteAheadLog>>,
-    snapshot_manager: Arc<RwLock<SnapshotManager>>,
+    pub active_transactions: Arc<RwLock<HashMap<TransactionId, Transaction>>>,
+    pub wal: Arc<RwLock<WriteAheadLog>>,
+    pub snapshot_manager: Arc<RwLock<SnapshotManager>>,
     current_txn_id: Arc<RwLock<TransactionId>>,
 }
 
@@ -56,7 +56,7 @@ pub struct ReadOperation {
 
 #[derive(Debug, Clone)]
 pub struct WriteAheadLog {
-    entries: Vec<WalEntry>,
+    pub entries: Vec<WalEntry>,
     max_entries: usize,
 }
 

@@ -67,7 +67,7 @@ mod coretex_embedding_tests;
 pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
 pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
 pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
-pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog};
+pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog, IsolationLevel, TransactionError, WalEntry, WalOperation};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
@@ -78,7 +78,7 @@ pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult
 pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
 pub use coretex_api::rest::{start_server, ApiConfig};
-pub use coretex_api::graphql::{GraphQLExecutor, GraphQLServer, GraphQLRequest, GraphQLResponse}; 
+pub use coretex_api::graphql::{AppSchema, build_schema}; 
 pub use coretex_cli::run_cli; 
 pub use coretex_utils::{
     LockManager, Transaction, TransactionOperation, TransactionState,
@@ -101,7 +101,7 @@ pub use coretex_export::{DataExporter, VectorExporter, BatchExporter, Collection
 pub use coretex_ann::{ANNConfig, ANNAlgorithm, ANNParameters, HNSWParameters, IVFParameters, PQParameters, NSGParameters, SearchParameters, ANNTuner, IndexOptimizer, PerformanceRecord};
 pub use coretex_distributed::{TwoPhaseCommit, DistributedTransaction, DistributedOperation, DistributedTransactionState, TransactionCoordinator, DistributedLockManager, DistributedLock, ParticipantState, ParticipantStatus};
 pub use coretex_auth::{AuthService, User, Role, Permission, JWTConfig, TokenClaims, AuthToken, UserInfo, RateLimiter};
-pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient};
+pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient, SlowQueryConfig, SlowQueryEntry, SlowQueryLogger};
 pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser};
 pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
@@ -130,6 +130,7 @@ pub use coretex_document::{
     HighDimVector, HighDimVectorStore, PQCompressor,
 }; 
 pub use coretex_data::{DataManager, VectorRecord, BulkResult};
+pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse};
 
 pub struct CoreTexDB {
     pub data_manager: DataManager,
@@ -224,7 +225,7 @@ impl CoreTexDB {
             #[cfg(feature = "rocksdb")]
             { Box::new(PersistentStorage::new(&config.data_dir)) }
             #[cfg(not(feature = "rocksdb"))]
-            { Box::new(MemoryStorage::new()) }
+            { panic!("memory_only=false requires the 'rocksdb' feature. Enable it in Cargo.toml or set memory_only=true") }
         };
         let storage = Arc::new(RwLock::new(storage));
         let index_manager = Arc::new(IndexManager::new());

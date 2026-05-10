@@ -1,16 +1,31 @@
 //! Vector indexing for CortexDB
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 
 /// Result of a vector search
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     /// ID of the matched vector
     pub id: String,
-    
+
     /// Distance from the query vector
     pub distance: f32,
+}
+
+impl Eq for SearchResult {}
+
+impl PartialOrd for SearchResult {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.distance.partial_cmp(&other.distance)
+    }
+}
+
+impl Ord for SearchResult {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance.partial_cmp(&other.distance).unwrap_or(std::cmp::Ordering::Equal)
+    }
 }
 
 /// Vector index trait
@@ -47,11 +62,12 @@ pub struct BruteForceIndex {
 pub struct HNSWIndex {
     vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
     metric: String,
-    // HNSW-specific parameters
-    m: usize, // Maximum number of connections per node
-    ef_construction: usize, // Size of the dynamic candidate list during construction
-    ef_search: usize, // Size of the dynamic candidate list during search
-    max_level: usize, // Maximum level of the graph
+    m: usize,
+    ef_construction: usize,
+    ef_search: usize,
+    max_level: usize,
+    entry_point: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+    graph: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<Vec<String>>>>>,
 }
 
 /// IVF (Inverted File) index implementation
@@ -126,71 +142,152 @@ impl HNSWIndex {
         Self {
             vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             metric: metric.to_string(),
-            m: 16, // Default maximum number of connections per node
-            ef_construction: 200, // Default size of candidate list during construction
-            ef_search: 50, // Default size of candidate list during search
-            max_level: 16, // Default maximum level
+            m: 16,
+            ef_construction: 200,
+            ef_search: 50,
+            max_level: 16,
+            entry_point: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            graph: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
-    
-    /// Calculate distance between two vectors
+
+    pub fn with_params(metric: &str, m: usize, ef_construction: usize, ef_search: usize) -> Self {
+        Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            metric: metric.to_string(),
+            m,
+            ef_construction,
+            ef_search,
+            max_level: 16,
+            entry_point: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            graph: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::io::Write;
+
+        let vectors = self.vectors.read().await;
+        let graph = self.graph.read().await;
+        let entry_point = self.entry_point.read().await.clone();
+
+        let serializable = HNSWIndexData {
+            metric: self.metric.clone(),
+            m: self.m,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            max_level: self.max_level,
+            entry_point,
+            vectors: vectors.clone(),
+            graph: graph.clone(),
+        };
+
+        let json = serde_json::to_string(&serializable)?;
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let content = std::fs::read_to_string(path)?;
+        let data: HNSWIndexData = serde_json::from_str(&content)?;
+
+        let index = Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
+            metric: data.metric,
+            m: data.m,
+            ef_construction: data.ef_construction,
+            ef_search: data.ef_search,
+            max_level: data.max_level,
+            entry_point: std::sync::Arc::new(tokio::sync::RwLock::new(data.entry_point)),
+            graph: std::sync::Arc::new(tokio::sync::RwLock::new(data.graph)),
+        };
+
+        Ok(index)
+    }
+
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
         match self.metric.as_str() {
             "cosine" => {
-                // Cosine similarity (higher is better, so we return 1 - similarity for distance)
                 let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
                 let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
                 let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
                 if norm_a == 0.0 || norm_b == 0.0 {
                     return 1.0;
                 }
-                
                 1.0 - (dot_product / (norm_a * norm_b))
-            },
+            }
             "euclidean" => {
-                // Euclidean distance
                 a.iter().zip(b.iter())
                     .map(|(x, y)| (x - y).powi(2))
                     .sum::<f32>()
                     .sqrt()
-            },
+            }
             _ => {
-                // Default to cosine
                 let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
                 let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
                 let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
                 if norm_a == 0.0 || norm_b == 0.0 {
                     return 1.0;
                 }
-                
                 1.0 - (dot_product / (norm_a * norm_b))
             }
         }
     }
-    
-    /// Select the top k nearest neighbors from a list of candidates
-    fn select_neighbors(&self, candidates: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<SearchResult> {
-        let mut results: Vec<SearchResult> = candidates
-            .iter()
-            .map(|(id, vec)| {
-                let distance = self.calculate_distance(query, vec);
-                SearchResult {
-                    id: id.clone(),
-                    distance,
-                }
-            })
-            .collect();
-        
-        Self::sort_results(&mut results);
-        results.into_iter().take(k).collect()
+
+    fn random_level() -> usize {
+        let mut rng = rand::thread_rng();
+        let p: f64 = rand::Rng::gen(&mut rng);
+        (-p.ln() * 16.0) as usize
     }
 
-    fn sort_results(results: &mut Vec<SearchResult>) {
-        results.sort_by(|a, b| {
-            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
-        });
+    fn search_layer(
+        &self,
+        entry_id: &str,
+        query: &[f32],
+        ef: usize,
+        layer: usize,
+        vectors: &std::collections::HashMap<String, Vec<f32>>,
+    ) -> (std::collections::BinaryHeap<std::cmp::Reverse<SearchResult>>, std::collections::HashSet<String>) {
+        use std::collections::{BinaryHeap, HashSet};
+
+        let mut visited = HashSet::new();
+        let mut candidates = BinaryHeap::new();
+        let mut results = BinaryHeap::new();
+
+        visited.insert(entry_id.to_string());
+        let dist = self.calculate_distance(query, vectors.get(entry_id).unwrap());
+        candidates.push(std::cmp::Reverse(SearchResult { id: entry_id.to_string(), distance: dist }));
+        results.push(std::cmp::Reverse(SearchResult { id: entry_id.to_string(), distance: dist }));
+
+        while let Some(std::cmp::Reverse(current)) = candidates.pop() {
+            let furthest = results.peek().map(|r| r.0.distance).unwrap_or(f32::MAX);
+            if current.distance > furthest {
+                break;
+            }
+            for neighbor_id in self.get_neighbors(&current.id, layer) {
+                if visited.insert(neighbor_id.clone()) {
+                    let dist = self.calculate_distance(query, vectors.get(&neighbor_id).unwrap());
+                    if dist < furthest || results.len() < ef {
+                        candidates.push(std::cmp::Reverse(SearchResult { id: neighbor_id.clone(), distance: dist }));
+                        results.push(std::cmp::Reverse(SearchResult { id: neighbor_id.clone(), distance: dist }));
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        (results, visited)
+    }
+
+    fn get_neighbors(&self, id: &str, layer: usize) -> Vec<String> {
+        let graph = self.graph.blocking_read();
+        graph.get(id)
+            .and_then(|levels| levels.get(layer))
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -205,6 +302,55 @@ impl IVFIndex {
             centroids: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
+    }
+
+    pub fn with_params(metric: &str, nlist: usize, nprobe: usize) -> Self {
+        Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            metric: metric.to_string(),
+            nlist,
+            nprobe,
+            centroids: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::io::Write;
+
+        let vectors = self.vectors.read().await;
+        let centroids = self.centroids.read().await;
+        let vector_to_cluster = self.vector_to_cluster.read().await;
+
+        let data = IVFIndexData {
+            metric: self.metric.clone(),
+            nlist: self.nlist,
+            nprobe: self.nprobe,
+            centroids: centroids.clone(),
+            vector_to_cluster: vector_to_cluster.clone(),
+            vectors: vectors.clone(),
+        };
+
+        let json = serde_json::to_string(&data)?;
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let content = std::fs::read_to_string(path)?;
+        let data: IVFIndexData = serde_json::from_str(&content)?;
+
+        let index = Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
+            metric: data.metric,
+            nlist: data.nlist,
+            nprobe: data.nprobe,
+            centroids: std::sync::Arc::new(tokio::sync::RwLock::new(data.centroids)),
+            vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(data.vector_to_cluster)),
+        };
+
+        Ok(index)
     }
     
     /// Calculate distance between two vectors
@@ -368,49 +514,174 @@ impl VectorIndex for HNSWIndex {
     async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
+        drop(vectors);
+
+        let level = Self::random_level();
+        let mut graph = self.graph.write().await;
+        let entry_point = self.entry_point.read().await.clone();
+
+        let mut node_levels = vec![Vec::new(); level + 1];
+        if let Some(ref ep) = entry_point {
+            let vectors_read = self.vectors.read().await;
+            let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+
+            for l in (0..=level.min(top_level)).rev() {
+                let (results, _) = self.search_layer(ep, vector, self.ef_construction, l, &vectors_read);
+                let neighbors: Vec<String> = results.into_iter()
+                    .take(self.m)
+                    .map(|r| r.0.id)
+                    .collect();
+                if l <= level {
+                    node_levels[l] = neighbors.clone();
+                }
+                for neighbor_id in &neighbors {
+                    let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| {
+                        let mut v = Vec::new();
+                        v.push(Vec::new());
+                        v
+                    });
+                    if l < neighbor_levels.len() {
+                        neighbor_levels[l].push(id.to_string());
+                        if neighbor_levels[l].len() > self.m {
+                            neighbor_levels[l].truncate(self.m);
+                        }
+                    }
+                }
+            }
+        }
+
+        graph.insert(id.to_string(), node_levels);
+        drop(graph);
+
+        if level > self.entry_point.read().await.as_ref().map(|_| 0).unwrap_or(0) {
+            let mut ep = self.entry_point.write().await;
+            *ep = Some(id.to_string());
+        } else if entry_point.is_none() {
+            let mut ep = self.entry_point.write().await;
+            *ep = Some(id.to_string());
+        }
+
         Ok(())
     }
-    
+
     async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
-        Ok(vectors.remove(id).is_some())
+        vectors.remove(id);
+        let mut graph = self.graph.write().await;
+        graph.remove(id);
+        for (_, levels) in graph.iter_mut() {
+            for layer in levels.iter_mut() {
+                layer.retain(|n| n != id);
+            }
+        }
+        let mut ep = self.entry_point.write().await;
+        if ep.as_ref().map(|e| e == id).unwrap_or(false) {
+            *ep = graph.keys().next().cloned();
+        }
+        Ok(true)
     }
-    
+
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         let vectors = self.vectors.read().await;
-        
-        // For simplicity, we'll use a brute-force approach here
-        // In a real HNSW implementation, we would use the graph structure for efficient search
-        let mut results: Vec<SearchResult> = vectors
-            .iter()
-            .map(|(id, vec)| {
-                let distance = self.calculate_distance(query, vec);
-                SearchResult {
-                    id: id.clone(),
-                    distance,
-                }
-            })
-            .collect();
-        
-        // Sort by distance (ascending)
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
-        
-        // Take top k results
-        Ok(results.into_iter().take(k).collect())
+        if vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entry_point = self.entry_point.read().await.clone();
+        let ep = match entry_point {
+            Some(ep) => ep,
+            None => return Ok(Vec::new()),
+        };
+
+        let graph = self.graph.read().await;
+        let top_level = graph.get(&ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+
+        let mut current_entry = ep.clone();
+        for l in (1..=top_level).rev() {
+            let (results, _) = self.search_layer(&current_entry, query, 1, l, &vectors);
+            if let Some(closest) = results.into_iter().min_by(|a, b| a.0.distance.partial_cmp(&b.0.distance).unwrap()) {
+                current_entry = closest.0.id;
+            }
+        }
+
+        let (results, _) = self.search_layer(&current_entry, query, self.ef_search.max(k), 0, &vectors);
+        let mut final_results: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
+        final_results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        final_results.truncate(k);
+
+        Ok(final_results)
     }
-    
+
     async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // In a real HNSW implementation, we would build the graph structure here
-        // For now, we'll just return Ok(())
+        let vectors = self.vectors.read().await;
+        let ids: Vec<String> = vectors.keys().cloned().collect();
+        drop(vectors);
+
+        for id in &ids {
+            let vector = {
+                let v = self.vectors.read().await;
+                v.get(id).cloned()
+            };
+            if let Some(vec) = vector {
+                let level = Self::random_level();
+                let mut graph = self.graph.write().await;
+                let entry_point = self.entry_point.read().await.clone();
+
+                let mut node_levels = vec![Vec::new(); level + 1];
+                if let Some(ref ep) = entry_point {
+                    let vectors_read = self.vectors.read().await;
+                    let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+
+                    for l in (0..=level.min(top_level)).rev() {
+                        let (results, _) = self.search_layer(ep, &vec, self.ef_construction, l, &vectors_read);
+                        let neighbors: Vec<String> = results.into_iter()
+                            .take(self.m)
+                            .map(|r| r.0.id)
+                            .collect();
+                        if l <= level {
+                            node_levels[l] = neighbors.clone();
+                        }
+                        for neighbor_id in &neighbors {
+                            let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| {
+                                let mut v = Vec::new();
+                                v.push(Vec::new());
+                                v
+                            });
+                            if l < neighbor_levels.len() {
+                                neighbor_levels[l].push(id.to_string());
+                                if neighbor_levels[l].len() > self.m {
+                                    neighbor_levels[l].truncate(self.m);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                graph.insert(id.clone(), node_levels);
+
+                if level > self.entry_point.read().await.as_ref().map(|_| 0).unwrap_or(0) {
+                    let mut ep = self.entry_point.write().await;
+                    *ep = Some(id.clone());
+                } else if entry_point.is_none() {
+                    let mut ep = self.entry_point.write().await;
+                    *ep = Some(id.clone());
+                }
+            }
+        }
+
         Ok(())
     }
-    
+
     async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
+        let mut graph = self.graph.write().await;
+        graph.clear();
+        let mut ep = self.entry_point.write().await;
+        *ep = None;
         Ok(())
     }
-    
+
     fn clone_box(&self) -> Box<dyn VectorIndex> {
         Box::new(self.clone())
     }
@@ -421,36 +692,61 @@ impl VectorIndex for IVFIndex {
     async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
-        
-        // Assign to cluster
+
         let cluster_id = self.assign_to_cluster(vector);
         let mut vector_to_cluster = self.vector_to_cluster.write().await;
         vector_to_cluster.insert(id.to_string(), cluster_id);
-        
+
         Ok(())
     }
-    
+
     async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         let removed = vectors.remove(id).is_some();
-        
+
         if removed {
             let mut vector_to_cluster = self.vector_to_cluster.write().await;
             vector_to_cluster.remove(id);
         }
-        
+
         Ok(removed)
     }
-    
+
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
         let vectors = self.vectors.read().await;
         let vector_to_cluster = self.vector_to_cluster.read().await;
-        
-        // For simplicity, we'll use a brute-force approach here
-        // In a real IVF implementation, we would first find the nearest clusters
-        // and then only search within those clusters
+        let centroids = self.centroids.read().await;
+
+        if centroids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut cluster_distances: Vec<(usize, f32)> = centroids
+            .iter()
+            .enumerate()
+            .map(|(i, centroid)| {
+                let dist = self.calculate_distance(query, centroid);
+                (i, dist)
+            })
+            .collect();
+
+        cluster_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        let nprobe = self.nprobe.min(cluster_distances.len());
+        let probed_clusters: std::collections::HashSet<usize> = cluster_distances
+            .into_iter()
+            .take(nprobe)
+            .map(|(i, _)| i)
+            .collect();
+
         let mut results: Vec<SearchResult> = vectors
             .iter()
+            .filter(|(id, _)| {
+                vector_to_cluster
+                    .get(*id)
+                    .map(|c| probed_clusters.contains(c))
+                    .unwrap_or(false)
+            })
             .map(|(id, vec)| {
                 let distance = self.calculate_distance(query, vec);
                 SearchResult {
@@ -459,30 +755,102 @@ impl VectorIndex for IVFIndex {
                 }
             })
             .collect();
-        
-        // Sort by distance (ascending)
+
         results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
-        
-        // Take top k results
-        Ok(results.into_iter().take(k).collect())
+        results.truncate(k);
+
+        Ok(results)
     }
-    
+
     async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // In a real IVF implementation, we would run k-means clustering here
-        // to compute the centroids
+        let vectors = self.vectors.read().await;
+        let all_vectors: Vec<Vec<f32>> = vectors.values().cloned().collect();
+        let ids: Vec<String> = vectors.keys().cloned().collect();
+        drop(vectors);
+
+        if all_vectors.is_empty() || all_vectors.len() < self.nlist {
+            return Ok(());
+        }
+
+        let dim = all_vectors[0].len();
+        let nlist = self.nlist.min(all_vectors.len());
+
+        let mut centroids: Vec<Vec<f32>> = all_vectors
+            .iter()
+            .step_by(all_vectors.len() / nlist)
+            .take(nlist)
+            .cloned()
+            .collect();
+
+        while centroids.len() < nlist {
+            centroids.push(vec![0.0; dim]);
+        }
+
+        let mut assignments: Vec<usize> = vec![0; all_vectors.len()];
+
+        for _ in 0..20 {
+            let mut new_centroids = vec![vec![0.0; dim]; nlist];
+            let mut counts = vec![0usize; nlist];
+
+            for (i, vec) in all_vectors.iter().enumerate() {
+                let mut min_dist = f32::MAX;
+                let mut best = 0;
+                for (j, centroid) in centroids.iter().enumerate() {
+                    let dist: f32 = vec
+                        .iter()
+                        .zip(centroid.iter())
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+                    if dist < min_dist {
+                        min_dist = dist;
+                        best = j;
+                    }
+                }
+                assignments[i] = best;
+                counts[best] += 1;
+                for (d, val) in vec.iter().enumerate() {
+                    new_centroids[best][d] += val;
+                }
+            }
+
+            for j in 0..nlist {
+                if counts[j] > 0 {
+                    for d in 0..dim {
+                        new_centroids[j][d] /= counts[j] as f32;
+                    }
+                } else {
+                    new_centroids[j] = centroids[j].clone();
+                }
+            }
+
+            centroids = new_centroids;
+        }
+
+        let mut centroids_lock = self.centroids.write().await;
+        *centroids_lock = centroids;
+
+        let mut vector_to_cluster = self.vector_to_cluster.write().await;
+        for (i, id) in ids.iter().enumerate() {
+            vector_to_cluster.insert(id.clone(), assignments[i]);
+        }
+
         Ok(())
     }
 
     async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
-        
+
         let mut vector_to_cluster = self.vector_to_cluster.write().await;
         vector_to_cluster.clear();
-        
+
+        let mut centroids = self.centroids.write().await;
+        centroids.clear();
+
         Ok(())
     }
-    
+
     fn clone_box(&self) -> Box<dyn VectorIndex> {
         Box::new(self.clone())
     }
@@ -622,6 +990,39 @@ pub struct PQIndex {
     codebooks: std::sync::Arc<tokio::sync::RwLock<Vec<Vec<Vec<f32>>>>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HNSWIndexData {
+    metric: String,
+    m: usize,
+    ef_construction: usize,
+    ef_search: usize,
+    max_level: usize,
+    entry_point: Option<String>,
+    vectors: std::collections::HashMap<String, Vec<f32>>,
+    graph: std::collections::HashMap<String, Vec<Vec<String>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IVFIndexData {
+    metric: String,
+    nlist: usize,
+    nprobe: usize,
+    centroids: Vec<Vec<f32>>,
+    vector_to_cluster: std::collections::HashMap<String, usize>,
+    vectors: std::collections::HashMap<String, Vec<f32>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PQIndexData {
+    metric: String,
+    dimension: usize,
+    n_subquantizers: usize,
+    n_bits: usize,
+    codebooks: Vec<Vec<Vec<f32>>>,
+    vectors: std::collections::HashMap<String, Vec<u8>>,
+    original_vectors: std::collections::HashMap<String, Vec<f32>>,
+}
+
 impl PQIndex {
     pub fn new(metric: &str, dimension: usize, n_subquantizers: usize, n_bits: usize) -> Self {
         Self {
@@ -633,6 +1034,46 @@ impl PQIndex {
             n_bits,
             codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
+    }
+
+    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::io::Write;
+
+        let vectors = self.vectors.read().await;
+        let original_vectors = self.original_vectors.read().await;
+        let codebooks = self.codebooks.read().await;
+
+        let data = PQIndexData {
+            metric: self.metric.clone(),
+            dimension: self.dimension,
+            n_subquantizers: self.n_subquantizers,
+            n_bits: self.n_bits,
+            codebooks: codebooks.clone(),
+            vectors: vectors.clone(),
+            original_vectors: original_vectors.clone(),
+        };
+
+        let json = serde_json::to_string(&data)?;
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let content = std::fs::read_to_string(path)?;
+        let data: PQIndexData = serde_json::from_str(&content)?;
+
+        let index = Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
+            original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.original_vectors)),
+            metric: data.metric,
+            dimension: data.dimension,
+            n_subquantizers: data.n_subquantizers,
+            n_bits: data.n_bits,
+            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(data.codebooks)),
+        };
+
+        Ok(index)
     }
 
     pub async fn train(&self, training_vectors: &[Vec<f32>]) -> Result<(), String> {

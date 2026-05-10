@@ -137,16 +137,22 @@ impl BackupManager {
     }
 
     pub async fn create_backup(&self, name: &str, backup_type: BackupType) -> Result<String, BackupError> {
-        let backup_id = format!("backup_{}_{}", 
+        let backup_id = format!("backup_{}_{}",
             name.replace(" ", "_"),
             chrono::Utc::now().timestamp()
         );
 
         let backup_dir = PathBuf::from(&self.config.backup_dir).join(&backup_id);
-        
+
         fs::create_dir_all(&backup_dir)
             .await
             .map_err(|e| BackupError::IoError(e.to_string()))?;
+
+        let parent_backup_id = if backup_type == BackupType::Incremental {
+            self.find_latest_full_or_incremental_backup().await
+        } else {
+            None
+        };
 
         let metadata = BackupMetadata {
             id: backup_id.clone(),
@@ -157,7 +163,7 @@ impl BackupManager {
             collection_count: 0,
             vector_count: 0,
             checksum: String::new(),
-            parent_backup_id: None,
+            parent_backup_id: parent_backup_id.clone(),
             status: BackupStatus::InProgress,
         };
 
@@ -167,15 +173,15 @@ impl BackupManager {
         }
 
         let collections_dir = PathBuf::from(&self.data_dir).join("collections");
-        
+
         let mut total_size: u64 = 0;
         let mut collection_count = 0;
-        
+
         if collections_dir.exists() {
             let mut entries = fs::read_dir(&collections_dir)
                 .await
                 .map_err(|e| BackupError::IoError(e.to_string()))?;
-            
+
             while let Some(entry) = entries.next_entry().await
                 .map_err(|e| BackupError::IoError(e.to_string()))?
             {
@@ -185,10 +191,18 @@ impl BackupManager {
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
-                    
+
                     let dest = backup_dir.join(&collection_name);
-                    Self::copy_dir(&path, &dest).await?;
-                    
+
+                    match backup_type {
+                        BackupType::Full | BackupType::Snapshot => {
+                            Self::copy_dir(&path, &dest).await?;
+                        }
+                        BackupType::Incremental => {
+                            self.copy_incremental(&path, &dest, &parent_backup_id).await?;
+                        }
+                    }
+
                     let size = Self::dir_size(&dest).await;
                     total_size += size;
                     collection_count += 1;
@@ -196,18 +210,53 @@ impl BackupManager {
             }
         }
 
-        let config_file = PathBuf::from(&self.data_dir).join("config");
-        if config_file.exists() {
-            let dest = backup_dir.join("config");
-            fs::copy(&config_file, &dest)
-                .await
-                .map_err(|e| BackupError::IoError(e.to_string()))?;
-        }
+        match backup_type {
+            BackupType::Full | BackupType::Snapshot => {
+                let config_file = PathBuf::from(&self.data_dir).join("config");
+                if config_file.exists() {
+                    let dest = backup_dir.join("config");
+                    fs::copy(&config_file, &dest)
+                        .await
+                        .map_err(|e| BackupError::IoError(e.to_string()))?;
+                }
 
-        let index_dir = PathBuf::from(&self.data_dir).join("index");
-        if index_dir.exists() {
-            let dest = backup_dir.join("index");
-            Self::copy_dir(&index_dir, &dest).await?;
+                let index_dir = PathBuf::from(&self.data_dir).join("index");
+                if index_dir.exists() {
+                    let dest = backup_dir.join("index");
+                    Self::copy_dir(&index_dir, &dest).await?;
+                }
+            }
+            BackupType::Incremental => {
+                let config_file = PathBuf::from(&self.data_dir).join("config");
+                if config_file.exists() {
+                    let parent_config = parent_backup_id.as_ref()
+                        .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid).join("config"));
+                    let should_copy = match &parent_config {
+                        Some(p) => !p.exists() || !Self::files_equal(&config_file, p).await,
+                        None => true,
+                    };
+                    if should_copy {
+                        let dest = backup_dir.join("config");
+                        fs::copy(&config_file, &dest)
+                            .await
+                            .map_err(|e| BackupError::IoError(e.to_string()))?;
+                    }
+                }
+
+                let index_dir = PathBuf::from(&self.data_dir).join("index");
+                if index_dir.exists() {
+                    let parent_index = parent_backup_id.as_ref()
+                        .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid).join("index"));
+                    let should_copy = match &parent_index {
+                        Some(p) => !p.exists() || !Self::dirs_equal(&index_dir, p).await,
+                        None => true,
+                    };
+                    if should_copy {
+                        let dest = backup_dir.join("index");
+                        Self::copy_dir(&index_dir, &dest).await?;
+                    }
+                }
+            }
         }
 
         let checksum = self.calculate_checksum(&backup_dir).await?;
@@ -226,6 +275,103 @@ impl BackupManager {
         self.cleanup_old_backups().await?;
 
         Ok(backup_id)
+    }
+
+    async fn find_latest_full_or_incremental_backup(&self) -> Option<String> {
+        let backups = self.backups.read().await;
+        let mut candidates: Vec<&BackupMetadata> = backups.values()
+            .filter(|b| b.status == BackupStatus::Completed &&
+                   (b.backup_type == BackupType::Full || b.backup_type == BackupType::Incremental))
+            .collect();
+        candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        candidates.first().map(|b| b.id.clone())
+    }
+
+    async fn copy_incremental(&self, src: &PathBuf, dst: &PathBuf, parent_backup_id: &Option<String>) -> Result<(), BackupError> {
+        let parent_dir = parent_backup_id.as_ref()
+            .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid));
+
+        fs::create_dir_all(dst)
+            .await
+            .map_err(|e| BackupError::IoError(e.to_string()))?;
+
+        let mut entries = fs::read_dir(src)
+            .await
+            .map_err(|e| BackupError::IoError(e.to_string()))?;
+
+        while let Some(entry) = entries.next_entry().await
+            .map_err(|e| BackupError::IoError(e.to_string()))?
+        {
+            let src_path = entry.path();
+            let file_name = entry.file_name();
+            let dst_path = dst.join(&file_name);
+
+            if src_path.is_dir() {
+                let parent_sub = parent_dir.as_ref().map(|p| p.join(&file_name));
+                let parent_exists = parent_sub.as_ref().map_or(false, |p| p.exists());
+
+                if !parent_exists {
+                    Box::pin(Self::copy_dir(&src_path, &dst_path)).await?;
+                } else if let Some(parent_sub_path) = parent_sub {
+                    if !Self::dirs_equal(&src_path, &parent_sub_path).await {
+                        Box::pin(Self::copy_dir(&src_path, &dst_path)).await?;
+                    }
+                }
+            } else {
+                let parent_file = parent_dir.as_ref().map(|p| p.join(&file_name));
+                let should_copy = match &parent_file {
+                    Some(pf) => !pf.exists() || !Self::files_equal(&src_path, pf).await,
+                    None => true,
+                };
+
+                if should_copy {
+                    fs::copy(&src_path, &dst_path)
+                        .await
+                        .map_err(|e| BackupError::IoError(e.to_string()))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn files_equal(a: &PathBuf, b: &PathBuf) -> bool {
+        let content_a = fs::read(a).await.ok();
+        let content_b = fs::read(b).await.ok();
+        content_a == content_b
+    }
+
+    async fn dirs_equal(a: &PathBuf, b: &PathBuf) -> bool {
+        let entries_a = Self::collect_file_hashes(a).await;
+        let entries_b = Self::collect_file_hashes(b).await;
+        entries_a == entries_b
+    }
+
+    async fn collect_file_hashes(dir: &PathBuf) -> Vec<(String, u64)> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut results = Vec::new();
+        let mut stack = vec![dir.clone()];
+
+        while let Some(current) = stack.pop() {
+            if let Ok(mut entries) = fs::read_dir(&current).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if let Ok(content) = fs::read(&path).await {
+                        let mut hasher = DefaultHasher::new();
+                        content.hash(&mut hasher);
+                        let rel_path = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy().to_string();
+                        results.push((rel_path, hasher.finish()));
+                    }
+                }
+            }
+        }
+
+        results.sort();
+        results
     }
 
     pub async fn restore_backup(&self, backup_id: &str) -> Result<RestoreReport, BackupError> {

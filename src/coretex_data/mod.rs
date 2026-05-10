@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::coretex_core::{CollectionSchema, CoreTexError, Result, DistanceMetric};
 use crate::coretex_storage::StorageEngine;
 use crate::coretex_index::{IndexManager, SearchResult};
+use crate::coretex_transaction::{TransactionManager, TransactionId, IsolationLevel, TransactionError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorRecord {
@@ -18,6 +19,7 @@ pub struct DataManager {
     data: Arc<RwLock<HashMap<String, HashMap<String, VectorRecord>>>>,
     index_manager: Arc<IndexManager>,
     storage: Arc<RwLock<Box<dyn StorageEngine>>>,
+    transaction_manager: Arc<TransactionManager>,
 }
 
 impl DataManager {
@@ -30,6 +32,21 @@ impl DataManager {
             data: Arc::new(RwLock::new(HashMap::new())),
             index_manager,
             storage,
+            transaction_manager: Arc::new(TransactionManager::new()),
+        }
+    }
+
+    pub fn with_transaction_manager(
+        storage: Arc<RwLock<Box<dyn StorageEngine>>>,
+        index_manager: Arc<IndexManager>,
+        transaction_manager: Arc<TransactionManager>,
+    ) -> Self {
+        Self {
+            collections: Arc::new(RwLock::new(HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
+            index_manager,
+            storage,
+            transaction_manager,
         }
     }
 
@@ -44,7 +61,12 @@ impl DataManager {
             data: Arc::new(RwLock::new(data)),
             index_manager,
             storage,
+            transaction_manager: Arc::new(TransactionManager::new()),
         }
+    }
+
+    pub fn transaction_manager_ref(&self) -> &Arc<TransactionManager> {
+        &self.transaction_manager
     }
 
     pub fn collections_ref(&self) -> &Arc<RwLock<HashMap<String, CollectionSchema>>> {
@@ -525,18 +547,399 @@ impl DataManager {
         self.collections.read().await.keys().cloned().collect()
     }
 
+    pub async fn set_ttl(&self, collection: &str, id: &str, ttl_secs: u64) -> Result<()> {
+        let storage = self.storage.read().await;
+        let storage_key = format!("{}:{}", collection, id);
+        storage.set_ttl(&storage_key, ttl_secs).await
+            .map_err(|e| CoreTexError::StorageError(e.to_string()))
+    }
+
+    pub async fn remove_ttl(&self, collection: &str, id: &str) -> Result<()> {
+        let storage = self.storage.read().await;
+        let storage_key = format!("{}:{}", collection, id);
+        storage.remove_ttl(&storage_key).await
+            .map_err(|e| CoreTexError::StorageError(e.to_string()))
+    }
+
+    pub async fn purge_expired(&self) -> Result<usize> {
+        let storage = self.storage.read().await;
+        let purged = storage.purge_expired().await
+            .map_err(|e| CoreTexError::StorageError(e.to_string()))?;
+
+        let mut data = self.data.write().await;
+        for collection_data in data.values_mut() {
+            collection_data.retain(|_, _| true);
+        }
+
+        Ok(purged)
+    }
+
+    pub async fn get_shard_for_key(&self, key: &str, total_shards: usize) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % total_shards
+    }
+
+    pub async fn begin_transaction(&self, isolation_level: IsolationLevel) -> std::result::Result<TransactionId, TransactionError> {
+        self.transaction_manager.begin_transaction(isolation_level).await
+    }
+
+    pub async fn commit_transaction(&self, txn_id: TransactionId) -> std::result::Result<(), TransactionError> {
+        self.transaction_manager.commit(txn_id).await
+    }
+
+    pub async fn abort_transaction(&self, txn_id: TransactionId) -> std::result::Result<(), TransactionError> {
+        self.transaction_manager.abort(txn_id).await
+    }
+
+    pub async fn insert_vectors_tx(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+        txn_id: TransactionId,
+    ) -> Result<Vec<String>> {
+        let dimension = self.get_collection_dimension(collection).await?;
+
+        for (_, vec, _) in &vectors {
+            if vec.len() != dimension {
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: dimension,
+                    actual: vec.len(),
+                });
+            }
+        }
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        let mut ids = Vec::new();
+        for (id, vector, metadata) in vectors {
+            let record = VectorRecord {
+                vector: vector.clone(),
+                metadata: metadata.clone(),
+            };
+            collection_data.insert(id.clone(), record);
+            ids.push(id.clone());
+
+            let storage = self.storage.read().await;
+            let storage_key = format!("{}:{}", collection, id);
+            let _ = storage.store(&storage_key, &vector, &metadata).await;
+        }
+
+        let mut wal = self.transaction_manager_ref().wal.write().await;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for id in &ids {
+            let lsn = wal.entries.len() as u64;
+            wal.append(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Insert {
+                    key: format!("{}:{}", collection, id),
+                    value: bincode::serialize(&VectorRecord {
+                        vector: vec![],
+                        metadata: serde_json::json!({}),
+                    }).unwrap_or_default(),
+                },
+                lsn,
+            });
+        }
+        drop(wal);
+
+        Ok(ids)
+    }
+
+    pub async fn delete_vectors_tx(
+        &self,
+        collection: &str,
+        ids: &[String],
+        txn_id: TransactionId,
+    ) -> Result<usize> {
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        let mut deleted = 0;
+        for id in ids {
+            if collection_data.remove(id).is_some() {
+                deleted += 1;
+                let storage = self.storage.read().await;
+                let storage_key = format!("{}:{}", collection, id);
+                let _ = storage.delete(&storage_key).await;
+            }
+        }
+
+        let mut wal = self.transaction_manager_ref().wal.write().await;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for id in ids {
+            let lsn = wal.entries.len() as u64;
+            wal.append(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Delete {
+                    key: format!("{}:{}", collection, id),
+                    value: vec![],
+                },
+                lsn,
+            });
+        }
+        drop(wal);
+
+        Ok(deleted)
+    }
+
+    pub async fn update_vector_tx(
+        &self,
+        collection: &str,
+        id: &str,
+        vector: Vec<f32>,
+        metadata: Option<serde_json::Value>,
+        txn_id: TransactionId,
+    ) -> Result<bool> {
+        let dimension = self.get_collection_dimension(collection).await?;
+
+        if vector.len() != dimension {
+            return Err(CoreTexError::DimensionMismatch {
+                expected: dimension,
+                actual: vector.len(),
+            });
+        }
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        if !collection_data.contains_key(id) {
+            return Ok(false);
+        }
+
+        let meta = metadata.unwrap_or(serde_json::json!({}));
+        collection_data.insert(id.to_string(), VectorRecord {
+            vector: vector.clone(),
+            metadata: meta.clone(),
+        });
+
+        let mut wal = self.transaction_manager_ref().wal.write().await;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let lsn = wal.entries.len() as u64;
+        wal.append(crate::coretex_transaction::WalEntry {
+            transaction_id: txn_id,
+            timestamp,
+            operation: crate::coretex_transaction::WalOperation::Update {
+                key: format!("{}:{}", collection, id),
+                old_value: vec![],
+                new_value: bincode::serialize(&VectorRecord {
+                    vector,
+                    metadata: meta,
+                }).unwrap_or_default(),
+            },
+            lsn,
+        });
+        drop(wal);
+
+        Ok(true)
+    }
+
+    pub async fn upsert_vectors_tx(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+        txn_id: TransactionId,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let dimension = self.get_collection_dimension(collection).await?;
+
+        for (_, vector, _) in &vectors {
+            if vector.len() != dimension {
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: dimension,
+                    actual: vector.len(),
+                });
+            }
+        }
+
+        let mut inserted = Vec::new();
+        let mut updated = Vec::new();
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        for (id, vector, metadata) in vectors {
+            let record = VectorRecord {
+                vector,
+                metadata,
+            };
+            if collection_data.contains_key(&id) {
+                collection_data.insert(id.clone(), record);
+                updated.push(id);
+            } else {
+                collection_data.insert(id.clone(), record);
+                inserted.push(id);
+            }
+        }
+
+        let mut wal = self.transaction_manager_ref().wal.write().await;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for id in &inserted {
+            let lsn = wal.entries.len() as u64;
+            wal.append(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Insert {
+                    key: format!("{}:{}", collection, id),
+                    value: vec![],
+                },
+                lsn,
+            });
+        }
+        for id in &updated {
+            let lsn = wal.entries.len() as u64;
+            wal.append(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Update {
+                    key: format!("{}:{}", collection, id),
+                    old_value: vec![],
+                    new_value: vec![],
+                },
+                lsn,
+            });
+        }
+        drop(wal);
+
+        Ok((inserted, updated))
+    }
+
     fn matches_filter(metadata: &serde_json::Value, filter: &serde_json::Value) -> bool {
-        if let (Some(metadata_obj), Some(filter_obj)) = (
-            metadata.as_object(),
-            filter.as_object()
-        ) {
-            for (key, value) in filter_obj {
-                if let Some(meta_val) = metadata_obj.get(key) {
+        match filter {
+            serde_json::Value::Object(obj) => {
+                if obj.is_empty() {
+                    return true;
+                }
+
+                if let Some(and_val) = obj.get("$and") {
+                    if let Some(conditions) = and_val.as_array() {
+                        return conditions.iter().all(|c| Self::matches_filter(metadata, c));
+                    }
+                    return true;
+                }
+
+                if let Some(or_val) = obj.get("$or") {
+                    if let Some(conditions) = or_val.as_array() {
+                        return conditions.iter().any(|c| Self::matches_filter(metadata, c));
+                    }
+                    return true;
+                }
+
+                if let Some(not_val) = obj.get("$not") {
+                    return !Self::matches_filter(metadata, not_val);
+                }
+
+                for (key, value) in obj {
+                    if key.starts_with('$') {
+                        continue;
+                    }
+
+                    let meta_val = match metadata.get(key) {
+                        Some(v) => v,
+                        None => {
+                            if let Some(exists_val) = value.as_object().and_then(|o| o.get("$exists")) {
+                                if let Some(exists) = exists_val.as_bool() {
+                                    if !exists {
+                                        continue;
+                                    }
+                                }
+                            }
+                            return false;
+                        }
+                    };
+
+                    if let Some(filter_obj) = value.as_object() {
+                        if filter_obj.contains_key("$gt") || filter_obj.contains_key("$gte")
+                            || filter_obj.contains_key("$lt") || filter_obj.contains_key("$lte")
+                            || filter_obj.contains_key("$ne") || filter_obj.contains_key("$in")
+                            || filter_obj.contains_key("$exists") || filter_obj.contains_key("$regex")
+                        {
+                            if !Self::apply_filter_conditions(meta_val, filter_obj) {
+                                return false;
+                            }
+                            continue;
+                        }
+                    }
+
                     if meta_val != value {
                         return false;
                     }
-                } else {
-                    return false;
+                }
+                true
+            }
+            serde_json::Value::Array(arr) => {
+                arr.iter().any(|v| Self::matches_filter(metadata, v))
+            }
+            _ => true,
+        }
+    }
+
+    fn apply_filter_conditions(meta_val: &serde_json::Value, conditions: &serde_json::Map<String, serde_json::Value>) -> bool {
+        for (op, cond_val) in conditions {
+            match op.as_str() {
+                "$gt" => {
+                    if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
+                        if !(a > b) { return false; }
+                    } else { return false; }
+                }
+                "$gte" => {
+                    if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
+                        if !(a >= b) { return false; }
+                    } else { return false; }
+                }
+                "$lt" => {
+                    if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
+                        if !(a < b) { return false; }
+                    } else { return false; }
+                }
+                "$lte" => {
+                    if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
+                        if !(a <= b) { return false; }
+                    } else { return false; }
+                }
+                "$ne" => {
+                    if meta_val == cond_val { return false; }
+                }
+                "$in" => {
+                    if let Some(arr) = cond_val.as_array() {
+                        if !arr.iter().any(|v| meta_val == v) { return false; }
+                    } else { return false; }
+                }
+                "$exists" => {
+                    if let Some(exists) = cond_val.as_bool() {
+                        if !exists { return false; }
+                    }
+                }
+                "$regex" => {
+                    if let Some(pattern) = cond_val.as_str() {
+                        if let Ok(re) = regex::Regex::new(pattern) {
+                            if let Some(s) = meta_val.as_str() {
+                                if !re.is_match(s) { return false; }
+                            } else { return false; }
+                        } else { return false; }
+                    } else { return false; }
+                }
+                _ => {
+                    if meta_val != cond_val { return false; }
                 }
             }
         }
