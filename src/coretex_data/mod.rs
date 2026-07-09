@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +7,11 @@ use crate::coretex_core::{CollectionSchema, CoreTexError, Result, DistanceMetric
 use crate::coretex_storage::StorageEngine;
 use crate::coretex_index::{IndexManager, SearchResult};
 use crate::coretex_transaction::{TransactionManager, TransactionId, IsolationLevel, TransactionError};
+use crate::coretex_lakehouse::VectorLakehouse;
+use crate::coretex_utils::wal::{WriteAheadLog, WalEntryType};
+
+pub mod storage_adapter;
+pub use storage_adapter::{UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorRecord {
@@ -19,7 +24,10 @@ pub struct DataManager {
     data: Arc<RwLock<HashMap<String, HashMap<String, VectorRecord>>>>,
     index_manager: Arc<IndexManager>,
     storage: Arc<RwLock<Box<dyn StorageEngine>>>,
+    unified_adapter: Option<Arc<UnifiedStorageAdapter>>,
     transaction_manager: Arc<TransactionManager>,
+    lakehouse: Option<Arc<VectorLakehouse>>,
+    wal: OnceLock<Arc<WriteAheadLog>>,
 }
 
 impl DataManager {
@@ -32,7 +40,10 @@ impl DataManager {
             data: Arc::new(RwLock::new(HashMap::new())),
             index_manager,
             storage,
+            unified_adapter: None,
             transaction_manager: Arc::new(TransactionManager::new()),
+            lakehouse: None,
+            wal: OnceLock::new(),
         }
     }
 
@@ -46,7 +57,10 @@ impl DataManager {
             data: Arc::new(RwLock::new(HashMap::new())),
             index_manager,
             storage,
+            unified_adapter: None,
             transaction_manager,
+            lakehouse: None,
+            wal: OnceLock::new(),
         }
     }
 
@@ -61,8 +75,147 @@ impl DataManager {
             data: Arc::new(RwLock::new(data)),
             index_manager,
             storage,
+            unified_adapter: None,
             transaction_manager: Arc::new(TransactionManager::new()),
+            lakehouse: None,
+            wal: OnceLock::new(),
         }
+    }
+
+    /// 完整配置：注入统一存储适配器和 Lakehouse
+    pub fn with_adapters(
+        storage: Arc<RwLock<Box<dyn StorageEngine>>>,
+        index_manager: Arc<IndexManager>,
+        transaction_manager: Arc<TransactionManager>,
+        unified_adapter: Option<Arc<UnifiedStorageAdapter>>,
+        lakehouse: Option<Arc<VectorLakehouse>>,
+    ) -> Self {
+        Self {
+            collections: Arc::new(RwLock::new(HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
+            index_manager,
+            storage,
+            unified_adapter,
+            transaction_manager,
+            lakehouse,
+            wal: OnceLock::new(),
+        }
+    }
+
+    /// 注入 Lakehouse（运行时挂载冷热分层）
+    pub async fn attach_lakehouse(&mut self, lakehouse: Arc<VectorLakehouse>) {
+        self.lakehouse = Some(lakehouse);
+    }
+
+    /// 注入统一存储适配器
+    pub async fn attach_unified_adapter(&mut self, adapter: Arc<UnifiedStorageAdapter>) {
+        self.unified_adapter = Some(adapter);
+    }
+
+    /// Inject a WAL for durability. All subsequent writes will be logged
+    /// to the WAL before being applied to the storage engine.
+    pub fn with_wal(mut self, wal: Arc<WriteAheadLog>) -> Self {
+        let _ = self.wal.set(wal);
+        self
+    }
+
+    /// Set the WAL after construction (for late binding in CoreTexDB::init).
+    /// Uses OnceLock — can only be called once.
+    pub fn set_wal(&self, wal: Arc<WriteAheadLog>) -> Result<(), Arc<WriteAheadLog>> {
+        self.wal.set(wal)
+    }
+
+    /// Check if WAL is enabled.
+    pub fn has_wal(&self) -> bool {
+        self.wal.get().is_some()
+    }
+
+    /// Log an operation to the WAL if configured. Returns the WAL sequence
+    /// number, or 0 if WAL is not enabled.
+    async fn wal_log(
+        &self,
+        entry_type: WalEntryType,
+        collection: &str,
+        key: &str,
+        vector: &[f32],
+        metadata: &serde_json::Value,
+    ) -> Result<u64> {
+        if let Some(ref wal) = self.wal.get() {
+            let data = serde_json::json!({
+                "vector": vector,
+                "metadata": metadata,
+            });
+            wal.log_operation(entry_type, collection, key, data)
+                .await
+                .map_err(|e| CoreTexError::Io(e.to_string()))
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Recover database state by replaying the WAL into the storage engine.
+    /// Must be called after initialization and before accepting queries.
+    pub async fn recover_from_wal(&self) -> Result<crate::coretex_utils::wal::ReplayResult> {
+        let wal = match self.wal.get() {
+            Some(w) => w.clone(),
+            None => {
+                return Ok(crate::coretex_utils::wal::ReplayResult {
+                    total_entries: 0,
+                    replayed: 0,
+                    skipped: 0,
+                    corrupted: 0,
+                });
+            }
+        };
+
+        use crate::coretex_utils::wal::RecoveryManager;
+        let recovery = RecoveryManager::new(wal);
+
+        // Collect entries and replay
+        let entries = recovery
+            .recover_storage_entries()
+            .await
+            .map_err(|e| CoreTexError::Io(e.to_string()))?;
+
+        let mut replayed = 0u64;
+        let mut skipped = 0u64;
+
+        for (entry_type, collection, key, vector, metadata) in &entries {
+            match entry_type {
+                WalEntryType::Insert | WalEntryType::Update => {
+                    // Write directly to storage
+                    let storage = self.storage.read().await;
+                    match storage.store(key, vector, metadata).await {
+                        Ok(()) => replayed += 1,
+                        Err(e) => {
+                            log::warn!("WAL replay failed for key {}: {}", key, e);
+                            skipped += 1;
+                        }
+                    }
+                }
+                WalEntryType::Delete => {
+                    let storage = self.storage.read().await;
+                    let _ = storage.delete(key).await;
+                    replayed += 1;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(crate::coretex_utils::wal::ReplayResult {
+            total_entries: entries.len() as u64,
+            replayed,
+            skipped,
+            corrupted: 0,
+        })
+    }
+
+    pub fn unified_adapter_ref(&self) -> Option<&Arc<UnifiedStorageAdapter>> {
+        self.unified_adapter.as_ref()
+    }
+
+    pub fn lakehouse_ref(&self) -> Option<&Arc<VectorLakehouse>> {
+        self.lakehouse.as_ref()
     }
 
     pub fn transaction_manager_ref(&self) -> &Arc<TransactionManager> {
@@ -137,6 +290,103 @@ impl DataManager {
         Ok(collections.keys().cloned().collect())
     }
 
+    /// 重命名 collection：复制 schema + 数据 + 索引，然后删除旧 collection
+    pub async fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
+        if old_name == new_name {
+            return Ok(());
+        }
+
+        // 检查新名称是否已存在
+        {
+            let collections = self.collections.read().await;
+            if collections.contains_key(new_name) {
+                return Err(CoreTexError::ValidationError(format!(
+                    "Collection '{}' already exists", new_name
+                )));
+            }
+        }
+
+        // 获取旧 schema
+        let schema = {
+            let collections = self.collections.read().await;
+            collections.get(old_name)
+                .cloned()
+                .ok_or_else(|| CoreTexError::CollectionNotFound(old_name.to_string()))?
+        };
+
+        // 移出旧数据
+        let old_data = {
+            let mut data = self.data.write().await;
+            data.remove(old_name)
+                .unwrap_or_default()
+        };
+
+        // 删除旧索引
+        let old_index_name = format!("{}_hnsw", old_name);
+        let _ = self.index_manager.delete_index(&old_index_name).await;
+
+        // 创建新索引
+        let new_index_name = format!("{}_hnsw", new_name);
+        let metric_str = match schema.distance_metric {
+            crate::coretex_core::DistanceMetric::Euclidean => "euclidean",
+            crate::coretex_core::DistanceMetric::DotProduct => "dotproduct",
+            crate::coretex_core::DistanceMetric::Manhattan => "manhattan",
+            crate::coretex_core::DistanceMetric::Cosine => "cosine",
+        };
+        self.index_manager.create_index(&new_index_name, "hnsw", metric_str).await
+            .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
+
+        // 将数据写入新索引
+        if let Ok(Some(index)) = self.index_manager.get_index(&new_index_name).await {
+            for (id, record) in &old_data {
+                let _ = index.add(id, &record.vector).await;
+            }
+        }
+
+        // 插入新 collection schema + 数据
+        {
+            let mut collections = self.collections.write().await;
+            collections.insert(new_name.to_string(), CollectionSchema {
+                name: new_name.to_string(),
+                ..schema
+            });
+        }
+        {
+            let mut data = self.data.write().await;
+            data.insert(new_name.to_string(), old_data);
+        }
+
+        // 删除旧 collection 条目
+        {
+            let mut collections = self.collections.write().await;
+            collections.remove(old_name);
+        }
+
+        // 迁移持久化存储中的 key
+        {
+            let storage = self.storage.read().await;
+            let keys_to_migrate: Vec<String> = {
+                let data = self.data.read().await;
+                if let Some(new_data) = data.get(new_name) {
+                    new_data.keys()
+                        .map(|id| format!("{}:{}", old_name, id))
+                        .collect()
+                } else {
+                    vec![]
+                }
+            };
+            for old_key in keys_to_migrate {
+                let new_key = old_key.replacen(old_name, new_name, 1);
+                if let Ok(Some((vector, metadata))) = storage.retrieve(&old_key).await {
+                    let _ = storage.store(&new_key, &vector, &metadata).await;
+                    let _ = storage.delete(&old_key).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn get_collection(&self, name: &str) -> Result<CollectionSchema> {
         let collections = self.collections.read().await;
         collections.get(name)
@@ -184,6 +434,15 @@ impl DataManager {
 
         let mut ids = Vec::new();
         for (id, vector, metadata) in vectors {
+            // WAL log first (durability guarantee)
+            let _ = self.wal_log(
+                WalEntryType::Insert,
+                collection,
+                &id,
+                &vector,
+                &metadata,
+            ).await;
+
             let record = VectorRecord {
                 vector: vector.clone(),
                 metadata: metadata.clone(),
@@ -225,6 +484,15 @@ impl DataManager {
         let mut deleted = 0;
         for id in ids {
             if collection_data.remove(id).is_some() {
+                // WAL log first
+                let _ = self.wal_log(
+                    WalEntryType::Delete,
+                    collection,
+                    id,
+                    &[],
+                    &serde_json::json!({}),
+                ).await;
+
                 deleted += 1;
                 let storage = self.storage.read().await;
                 let storage_key = format!("{}:{}", collection, id);
@@ -325,6 +593,16 @@ impl DataManager {
         }
 
         let meta = metadata.unwrap_or(serde_json::json!({}));
+
+        // WAL log before applying
+        let _ = self.wal_log(
+            WalEntryType::Update,
+            collection,
+            id,
+            &vector,
+            &meta,
+        ).await;
+
         collection_data.insert(id.to_string(), VectorRecord {
             vector: vector.clone(),
             metadata: meta,
@@ -630,11 +908,10 @@ impl DataManager {
 
         let mut wal = self.transaction_manager_ref().wal.write().await;
         let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         for id in &ids {
-            let lsn = wal.entries.len() as u64;
             wal.append(crate::coretex_transaction::WalEntry {
                 transaction_id: txn_id,
                 timestamp,
@@ -645,8 +922,8 @@ impl DataManager {
                         metadata: serde_json::json!({}),
                     }).unwrap_or_default(),
                 },
-                lsn,
-            });
+                lsn: 0,
+            }).map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
         }
         drop(wal);
 
@@ -744,7 +1021,7 @@ impl DataManager {
                 }).unwrap_or_default(),
             },
             lsn,
-        });
+        }).map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
         drop(wal);
 
         Ok(true)
@@ -960,6 +1237,193 @@ impl DataManager {
         }
 
         1.0 - (dot / (norm_a * norm_b))
+    }
+}
+
+// =================== 事务感知写入（解决事务孤岛）====================
+
+impl DataManager {
+    /// 事务感知的向量插入：开始事务 → 写索引 → 写数据 → 写存储 → 写WAL → 提交
+    /// 一旦任何一步失败，自动 abort 事务
+    pub async fn tx_aware_insert(
+        &self,
+        collection: &str,
+        vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
+    ) -> Result<Vec<String>> {
+        // 1. 开启事务
+        let txn_id = self.transaction_manager
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+
+        // 2. 校验维度
+        let dimension = self.get_collection_dimension(collection).await?;
+        for (_, vec, _) in &vectors {
+            if vec.len() != dimension {
+                let _ = self.transaction_manager.abort(txn_id).await;
+                return Err(CoreTexError::DimensionMismatch {
+                    expected: dimension,
+                    actual: vec.len(),
+                });
+            }
+        }
+
+        // 3. 写数据 + 索引
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or_else(|| {
+                let _ = tokio::runtime::Handle::try_current();
+                CoreTexError::CollectionNotFound(collection.to_string())
+            })?;
+        let index_name = format!("{}_hnsw", collection);
+        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+            for (id, vector, _) in &vectors {
+                let _ = index.add(id, vector).await;
+            }
+        }
+
+        let mut ids = Vec::new();
+        for (id, vector, metadata) in vectors {
+            collection_data.insert(id.clone(), VectorRecord {
+                vector: vector.clone(),
+                metadata: metadata.clone(),
+            });
+            ids.push(id.clone());
+
+            // 优先用统一适配器，否则回退到原始 storage
+            if let Some(adapter) = &self.unified_adapter {
+                let key = format!("{}:{}", collection, id);
+                let vec_bytes = bincode::serialize(&vector).unwrap_or_default();
+                let meta_bytes = bincode::serialize(&metadata).unwrap_or_default();
+                if let Err(e) = adapter.upsert(&key, &vec_bytes, &meta_bytes).await {
+                    // 回滚：清理已写入
+                    let _ = self.transaction_manager.abort(txn_id).await;
+                    return Err(CoreTexError::StorageError(e.to_string()));
+                }
+            } else {
+                let storage = self.storage.read().await;
+                let storage_key = format!("{}:{}", collection, id);
+                if let Err(e) = storage.store(&storage_key, &vector, &metadata).await {
+                    let _ = self.transaction_manager.abort(txn_id).await;
+                    return Err(CoreTexError::StorageError(e.to_string()));
+                }
+            }
+        }
+        drop(data);
+
+        // 4. 写 WAL
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for id in &ids {
+            let key = format!("{}:{}", collection, id);
+            self.transaction_manager.append_wal(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Insert {
+                    key,
+                    value: vec![],
+                },
+                lsn: 0,
+            }).await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+        }
+
+        // 5. 提交事务
+        self.transaction_manager.commit(txn_id).await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+
+        // 6. 触发 Lakehouse 迁移评估（如果挂载了）
+        if let Some(lh) = &self.lakehouse {
+            // 后台异步触发，不阻塞写入
+            let lh_clone = lh.clone();
+            tokio::spawn(async move {
+                let _ = lh_clone.migrate_data().await;
+            });
+        }
+
+        Ok(ids)
+    }
+
+    /// 事务感知的删除
+    pub async fn tx_aware_delete(
+        &self,
+        collection: &str,
+        ids: &[String],
+    ) -> Result<usize> {
+        let txn_id = self.transaction_manager
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+
+        let mut data = self.data.write().await;
+        let collection_data = data.get_mut(collection)
+            .ok_or_else(|| {
+                let _ = self.transaction_manager.abort(txn_id).await;
+                CoreTexError::CollectionNotFound(collection.to_string())
+            })?;
+
+        // 从索引删除
+        let index_name = format!("{}_hnsw", collection);
+        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+            for id in ids {
+                let _ = index.remove(id).await;
+            }
+        }
+
+        let mut deleted = 0;
+        for id in ids {
+            if collection_data.remove(id).is_some() {
+                deleted += 1;
+                if let Some(adapter) = &self.unified_adapter {
+                    let key = format!("{}:{}", collection, id);
+                    let _ = adapter.delete(&key).await;
+                } else {
+                    let storage = self.storage.read().await;
+                    let storage_key = format!("{}:{}", collection, id);
+                    let _ = storage.delete(&storage_key).await;
+                }
+            }
+        }
+        drop(data);
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for id in ids {
+            self.transaction_manager.append_wal(crate::coretex_transaction::WalEntry {
+                transaction_id: txn_id,
+                timestamp,
+                operation: crate::coretex_transaction::WalOperation::Delete {
+                    key: format!("{}:{}", collection, id),
+                    value: vec![],
+                },
+                lsn: 0,
+            }).await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+        }
+
+        self.transaction_manager.commit(txn_id).await
+            .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
+
+        Ok(deleted)
+    }
+
+    /// 手动触发 Lakehouse 迁移
+    pub async fn migrate_to_lakehouse(&self) -> Result<crate::coretex_lakehouse::MigrationReport> {
+        let lh = self.lakehouse.as_ref()
+            .ok_or_else(|| CoreTexError::Other("Lakehouse not attached".to_string()))?;
+        lh.migrate_data().await
+            .map_err(|e| CoreTexError::Other(e))
+    }
+
+    /// 获取 Lakehouse 统计
+    pub async fn lakehouse_stats(&self) -> Result<crate::coretex_lakehouse::LakehouseStats> {
+        let lh = self.lakehouse.as_ref()
+            .ok_or_else(|| CoreTexError::Other("Lakehouse not attached".to_string()))?;
+        Ok(lh.get_stats().await)
     }
 }
 

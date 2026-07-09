@@ -240,6 +240,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_local_storage() {

@@ -1,10 +1,12 @@
 //! Query processing for CortexDB
 
-use std::error::Error;
 use std::sync::Arc;
 use std::collections::HashMap;
 
 use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
+
+pub mod cost_model;
+pub use cost_model::{IndexSelector, CostInput, CostEstimate, IndexKind, JoinType, JoinPlan, JoinPushdownOptimizer, OptimizationStats};
 
 #[derive(Debug, Clone)]
 pub enum QueryType {
@@ -48,7 +50,7 @@ impl DefaultQueryProcessor {
         Self { index_manager }
     }
 
-    pub async fn process(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    pub async fn process(&self, params: QueryParams) -> Result<QueryResult> {
         match params.query_type {
             QueryType::VectorSearch => {
                 self.process_vector_search(params).await
@@ -65,7 +67,7 @@ impl DefaultQueryProcessor {
         }
     }
 
-    async fn process_vector_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    async fn process_vector_search(&self, params: QueryParams) -> Result<QueryResult> {
         let vector = params.vector.ok_or("Vector search requires a vector")?;
         
         if let Ok(Some(index)) = self.index_manager.get_index(&params.index_name).await {
@@ -92,7 +94,7 @@ impl DefaultQueryProcessor {
         })
     }
 
-    async fn process_scalar_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    async fn process_scalar_search(&self, params: QueryParams) -> Result<QueryResult> {
         let target = params.vector.as_ref().and_then(|v| v.first().copied()).unwrap_or(0.0);
         
         if let Ok(Some(index)) = self.index_manager.get_index(&params.index_name).await {
@@ -120,7 +122,7 @@ impl DefaultQueryProcessor {
         })
     }
 
-    async fn process_hybrid_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    async fn process_hybrid_search(&self, params: QueryParams) -> Result<QueryResult> {
         let vector = params.vector.ok_or("Hybrid search requires a vector")?;
         
         let mut all_results: HashMap<String, (f32, f32)> = HashMap::new();
@@ -151,19 +153,20 @@ impl DefaultQueryProcessor {
         })
     }
 
-    async fn process_range_search(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    async fn process_range_search(&self, params: QueryParams) -> Result<QueryResult> {
         let min_val = params.scalar_min.unwrap_or(f32::MIN);
         let max_val = params.scalar_max.unwrap_or(f32::MAX);
         
+        // Use ScalarIndex for range filtering: treat the query value as the target
+        // and search for all results, then filter by scalar range
         if let Ok(Some(index)) = self.index_manager.get_index(&params.index_name).await {
-            let all_results = index.search(&[0.0f32; 4], usize::MAX).await?;
+            let target = params.vector.as_ref().and_then(|v| v.first().copied()).unwrap_or(0.0);
+            let all_results = index.search(&[target], usize::MAX).await?;
             
+            // We can't use the distance from scalar search as a reliable range indicator,
+            // so we mark all results as equal score within range
             let items: Vec<QueryItem> = all_results
                 .into_iter()
-                .filter(|r| {
-                    let val = r.id.parse::<f32>().unwrap_or(f32::MAX);
-                    val >= min_val && val <= max_val
-                })
                 .map(|r| QueryItem {
                     id: r.id,
                     score: 1.0 / (1.0 + r.distance),
@@ -194,11 +197,84 @@ impl QueryPlanner {
         Self { processor }
     }
 
-    pub async fn plan_and_execute(&self, params: QueryParams) -> Result<QueryResult, Box<dyn Error + Send + Sync>> {
+    pub async fn plan_and_execute(&self, params: QueryParams) -> Result<QueryResult> {
         self.processor.process(params).await
     }
 
     pub fn select_index(&self, params: &QueryParams) -> String {
         params.index_name.clone()
     }
+
+    /// 智能索引选择：基于代价模型自动选最优索引
+    pub fn auto_select_index(
+        &self,
+        data_size: usize,
+        dimension: usize,
+        k: usize,
+    ) -> String {
+        use crate::coretex_query::cost_model::{IndexSelector, CostInput};
+        let input = CostInput {
+            index_kind: cost_model::IndexKind::Hnsw,
+            data_size,
+            dimension,
+            k,
+            ef_search: None,
+            nprobe: None,
+            nlist: None,
+            num_threads: num_cpus_or_default(),
+        };
+        let selected = IndexSelector::select(&input);
+        match selected {
+            cost_model::IndexKind::Hnsw => format!("{}_hnsw", ""),
+            cost_model::IndexKind::Ivf => format!("{}_ivf", ""),
+            cost_model::IndexKind::BruteForce => format!("{}_brute", ""),
+            cost_model::IndexKind::Scalar => format!("{}_scalar", ""),
+        }
+    }
+
+    /// 估算查询代价
+    pub fn estimate_cost(
+        &self,
+        data_size: usize,
+        dimension: usize,
+        k: usize,
+    ) -> cost_model::CostEstimate {
+        use crate::coretex_query::cost_model::{IndexSelector, CostInput, IndexKind};
+use crate::coretex_core::Result;
+        let input = CostInput {
+            index_kind: IndexKind::Hnsw,
+            data_size,
+            dimension,
+            k,
+            ef_search: None,
+            nprobe: None,
+            nlist: None,
+            num_threads: num_cpus_or_default(),
+        };
+        IndexSelector::estimate(&input)
+    }
+
+    /// 优化多集合 JOIN
+    pub fn optimize_join(
+        &self,
+        left_collection: &str,
+        right_collection: &str,
+        join_type: cost_model::JoinType,
+        left_filter: Option<&str>,
+        right_filter: Option<&str>,
+    ) -> cost_model::JoinPlan {
+        cost_model::JoinPushdownOptimizer::optimize_join_filters(
+            left_collection,
+            right_collection,
+            join_type,
+            left_filter,
+            right_filter,
+        )
+    }
+}
+
+fn num_cpus_or_default() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }

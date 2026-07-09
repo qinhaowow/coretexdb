@@ -1,6 +1,5 @@
 //! Video embedding service
 
-use std::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct VideoEmbeddingService {
@@ -29,7 +28,7 @@ impl VideoEmbeddingService {
         )
     }
 
-    pub fn embed_video(&self, frames: &[Vec<u8>]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_video(&self, frames: &[Vec<u8>]) -> Result<Vec<f32>> {
         let mut embedding = vec![0.0; self.dimension];
         
         if frames.is_empty() {
@@ -55,7 +54,7 @@ impl VideoEmbeddingService {
         Ok(embedding)
     }
 
-    pub fn embed_video_path(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_video_path(&self, path: &str) -> Result<Vec<f32>> {
         let data = std::fs::read(path)?;
         
         let chunk_size = 1000;
@@ -67,7 +66,7 @@ impl VideoEmbeddingService {
         self.embed_video(&frames)
     }
 
-    pub fn embed_video_frames(&self, frame_paths: &[String]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_video_frames(&self, frame_paths: &[String]) -> Result<Vec<f32>> {
         let mut frames = Vec::new();
         
         for path in frame_paths {
@@ -103,6 +102,7 @@ impl VideoEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_video() {

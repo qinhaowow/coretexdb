@@ -24,13 +24,15 @@ path = "src/main.rs"
 [features]
 default = ["tokio", "serde", "compression", "metrics"]
 python = ["dep:pyo3", "dep:pyo3-asyncio"]
-full = ["tokio", "serde", "rocksdb", "compression", "metrics", "onnx"]
+full = ["tokio", "serde", "rocksdb", "compression", "metrics", "onnx", "tls-gen"]
 tokio = ["dep:tokio", "dep:tokio-tungstenite"]
 serde = ["dep:serde", "dep:serde_json"]
 compression = ["dep:flate2", "dep:snap"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 rocksdb = ["dep:rocksdb"]
 onnx = ["dep:ort"]
+# 启用真实自签名证书生成（基于 rcgen）
+tls-gen = ["dep:rcgen"]
 
 [dependencies]
 # 异步运行时
@@ -83,7 +85,9 @@ snap = { version = "1.0", optional = true }
 
 # 加密
 aes-gcm = "0.10"
+sha1 = "0.10"
 sha2 = "0.10"
+md-5 = "0.10"
 hmac = "0.12"
 base64 = "0.21"
 hex = "0.4"
@@ -116,8 +120,11 @@ async-graphql-axum = "7.0"
 
 # TLS/SSL
 rustls = "0.21"
+rustls-pemfile = "1.0"
 hyper = { version = "0.14", features = ["full"] }
 http-body = "0.4"
+# 真实自签名证书生成（可选，由 tls-gen feature 启用）
+rcgen = { version = "0.11", optional = true }
 
 # CPU Features
 cpufeatures = "0.2"

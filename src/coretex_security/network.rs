@@ -287,6 +287,7 @@ impl IPRangeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_whitelist() {

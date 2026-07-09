@@ -1,6 +1,5 @@
 //! Point cloud and 3D data embedding service
 
-use std::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct PointCloudEmbeddingService {
@@ -29,7 +28,7 @@ impl PointCloudEmbeddingService {
         )
     }
 
-    pub fn embed_point_cloud(&self, points: &[[f32; 3]]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_point_cloud(&self, points: &[[f32; 3]]) -> Result<Vec<f32>> {
         if points.is_empty() {
             return Ok(vec![0.0; self.dimension]);
         }
@@ -91,7 +90,7 @@ impl PointCloudEmbeddingService {
         Ok(embedding)
     }
 
-    pub fn embed_point_cloud_path(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_point_cloud_path(&self, path: &str) -> Result<Vec<f32>> {
         let data = std::fs::read_to_string(path)?;
         
         let points: Vec<[f32; 3]> = data
@@ -112,7 +111,7 @@ impl PointCloudEmbeddingService {
         self.embed_point_cloud(&points)
     }
 
-    pub fn embed_voxel_grid(&self, voxel_data: &[u8], dimensions: (u32, u32, u32)) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_voxel_grid(&self, voxel_data: &[u8], dimensions: (u32, u32, u32)) -> Result<Vec<f32>> {
         let total_points = (dimensions.0 * dimensions.1 * dimensions.2) as usize;
         let mut points: Vec<[f32; 3]> = Vec::with_capacity(total_points);
         
@@ -147,6 +146,7 @@ impl PointCloudEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_point_cloud() {

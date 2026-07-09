@@ -390,6 +390,7 @@ impl IntoIterator for TimeSeries {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_timeseries_insert() {

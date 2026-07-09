@@ -10,7 +10,7 @@ setup(
     name="ai-robot-memory-system",
     version="1.1.0",
     author="AI Robot Team",
-    author_email="team@example.com",
+    author_email="qinhaowow@126.com",
     description="AI Robot Memory System with CortexDB, RAG, ROS2 Integration, and LLM Decision Making",
     long_description=long_description,
     long_description_content_type="text/markdown",

@@ -25,11 +25,13 @@ pub mod coretex_ann;
 pub mod coretex_distributed;
 pub mod coretex_auth;
 pub mod coretex_monitoring;
+pub mod coretex_spatial_transaction;
 pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
 #[cfg(feature = "python")]
 pub mod coretex_python;
+#[cfg(feature = "onnx")]
 pub mod coretex_onnx;
 pub mod coretex_bm25;
 pub mod coretex_incremental;
@@ -43,7 +45,6 @@ pub mod coretex_permissions;
 pub mod coretex_tracing;
 pub mod coretex_persistence;
 pub mod coretex_backup;
-pub mod coretex_monitoring_v2;
 // pub mod coretex_tantivy;
 pub mod coretex_graph;
 pub mod coretex_hybrid;
@@ -51,7 +52,12 @@ pub mod coretex_rerank;
 pub mod coretex_lakehouse;
 pub mod coretex_document;
 pub mod coretex_data;
-pub mod coretex_sentinel;
+pub mod coretex_domain_index;
+pub mod coretex_search_pipeline;
+pub mod coretex_observability_extra;
+pub mod coretex_ha_extra;
+pub mod coretex_bio;
+pub mod coretex_types_extra;
 pub mod coretex_grpo;
 
 #[cfg(test)]
@@ -62,12 +68,16 @@ mod coretex_security_tests;
 mod coretex_transaction_tests;
 #[cfg(test)]
 mod coretex_embedding_tests;
+#[cfg(test)]
+mod tests_integration;
+#[cfg(test)]
+mod wal_integration_tests;
 
 #[cfg(feature = "python")]
-pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
+pub use coretex_python::{PyCortexDB, PyAsyncCortexDB, PySearchResult, PyCollectionInfo, PyHealth, PyCoreTexError};
 pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
-pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
-pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog, IsolationLevel, TransactionError, WalEntry, WalOperation};
+pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig, CdcSource, CdcError, PostgresCdcSource, MysqlCdcSource, MongodbCdcSource, VectorSyncHandler, VectorSyncEvent, SchemaChangeType};
+pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog, IsolationLevel, TransactionError, WalEntry, WalOperation, LockManager, LockMode, LockRequest, DeadlockInfo};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
@@ -75,15 +85,14 @@ pub use coretex_storage::{StorageEngine, MemoryStorage};
 #[cfg(feature = "rocksdb")]
 pub use coretex_storage::PersistentStorage; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
-pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
+pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem};
+pub use coretex_query::cost_model::{IndexSelector as QueryIndexSelector, CostInput, CostEstimate, IndexKind as QueryIndexKind, JoinType, JoinPlan, JoinPushdownOptimizer, OptimizationStats};
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
 pub use coretex_api::rest::{start_server, ApiConfig};
 pub use coretex_api::graphql::{AppSchema, build_schema}; 
 pub use coretex_cli::run_cli; 
 pub use coretex_utils::{
-    LockManager, Transaction, TransactionOperation, TransactionState,
     ClusterManager, ClusterNode, NodeRole, NodeState, Shard,
-    BackupManager, MonitoringService, Metrics,
     cosine_similarity, euclidean_distance, normalize_vector, parse_vector, random_vector,
     LRUCache, TimedLRUCache, AsyncLRUCache, MultiLevelCache, CacheStats, MultiLevelCacheStats
 }; 
@@ -94,19 +103,32 @@ pub use coretex_embedding::{
     StreamingEmbedder, StreamItem, StreamResult, EmbeddingStream, StreamingStats,
     BatchedStreamEmbedder, WindowedStreamEmbedder, BackpressureStreamEmbedder, BackpressureSignal
 }; 
-pub use coretex_grpc::{CoretexService, start_grpc_server}; 
-pub use coretex_gis::{GeoIndex, GeoPoint, GeoBoundingBox, GeoPolygon, GeoLineString, GeoQuery}; 
+pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsInterceptor, ComposedInterceptor};
+pub mod grpc_client {
+    pub use crate::coretex_grpc::server::client::{connect, AuthApply};
+}
+pub use coretex_gis::{GeoIndex, GeoPoint, GeoBoundingBox, GeoPolygon, GeoLineString, GeoQuery, GeoPoint3D, GeoLineString3D, GeoPolygon3D, GeoBoundingBox3D}; 
 pub use coretex_timeseries::{TimeSeriesIndex, TimeSeries, TimeSeriesPoint, TimeSeriesStats, Aggregation, RollingWindow, ExponentialMovingAverage};
 pub use coretex_export::{DataExporter, VectorExporter, BatchExporter, CollectionExporter, ExportResult, ExportFormat};
 pub use coretex_ann::{ANNConfig, ANNAlgorithm, ANNParameters, HNSWParameters, IVFParameters, PQParameters, NSGParameters, SearchParameters, ANNTuner, IndexOptimizer, PerformanceRecord};
-pub use coretex_distributed::{TwoPhaseCommit, DistributedTransaction, DistributedOperation, DistributedTransactionState, TransactionCoordinator, DistributedLockManager, DistributedLock, ParticipantState, ParticipantStatus};
+pub use coretex_distributed::{TwoPhaseCommit, DistributedTransaction, DistributedOperation, DistributedTransactionState, TransactionCoordinator, DistributedLockManager, DistributedLock, ParticipantState, ParticipantStatus, ParticipantRpc, LocalParticipantRpc, LockPeerRpc, LocalLockPeerRpc};
 pub use coretex_auth::{AuthService, User, Role, Permission, JWTConfig, TokenClaims, AuthToken, UserInfo, RateLimiter};
 pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient, SlowQueryConfig, SlowQueryEntry, SlowQueryLogger};
-pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser};
+pub use coretex_spatial_transaction::{RTreeIndex, RTreeEntry, RTreeNode, MBR, SplitStrategy, SpatialTransaction, SpatialTxState, SpatialOperation, TlsSpatialCoordinator, TlsChannel, TlsHandshakeResult};
+pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser, SQLCreateIndex, SQLCondition, SQLToken, SQLUpdate};
+pub use coretex_sql::optimizer::{SQLOptimizer, ExecutionPlan, SQLOperator, SQLOperatorKind, SQLIndexKind, VectorPushdownOperator, FilterOperator, FilterOp, FilterValue, ProjectionOperator, LimitOperator, DistanceOp};
 pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
 pub use coretex_simd::{simd_utils, SimdCapabilities};
-pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats}; 
+pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats, HeartbeatInfo, ReconnectInfo, AckInfo, HeartbeatManager, WsRateLimiter, ConnectionState, AuthRequest, AuthOkResponse, SearchRequest as WsSearchRequest, SearchResponse as WsSearchResponse, SearchResult as WsSearchResult, VectorEntry as WsVectorEntry, InsertRequest as WsInsertRequest, InsertResponse as WsInsertResponse, DeleteRequest as WsDeleteRequest, DeleteResponse as WsDeleteResponse, SubscribeRequest as WsSubscribeRequest, UnsubscribeRequest as WsUnsubscribeRequest, DataChangeEvent as WsDataChangeEvent, ErrorResponse as WsErrorResponse};
+pub use coretex_api::graphql::{
+    AppSchema, build_schema, start_graphql_server,
+    QueryRoot, MutationRoot, SubscriptionRoot,
+    CollectionSchema as GqlCollectionSchema, SearchResultItem, VectorItem,
+    InsertResult, DeleteResult, HealthInfo, DataChangeEvent as GqlDataChangeEvent,
+    SearchInput, BatchSearchInput, CreateCollectionInput, VectorInput as GqlVectorInput,
+    MetadataFilterInput, CompositeFilterInput, FilterOp, DistanceMetricEnum,
+};
 // pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
 pub use coretex_graph::{GraphDatabase, GraphNode, GraphEdge, GraphPath, GraphError};
 pub use coretex_hybrid::{
@@ -129,12 +151,20 @@ pub use coretex_document::{
     DocumentParser, DocumentParserRegistry, PdfParser, ImageParser, AudioParser,
     HighDimVector, HighDimVectorStore, PQCompressor,
 }; 
-pub use coretex_data::{DataManager, VectorRecord, BulkResult};
-pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse};
+pub use coretex_data::{DataManager, VectorRecord, BulkResult, UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
+pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse, LogEntry, LogCommand, AppendEntriesRequest, AppendEntriesResponse, RaftLog, LogReplicator};
+pub use coretex_domain_index::{DomainIndex, DomainDocument, DomainSearchResult, DomainIndexManager, NewsWeatherIndex, GeoLocationIndex, FinancialIndex, KnowledgeIndex};
+pub use coretex_search_pipeline::{TextTokenizer, StopWords, Stemmer, RRFFusion, Candidate, RerankScorer, BM25RerankScorer, LengthPenaltyScorer, RerankPipeline, Modality, EmbeddingModel, RoutingStrategy, EmbeddingRouter, RoutingWeights, CrossModalResult, CrossModalRetriever};
+pub use coretex_grpo::{GRPOConfig, PolicyNetwork, GRPOExperience, GRPOStats, GRPOOptimizer, GRPOUpdateResult, GRPOSearchOptimizer, SearchAction};
+pub use coretex_bio::{KmerIndexer, SequenceChunker, SequenceChunk, SequenceChunkWithMeta, BinaryVector, IntegerVector, SpacetimeIndex, SpacetimePoint, UserDefinedFunction, UdfType, UdfParameter, UdfParamType, UdfRegistry};
+pub use coretex_types_extra::{DE9IM, SpatialRelation, Topology3D, WindowType, WindowFunction, WindowResult, TimeSeriesWindow, DocumentChunk, RagResult, RagRetriever, ECommerceIndex, Product, Order, InventoryItem, MedicalIndex, Patient, Diagnosis, Drug, LogisticsIndex, Package, Route, Carrier};
+pub use coretex_observability_extra::{AlertChannel, AlertNotification, WebhookChannel, SlackChannel, EmailChannel, EmailMessage, PagerDutyChannel, AlertDispatcher, DispatchResult, SpanContext, ContextPropagator, TraceHeaderFormat, PITRManager, TimelineEntry, BackupRecord, PITRReport};
+pub use coretex_ha_extra::{RaftSnapshot, InstallSnapshotRequest, InstallSnapshotResponse, SnapshotStore, ExtendedRaftRpc, HttpExtendedRaftRpc, RaftSnapshotManager, TwoPCState, ParticipantStateFull, TwoPCTransaction, TwoPCCoordinator, TwoPCRpc, MockTwoPCRpc, CheckpointRecord, CrashRecoveryManager, RecoveryReport};
 
 pub struct CoreTexDB {
     pub data_manager: DataManager,
     pub config: DbConfig,
+    pub wal: Option<Arc<WriteAheadLog>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +178,8 @@ pub struct DbConfig {
     pub memory_only: bool,
     pub max_vectors_per_collection: usize,
     pub create_dirs_on_init: bool,
+    pub wal_enabled: bool,
+    pub wal_max_segment_size: u64,
 }
 
 impl Default for DbConfig {
@@ -163,6 +195,8 @@ impl Default for DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
+            wal_enabled: true,
+            wal_max_segment_size: 64 * 1024 * 1024, // 64 MB
         }
     }
 }
@@ -201,6 +235,8 @@ impl DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
+            wal_enabled: true,
+            wal_max_segment_size: 64 * 1024 * 1024,
         }
     }
 }
@@ -215,6 +251,7 @@ impl CoreTexDB {
         Self {
             data_manager,
             config: DbConfig::default(),
+            wal: None,
         }
     }
 
@@ -234,6 +271,7 @@ impl CoreTexDB {
         Self {
             data_manager,
             config,
+            wal: None,
         }
     }
 
@@ -244,6 +282,35 @@ impl CoreTexDB {
         
         if !self.config.memory_only {
             self.init_metadata().await?;
+        }
+
+        // Initialize WAL if enabled
+        if self.config.wal_enabled && !self.config.memory_only {
+            use crate::coretex_utils::wal::WriteAheadLog;
+            
+            let wal = Arc::new(
+                WriteAheadLog::new(&self.config.wal_dir)
+                    .with_max_segment_size(self.config.wal_max_segment_size)
+            );
+            wal.init().await
+                .map_err(|e| CoreTexError::Io(e.to_string()))?;
+
+            // Wire WAL into DataManager (OnceLock ensures this happens exactly once)
+            self.data_manager.set_wal(Arc::clone(&wal))
+                .map_err(|_| CoreTexError::Internal("WAL already set".into()))?;
+
+            // Recover from WAL (replay any unapplied entries)
+            let recovery_result = self.data_manager.recover_from_wal().await?;
+            
+            if !recovery_result.is_clean() {
+                eprintln!(
+                    "WAL recovery: {} total, {} replayed, {} skipped, {} corrupted",
+                    recovery_result.total_entries,
+                    recovery_result.replayed,
+                    recovery_result.skipped,
+                    recovery_result.corrupted,
+                );
+            }
         }
         
         Ok(())
@@ -327,6 +394,10 @@ impl CoreTexDB {
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
         self.data_manager.delete_collection(name).await
+    }
+
+    pub async fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.data_manager.rename_collection(old_name, new_name).await
     }
 
     pub async fn list_collections(&self) -> Result<Vec<String>> {

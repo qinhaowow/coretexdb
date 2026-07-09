@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use async_trait::async_trait;
 
 use crate::CoreTexDB;
+use crate::coretex_core::Result;
 
 pub struct CoretexService {
     db: Arc<RwLock<CoreTexDB>>,

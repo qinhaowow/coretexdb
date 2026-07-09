@@ -211,8 +211,57 @@ mod tests {
     async fn test_tls_client_verify() {
         let config = TlsConfig::default();
         let client = TlsClient::new(config);
-        
+
+        // 非 PEM 字节应被拒绝
         let result = client.verify_server_cert(b"test_cert");
-        assert!(result.is_ok());
+        assert!(result.is_err());
+
+        // 空证书应被拒绝
+        let result = client.verify_server_cert(b"");
+        assert!(result.is_err());
+
+        // 缺少 END CERTIFICATE 的不完整 PEM 应被拒绝
+        let incomplete = b"-----BEGIN CERTIFICATE-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n";
+        let result = client.verify_server_cert(incomplete);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "tls-gen")]
+    #[tokio::test]
+    async fn test_tls_self_signed_cert_generation() {
+        let config = TlsConfig::default();
+        let server = TlsServer::new(config);
+
+        let (cert, key) = server.generate_self_signed_cert().expect("cert generation should succeed");
+
+        // 证书应是合法的 PEM
+        let cert_str = std::str::from_utf8(&cert).expect("cert should be valid UTF-8 PEM");
+        assert!(cert_str.contains("-----BEGIN CERTIFICATE-----"));
+        assert!(cert_str.contains("-----END CERTIFICATE-----"));
+
+        // 私钥应是合法的 PEM
+        let key_str = std::str::from_utf8(&key).expect("key should be valid UTF-8 PEM");
+        assert!(
+            key_str.contains("-----BEGIN PRIVATE KEY-----")
+                || key_str.contains("-----BEGIN EC PRIVATE KEY-----")
+                || key_str.contains("-----BEGIN RSA PRIVATE KEY-----"),
+            "key should be a valid private key PEM"
+        );
+
+        // 生成的证书应通过 verify_server_cert 校验
+        let client = TlsClient::new(TlsConfig::default());
+        let verify_result = client.verify_server_cert(&cert);
+        assert!(verify_result.is_ok(), "generated cert should verify");
+    }
+
+    #[cfg(not(feature = "tls-gen"))]
+    #[tokio::test]
+    async fn test_tls_self_signed_cert_disabled() {
+        let config = TlsConfig::default();
+        let server = TlsServer::new(config);
+
+        // 未启用 tls-gen feature 时应返回错误，而非静默返回占位证书
+        let result = server.generate_self_signed_cert();
+        assert!(result.is_err());
     }
 }

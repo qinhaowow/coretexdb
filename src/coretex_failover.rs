@@ -1,7 +1,9 @@
 //! Fault tolerance and failover mechanisms for CoreTexDB
 //! Implements Raft-inspired leader election with actual network communication
+//! Also implements Raft log replication for data consistency across cluster nodes.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock, mpsc};
@@ -97,10 +99,55 @@ pub struct HeartbeatResponse {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub term: u64,
+    pub index: u64,
+    pub command: LogCommand,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LogCommand {
+    Noop,
+    Put { key: String, value: Vec<u8> },
+    Delete { key: String },
+    CollectionOp { collection: String, op: String, payload: Vec<u8> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendEntriesRequest {
+    pub leader_id: String,
+    pub term: u64,
+    pub prev_log_index: u64,
+    pub prev_log_term: u64,
+    pub entries: Vec<LogEntry>,
+    pub leader_commit: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendEntriesResponse {
+    pub follower_id: String,
+    pub term: u64,
+    pub success: bool,
+    pub match_index: u64,
+    pub conflict_index: u64,
+}
+
 #[async_trait::async_trait]
 pub trait RaftRpc: Send + Sync {
     async fn request_vote(&self, addr: &str, req: &VoteRequest) -> Result<VoteResponse, String>;
     async fn send_heartbeat(&self, addr: &str, req: &HeartbeatRequest) -> Result<HeartbeatResponse, String>;
+    async fn append_entries(&self, addr: &str, req: &AppendEntriesRequest) -> Result<AppendEntriesResponse, String> {
+        // 默认实现：返回拒绝，让不支持日志复制的实现保持简单
+        Ok(AppendEntriesResponse {
+            follower_id: "unknown".to_string(),
+            term: req.term,
+            success: false,
+            match_index: 0,
+            conflict_index: 0,
+        })
+    }
 }
 
 pub struct HttpRaftRpc {
@@ -144,6 +191,19 @@ impl RaftRpc for HttpRaftRpc {
         resp.json::<HeartbeatResponse>()
             .await
             .map_err(|e| format!("Heartbeat response parse failed from {}: {}", addr, e))
+    }
+
+    async fn append_entries(&self, addr: &str, req: &AppendEntriesRequest) -> Result<AppendEntriesResponse, String> {
+        let url = format!("http://{}/raft/append_entries", addr);
+        let resp = self.client
+            .post(&url)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| format!("AppendEntries RPC failed to {}: {}", addr, e))?;
+        resp.json::<AppendEntriesResponse>()
+            .await
+            .map_err(|e| format!("AppendEntries response parse failed from {}: {}", addr, e))
     }
 }
 
@@ -612,5 +672,335 @@ impl ConnectionPool {
     pub async fn remove_node(&self, node_id: &str) {
         let mut nodes = self.nodes.write().await;
         nodes.remove(node_id);
+    }
+}
+
+// =================== Raft 日志复制 ===================
+
+/// 持久化 Raft 日志（基于 WAL 的日志存储）
+pub struct RaftLog {
+    entries: Vec<LogEntry>,
+    storage_path: Option<PathBuf>,
+}
+
+impl RaftLog {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            storage_path: None,
+        }
+    }
+
+    pub fn with_persistence(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut log = Self {
+            entries: Vec::new(),
+            storage_path: Some(path.clone()),
+        };
+        log.load_from_disk()?;
+        Ok(log)
+    }
+
+    fn load_from_disk(&mut self) -> std::io::Result<()> {
+        let path = match &self.storage_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if !path.exists() {
+            return Ok(());
+        }
+        let data = std::fs::read(path)?;
+        if data.is_empty() {
+            return Ok(());
+        }
+        match serde_json::from_slice::<Vec<LogEntry>>(&data) {
+            Ok(entries) => self.entries = entries,
+            Err(_) => {
+                // 文件格式错误，从头开始
+                self.entries.clear();
+            }
+        }
+        Ok(())
+    }
+
+    fn persist(&self) -> std::io::Result<()> {
+        let path = match &self.storage_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let data = serde_json::to_vec(&self.entries)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    /// 追加日志条目（Leader 调用）
+    pub fn append(&mut self, entry: LogEntry) -> u64 {
+        let index = self.entries.len() as u64;
+        let mut e = entry;
+        e.index = index;
+        self.entries.push(e);
+        let _ = self.persist();
+        index
+    }
+
+    /// Follower 接收 AppendEntries 时调用
+    pub fn append_entries(
+        &mut self,
+        prev_log_index: u64,
+        prev_log_term: u64,
+        entries: Vec<LogEntry>,
+    ) -> Result<u64, (u64, u64)> {
+        // 一致性检查
+        if prev_log_index > 0 {
+            if prev_log_index >= self.entries.len() as u64 {
+                return Err((self.entries.len() as u64, 0));
+            }
+            if self.entries[prev_log_index as usize].term != prev_log_term {
+                // 冲突：删除 prev_log_index 之后的所有条目
+                let conflict_index = prev_log_index;
+                self.entries.truncate(prev_log_index as usize);
+                let _ = self.persist();
+                return Err((conflict_index, 0));
+            }
+        }
+
+        // 删除与新条目冲突的现有条目
+        let start = prev_log_index as usize + 1;
+        if start < self.entries.len() {
+            self.entries.truncate(start);
+        }
+
+        // 追加新条目
+        for entry in entries {
+            self.entries.push(entry);
+        }
+        let _ = self.persist();
+        Ok((self.entries.len() as u64).saturating_sub(1))
+    }
+
+    pub fn get(&self, index: u64) -> Option<&LogEntry> {
+        self.entries.get(index as usize)
+    }
+
+    pub fn last_index(&self) -> u64 {
+        if self.entries.is_empty() { 0 } else { (self.entries.len() - 1) as u64 }
+    }
+
+    pub fn last_term(&self) -> u64 {
+        self.entries.last().map(|e| e.term).unwrap_or(0)
+    }
+
+    pub fn term_at(&self, index: u64) -> u64 {
+        self.entries.get(index as usize).map(|e| e.term).unwrap_or(0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries_from(&self, start: u64) -> Vec<LogEntry> {
+        if start as usize >= self.entries.len() {
+            return Vec::new();
+        }
+        self.entries[start as usize..].to_vec()
+    }
+
+    /// 提交点之后的条目可以被应用到状态机
+    pub fn commit_up_to(&mut self, commit_index: u64) -> Vec<LogEntry> {
+        let mut committed = Vec::new();
+        let current = self.entries.len() as u64;
+        let target = commit_index.min(current.saturating_sub(1));
+        while (self.entries.len() as u64) <= target {
+            // 等待更多条目
+            break;
+        }
+        let upper = (target + 1) as usize;
+        if upper > self.entries.len() {
+            return committed;
+        }
+        committed.extend(self.entries.drain(..upper));
+        let _ = self.persist();
+        committed
+    }
+}
+
+impl Default for RaftLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Raft 日志复制器（Leader 端）：负责把日志条目复制到所有 Follower
+pub struct LogReplicator {
+    log: Arc<RwLock<RaftLog>>,
+    rpc: Arc<dyn RaftRpc>,
+    node_addresses: Arc<RwLock<HashMap<String, String>>>,
+    local_node_id: String,
+    match_index: Arc<RwLock<HashMap<String, u64>>>,
+    next_index: Arc<RwLock<HashMap<String, u64>>>,
+    commit_index: Arc<RwLock<u64>>,
+}
+
+impl LogReplicator {
+    pub fn new(
+        local_node_id: String,
+        rpc: Arc<dyn RaftRpc>,
+        node_addresses: Arc<RwLock<HashMap<String, String>>>,
+    ) -> Self {
+        Self {
+            log: Arc::new(RwLock::new(RaftLog::new())),
+            rpc,
+            node_addresses,
+            local_node_id,
+            match_index: Arc::new(RwLock::new(HashMap::new())),
+            next_index: Arc::new(RwLock::new(HashMap::new())),
+            commit_index: Arc::new(RwLock::new(0)),
+        }
+    }
+
+    pub fn with_log(log: Arc<RwLock<RaftLog>>, local_node_id: String, rpc: Arc<dyn RaftRpc>, node_addresses: Arc<RwLock<HashMap<String, String>>>) -> Self {
+        Self {
+            log,
+            rpc,
+            node_addresses,
+            local_node_id,
+            match_index: Arc::new(RwLock::new(HashMap::new())),
+            next_index: Arc::new(RwLock::new(HashMap::new())),
+            commit_index: Arc::new(RwLock::new(0)),
+        }
+    }
+
+    pub async fn append(&self, term: u64, command: LogCommand) -> u64 {
+        let mut log = self.log.write().await;
+        let index = log.append(LogEntry {
+            term,
+            index: 0,
+            command,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        });
+        index
+    }
+
+    /// 复制日志到所有 Follower（并行）
+    pub async fn replicate_to_all(&self, term: u64, leader_commit: u64) -> usize {
+        let addresses = self.node_addresses.read().await.clone();
+        let log = self.log.read().await;
+        let mut count = 0usize;
+        let total = addresses.len();
+        drop(log);
+
+        for (follower_id, addr) in &addresses {
+            if *follower_id == self.local_node_id {
+                continue;
+            }
+            if self.replicate_to_follower(follower_id, addr, term, leader_commit).await {
+                count += 1;
+            }
+        }
+        // 多数派已确认则更新 commit_index
+        if count + 1 > total / 2 {
+            let log_guard = self.log.read().await;
+            let new_commit = log_guard.last_index();
+            *self.commit_index.write().await = new_commit;
+        }
+        count
+    }
+
+    /// 复制日志到单个 Follower
+    pub async fn replicate_to_follower(&self, follower_id: &str, addr: &str, term: u64, leader_commit: u64) -> bool {
+        let next_idx = *self.next_index.read().await.get(follower_id).unwrap_or(&0);
+
+        let (prev_log_index, prev_log_term, entries) = {
+            let log = self.log.read().await;
+            let prev_index = if next_idx > 0 { next_idx - 1 } else { 0 };
+            let prev_term = if next_idx > 0 { log.term_at(prev_index) } else { 0 };
+            let entries = log.entries_from(next_idx);
+            (prev_index, prev_term, entries)
+        };
+
+        let req = AppendEntriesRequest {
+            leader_id: self.local_node_id.clone(),
+            term,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit,
+        };
+
+        match self.rpc.append_entries(addr, &req).await {
+            Ok(resp) => {
+                if resp.success {
+                    self.match_index.write().await.insert(follower_id.to_string(), resp.match_index);
+                    self.next_index.write().await.insert(follower_id.to_string(), resp.match_index + 1);
+                    true
+                } else {
+                    // 回退 next_index
+                    let current = self.next_index.read().await.get(follower_id).copied().unwrap_or(1);
+                    let new_next = if resp.conflict_index > 0 {
+                        resp.conflict_index
+                    } else {
+                        current.saturating_sub(1).max(1)
+                    };
+                    self.next_index.write().await.insert(follower_id.to_string(), new_next);
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Follower 处理 AppendEntries 请求
+    pub async fn handle_append_entries(&self, req: &AppendEntriesRequest) -> AppendEntriesResponse {
+        let mut log = self.log.write().await;
+
+        // 一致性检查 + 追加
+        match log.append_entries(req.prev_log_index, req.prev_log_term, req.entries.clone()) {
+            Ok(match_index) => {
+                // 更新 commit_index
+                if req.leader_commit > *self.commit_index.read().await {
+                    *self.commit_index.write().await = req.leader_commit;
+                }
+                AppendEntriesResponse {
+                    follower_id: self.local_node_id.clone(),
+                    term: req.term,
+                    success: true,
+                    match_index,
+                    conflict_index: 0,
+                }
+            }
+            Err((conflict_index, _)) => AppendEntriesResponse {
+                follower_id: self.local_node_id.clone(),
+                term: req.term,
+                success: false,
+                match_index: 0,
+                conflict_index,
+            },
+        }
+    }
+
+    pub async fn commit_index(&self) -> u64 {
+        *self.commit_index.read().await
+    }
+
+    pub async fn log_ref(&self) -> Arc<RwLock<RaftLog>> {
+        self.log.clone()
+    }
+
+    /// 初始化新加入节点的 next_index
+    pub async fn init_follower(&self, follower_id: &str) {
+        let last = self.log.read().await.last_index();
+        self.next_index.write().await.insert(follower_id.to_string(), last + 1);
+        self.match_index.write().await.insert(follower_id.to_string(), 0);
     }
 }

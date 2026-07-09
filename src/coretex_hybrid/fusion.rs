@@ -188,8 +188,8 @@ impl ScoreFusionEngine {
                     vector_score: if result.source == "vector" { result.score } else { 0.0 },
                     text_score: if result.source == "text" || result.source == "bm25" { result.score } else { 0.0 },
                     min_rank: result.rank,
-                    source_count: 1,
-                    scores: vec![result.score],
+                    source_count: 0,
+                    scores: Vec::new(),
                     sources,
                 }
             });

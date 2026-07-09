@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::coretex_core::{CoreTexError, Result};
 
 /// Result of a vector search
 #[derive(Debug, Clone, PartialEq)]
@@ -32,19 +32,19 @@ impl Ord for SearchResult {
 #[async_trait]
 pub trait VectorIndex: Send + Sync {
     /// Add a vector to the index
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()>;
     
     /// Remove a vector from the index
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>>;
+    async fn remove(&self, id: &str) -> Result<bool>;
     
     /// Search for similar vectors
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>>;
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>>;
     
     /// Build the index (if needed)
-    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn build(&self) -> Result<()>;
     
     /// Clear the index
-    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn clear(&self) -> Result<()>;
     
     /// Clone the index into a box
     fn clone_box(&self) -> Box<dyn VectorIndex>;
@@ -164,7 +164,7 @@ impl HNSWIndex {
         }
     }
 
-    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn save_to_file(&self, path: &str) -> Result<()> {
         use std::io::Write;
 
         let vectors = self.vectors.read().await;
@@ -188,7 +188,7 @@ impl HNSWIndex {
         Ok(())
     }
 
-    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub async fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let data: HNSWIndexData = serde_json::from_str(&content)?;
 
@@ -248,6 +248,7 @@ impl HNSWIndex {
         ef: usize,
         layer: usize,
         vectors: &std::collections::HashMap<String, Vec<f32>>,
+        graph: &std::collections::HashMap<String, Vec<Vec<String>>>,
     ) -> (std::collections::BinaryHeap<std::cmp::Reverse<SearchResult>>, std::collections::HashSet<String>) {
         use std::collections::{BinaryHeap, HashSet};
 
@@ -265,7 +266,7 @@ impl HNSWIndex {
             if current.distance > furthest {
                 break;
             }
-            for neighbor_id in self.get_neighbors(&current.id, layer) {
+            for neighbor_id in Self::get_neighbors_from(&current.id, layer, graph) {
                 if visited.insert(neighbor_id.clone()) {
                     let dist = self.calculate_distance(query, vectors.get(&neighbor_id).unwrap());
                     if dist < furthest || results.len() < ef {
@@ -282,8 +283,7 @@ impl HNSWIndex {
         (results, visited)
     }
 
-    fn get_neighbors(&self, id: &str, layer: usize) -> Vec<String> {
-        let graph = self.graph.blocking_read();
+    fn get_neighbors_from(id: &str, layer: usize, graph: &std::collections::HashMap<String, Vec<Vec<String>>>) -> Vec<String> {
         graph.get(id)
             .and_then(|levels| levels.get(layer))
             .cloned()
@@ -315,7 +315,7 @@ impl IVFIndex {
         }
     }
 
-    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn save_to_file(&self, path: &str) -> Result<()> {
         use std::io::Write;
 
         let vectors = self.vectors.read().await;
@@ -337,7 +337,7 @@ impl IVFIndex {
         Ok(())
     }
 
-    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub async fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let data: IVFIndexData = serde_json::from_str(&content)?;
 
@@ -449,18 +449,18 @@ impl ScalarIndex {
 
 #[async_trait]
 impl VectorIndex for BruteForceIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    async fn remove(&self, id: &str) -> Result<bool> {
         let mut vectors = self.vectors.write().await;
         Ok(vectors.remove(id).is_some())
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
         let vectors = self.vectors.read().await;
         
         let mut results: Vec<SearchResult> = vectors
@@ -493,12 +493,12 @@ impl VectorIndex for BruteForceIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn build(&self) -> Result<()> {
         // Brute-force index doesn't need building
         Ok(())
     }
     
-    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn clear(&self) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
         Ok(())
@@ -511,7 +511,7 @@ impl VectorIndex for BruteForceIndex {
 
 #[async_trait]
 impl VectorIndex for HNSWIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
         drop(vectors);
@@ -526,7 +526,7 @@ impl VectorIndex for HNSWIndex {
             let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
 
             for l in (0..=level.min(top_level)).rev() {
-                let (results, _) = self.search_layer(ep, vector, self.ef_construction, l, &vectors_read);
+                let (results, _) = self.search_layer(ep, vector, self.ef_construction, l, &vectors_read, &graph);
                 let neighbors: Vec<String> = results.into_iter()
                     .take(self.m)
                     .map(|r| r.0.id)
@@ -564,7 +564,7 @@ impl VectorIndex for HNSWIndex {
         Ok(())
     }
 
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    async fn remove(&self, id: &str) -> Result<bool> {
         let mut vectors = self.vectors.write().await;
         vectors.remove(id);
         let mut graph = self.graph.write().await;
@@ -581,7 +581,7 @@ impl VectorIndex for HNSWIndex {
         Ok(true)
     }
 
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
         let vectors = self.vectors.read().await;
         if vectors.is_empty() {
             return Ok(Vec::new());
@@ -598,13 +598,13 @@ impl VectorIndex for HNSWIndex {
 
         let mut current_entry = ep.clone();
         for l in (1..=top_level).rev() {
-            let (results, _) = self.search_layer(&current_entry, query, 1, l, &vectors);
+            let (results, _) = self.search_layer(&current_entry, query, 1, l, &vectors, &graph);
             if let Some(closest) = results.into_iter().min_by(|a, b| a.0.distance.partial_cmp(&b.0.distance).unwrap()) {
                 current_entry = closest.0.id;
             }
         }
 
-        let (results, _) = self.search_layer(&current_entry, query, self.ef_search.max(k), 0, &vectors);
+        let (results, _) = self.search_layer(&current_entry, query, self.ef_search.max(k), 0, &vectors, &graph);
         let mut final_results: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
         final_results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
         final_results.truncate(k);
@@ -612,7 +612,7 @@ impl VectorIndex for HNSWIndex {
         Ok(final_results)
     }
 
-    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn build(&self) -> Result<()> {
         let vectors = self.vectors.read().await;
         let ids: Vec<String> = vectors.keys().cloned().collect();
         drop(vectors);
@@ -633,7 +633,7 @@ impl VectorIndex for HNSWIndex {
                     let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
 
                     for l in (0..=level.min(top_level)).rev() {
-                        let (results, _) = self.search_layer(ep, &vec, self.ef_construction, l, &vectors_read);
+                        let (results, _) = self.search_layer(ep, &vec, self.ef_construction, l, &vectors_read, &graph);
                         let neighbors: Vec<String> = results.into_iter()
                             .take(self.m)
                             .map(|r| r.0.id)
@@ -672,7 +672,7 @@ impl VectorIndex for HNSWIndex {
         Ok(())
     }
 
-    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn clear(&self) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
         let mut graph = self.graph.write().await;
@@ -689,7 +689,7 @@ impl VectorIndex for HNSWIndex {
 
 #[async_trait]
 impl VectorIndex for IVFIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
 
@@ -700,7 +700,7 @@ impl VectorIndex for IVFIndex {
         Ok(())
     }
 
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    async fn remove(&self, id: &str) -> Result<bool> {
         let mut vectors = self.vectors.write().await;
         let removed = vectors.remove(id).is_some();
 
@@ -712,7 +712,7 @@ impl VectorIndex for IVFIndex {
         Ok(removed)
     }
 
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
         let vectors = self.vectors.read().await;
         let vector_to_cluster = self.vector_to_cluster.read().await;
         let centroids = self.centroids.read().await;
@@ -762,7 +762,7 @@ impl VectorIndex for IVFIndex {
         Ok(results)
     }
 
-    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn build(&self) -> Result<()> {
         let vectors = self.vectors.read().await;
         let all_vectors: Vec<Vec<f32>> = vectors.values().cloned().collect();
         let ids: Vec<String> = vectors.keys().cloned().collect();
@@ -838,7 +838,7 @@ impl VectorIndex for IVFIndex {
         Ok(())
     }
 
-    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn clear(&self) -> Result<()> {
         let mut vectors = self.vectors.write().await;
         vectors.clear();
 
@@ -858,7 +858,7 @@ impl VectorIndex for IVFIndex {
 
 #[async_trait]
 impl VectorIndex for ScalarIndex {
-    async fn add(&self, id: &str, vector: &[f32]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
         // For scalar index, we'll use the first element of the vector as the scalar value
         if vector.is_empty() {
             return Err("Vector must not be empty for scalar index".into());
@@ -874,7 +874,7 @@ impl VectorIndex for ScalarIndex {
         Ok(())
     }
     
-    async fn remove(&self, id: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    async fn remove(&self, id: &str) -> Result<bool> {
         let mut scalars = self.scalars.write().await;
         let removed = scalars.remove(id).is_some();
         
@@ -886,7 +886,7 @@ impl VectorIndex for ScalarIndex {
         Ok(removed)
     }
     
-    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, Box<dyn Error + Send + Sync>> {
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
         // For scalar index, we'll use the first element of the query vector as the target value
         if query.is_empty() {
             return Err("Query vector must not be empty for scalar index".into());
@@ -914,13 +914,13 @@ impl VectorIndex for ScalarIndex {
         Ok(results.into_iter().take(k).collect())
     }
     
-    async fn build(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn build(&self) -> Result<()> {
         // Update sorted list
         self.update_sorted();
         Ok(())
     }
     
-    async fn clear(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn clear(&self) -> Result<()> {
         let mut scalars = self.scalars.write().await;
         scalars.clear();
         
@@ -949,7 +949,7 @@ impl IndexManager {
     }
     
     /// Create a new index
-    pub async fn create_index(&self, name: &str, index_type: &str, metric: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn create_index(&self, name: &str, index_type: &str, metric: &str) -> Result<()> {
         let mut indexes = self.indexes.write().await;
         
         let index: Box<dyn VectorIndex> = match index_type {
@@ -957,6 +957,7 @@ impl IndexManager {
             "hnsw" => Box::new(HNSWIndex::new(metric)),
             "ivf" => Box::new(IVFIndex::new(metric)),
             "scalar" => Box::new(ScalarIndex::new()),
+            "pq" => Box::new(PQIndex::new(metric, 128, 16, 8)),
             _ => Box::new(BruteForceIndex::new(metric)),
         };
         
@@ -965,7 +966,7 @@ impl IndexManager {
     }
     
     /// Get an index by name
-    pub async fn get_index(&self, name: &str) -> Result<Option<Box<dyn VectorIndex + 'static>>, Box<dyn Error + Send + Sync>> {
+    pub async fn get_index(&self, name: &str) -> Result<Option<Box<dyn VectorIndex + 'static>>> {
         let indexes = self.indexes.read().await;
         match indexes.get(name) {
             Some(index) => Ok(Some(index.clone_box())),
@@ -974,7 +975,7 @@ impl IndexManager {
     }
     
     /// Delete an index
-    pub async fn delete_index(&self, name: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    pub async fn delete_index(&self, name: &str) -> Result<bool> {
         let mut indexes = self.indexes.write().await;
         Ok(indexes.remove(name).is_some())
     }
@@ -1036,7 +1037,7 @@ impl PQIndex {
         }
     }
 
-    pub async fn save_to_file(&self, path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn save_to_file(&self, path: &str) -> Result<()> {
         use std::io::Write;
 
         let vectors = self.vectors.read().await;
@@ -1059,7 +1060,7 @@ impl PQIndex {
         Ok(())
     }
 
-    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub async fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let data: PQIndexData = serde_json::from_str(&content)?;
 

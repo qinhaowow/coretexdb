@@ -32,12 +32,13 @@ wheels/
 .installed.cfg 
 *.egg 
 
-# IDE 
-.vscode/ 
-.idea/ 
-*.swp 
-*.swo 
-*~ 
+# IDE
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*~
 
 # Database 
 *.cdb 
@@ -65,6 +66,8 @@ coverage/
 .env.test.local 
 .env.production.local 
 
-# Temporary 
-tmp/ 
+# Temporary
+tmp/
 temp/
+__err.txt
+__sizes.txt

@@ -319,6 +319,7 @@ pub mod embedded {
 #[cfg(feature = "wasm")]
 pub mod wasm {
     use super::*;
+use crate::coretex_core::Result;
     
     pub struct WasmDB {
         collections: std::collections::HashMap<String, EdgeCollection>,

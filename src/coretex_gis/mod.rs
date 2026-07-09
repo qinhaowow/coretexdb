@@ -203,52 +203,370 @@ pub struct GeoIndex {
 
 struct RTree {
     nodes: Vec<RTreeNode>,
-    bounds: GeoBoundingBox,
+    root: usize,
+    max_entries: usize,
+    min_entries: usize,
 }
 
 struct RTreeNode {
     bounds: GeoBoundingBox,
     children: Vec<usize>,
-    points: Vec<(String, GeoPoint)>,
+    entries: Vec<(String, GeoPoint)>,
+    parent: Option<usize>,
     is_leaf: bool,
+}
+
+impl RTreeNode {
+    fn new_leaf() -> Self {
+        Self {
+            bounds: GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+            children: Vec::new(),
+            entries: Vec::new(),
+            parent: None,
+            is_leaf: true,
+        }
+    }
+
+    fn new_internal() -> Self {
+        Self {
+            bounds: GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+            children: Vec::new(),
+            entries: Vec::new(),
+            parent: None,
+            is_leaf: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.children.is_empty()
+    }
+
+    fn entry_count(&self) -> usize {
+        if self.is_leaf {
+            self.entries.len()
+        } else {
+            self.children.len()
+        }
+    }
+
+    fn update_bounds_for_point(&mut self, point: &GeoPoint) {
+        self.bounds.min_lat = self.bounds.min_lat.min(point.latitude);
+        self.bounds.max_lat = self.bounds.max_lat.max(point.latitude);
+        self.bounds.min_lon = self.bounds.min_lon.min(point.longitude);
+        self.bounds.max_lon = self.bounds.max_lon.max(point.longitude);
+    }
+
+    fn update_bounds_for_box(&mut self, bbox: &GeoBoundingBox) {
+        self.bounds.min_lat = self.bounds.min_lat.min(bbox.min_lat);
+        self.bounds.max_lat = self.bounds.max_lat.max(bbox.max_lat);
+        self.bounds.min_lon = self.bounds.min_lon.min(bbox.min_lon);
+        self.bounds.max_lon = self.bounds.max_lon.max(bbox.max_lon);
+    }
+
+    fn recompute_bounds(&mut self) {
+        if self.is_leaf {
+            self.bounds = GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+            for (_, p) in &self.entries {
+                self.update_bounds_for_point(p);
+            }
+        } else {
+            self.bounds = GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+            // bounds 由 adjust_tree 在插入子节点时更新
+        }
+    }
+}
+
+/// 计算 MBR 包含一个点后的面积增量
+fn enlargement_for_point(bbox: &GeoBoundingBox, point: &GeoPoint) -> f64 {
+    let new_min_lat = bbox.min_lat.min(point.latitude);
+    let new_max_lat = bbox.max_lat.max(point.latitude);
+    let new_min_lon = bbox.min_lon.min(point.longitude);
+    let new_max_lon = bbox.max_lon.max(point.longitude);
+    let old_area = (bbox.max_lat - bbox.min_lat) * (bbox.max_lon - bbox.min_lon);
+    let new_area = (new_max_lat - new_min_lat) * (new_max_lon - new_min_lon);
+    new_area - old_area
 }
 
 impl RTree {
     pub fn new() -> Self {
         Self {
-            nodes: vec![RTreeNode {
-                bounds: GeoBoundingBox::new(-90.0, 90.0, -180.0, 180.0),
-                children: Vec::new(),
-                points: Vec::new(),
-                is_leaf: true,
-            }],
-            bounds: GeoBoundingBox::new(-90.0, 90.0, -180.0, 180.0),
+            nodes: vec![RTreeNode::new_leaf()],
+            root: 0,
+            max_entries: 8,
+            min_entries: 3,
         }
     }
 
     pub fn insert(&mut self, id: String, point: GeoPoint) {
-        let leaf = self.nodes[0].points.len() < 4;
-        
-        if leaf {
-            self.nodes[0].points.push((id, point));
+        // 1. 选择最佳叶子节点
+        let leaf_idx = self.choose_leaf(self.root, &point);
+
+        // 2. 插入条目到叶子
+        {
+            let leaf = &mut self.nodes[leaf_idx];
+            leaf.entries.push((id, point.clone()));
+            leaf.update_bounds_for_point(&point);
         }
+
+        // 3. 如果溢出，分裂
+        let mut split_result = if self.nodes[leaf_idx].entries.len() > self.max_entries {
+            Some(self.split_node(leaf_idx))
+        } else {
+            None
+        };
+
+        // 4. 向上调整树
+        let mut current = leaf_idx;
+        while let Some(parent_idx) = self.nodes[current].parent {
+            // 更新父节点边界
+            {
+                let child_bounds = self.nodes[current].bounds.clone();
+                let parent = &mut self.nodes[parent_idx];
+                parent.update_bounds_for_box(&child_bounds);
+            }
+
+            // 如果当前节点分裂了，将新节点加入父节点的 children
+            if let Some(sr) = split_result.take() {
+                let new_idx = sr.new_node_idx;
+                {
+                    let new_bounds = self.nodes[new_idx].bounds.clone();
+                    let parent = &mut self.nodes[parent_idx];
+                    parent.children.push(new_idx);
+                    parent.update_bounds_for_box(&new_bounds);
+                }
+                self.nodes[new_idx].parent = Some(parent_idx);
+
+                // 检查父节点是否也溢出
+                if self.nodes[parent_idx].children.len() > self.max_entries {
+                    split_result = Some(self.split_node(parent_idx));
+                }
+            }
+            current = parent_idx;
+        }
+
+        // 5. 如果根节点分裂，创建新根
+        if let Some(sr) = split_result {
+            let old_root = self.root;
+            let new_node_idx = sr.new_node_idx;
+
+            let mut new_root = RTreeNode::new_internal();
+            let old_bounds = self.nodes[old_root].bounds.clone();
+            let new_bounds = self.nodes[new_node_idx].bounds.clone();
+            new_root.update_bounds_for_box(&old_bounds);
+            new_root.update_bounds_for_box(&new_bounds);
+            new_root.children.push(old_root);
+            new_root.children.push(new_node_idx);
+
+            let new_root_idx = self.nodes.len();
+            self.nodes[old_root].parent = Some(new_root_idx);
+            self.nodes[new_node_idx].parent = Some(new_root_idx);
+            self.nodes.push(new_root);
+            self.root = new_root_idx;
+        }
+    }
+
+    /// 从根开始选择包含 point 的最佳叶子节点（最小面积增量）
+    fn choose_leaf(&self, node_idx: usize, point: &GeoPoint) -> usize {
+        let node = &self.nodes[node_idx];
+        if node.is_leaf {
+            return node_idx;
+        }
+
+        // 在子节点中选择面积增量最小的
+        let mut best_child = node.children[0];
+        let mut best_enlargement = f64::MAX;
+
+        for &child_idx in &node.children {
+            let child = &self.nodes[child_idx];
+            let enlargement = enlargement_for_point(&child.bounds, point);
+            if enlargement < best_enlargement
+                || (enlargement == best_enlargement
+                    && self.area(&child.bounds) < self.area(&self.nodes[best_child].bounds))
+            {
+                best_enlargement = enlargement;
+                best_child = child_idx;
+            }
+        }
+
+        self.choose_leaf(best_child, point)
+    }
+
+    fn area(&self, bbox: &GeoBoundingBox) -> f64 {
+        (bbox.max_lat - bbox.min_lat).max(0.0) * (bbox.max_lon - bbox.min_lon).max(0.0)
+    }
+
+    /// 二次分裂算法：选择浪费最大的两个种子，然后分配剩余条目
+    fn split_node(&mut self, node_idx: usize) -> SplitResult {
+        let is_leaf = self.nodes[node_idx].is_leaf;
+
+        // 提取所有条目
+        let entries: Vec<(String, GeoPoint)> = if is_leaf {
+            std::mem::take(&mut self.nodes[node_idx].entries)
+        } else {
+            // 内部节点分裂：提取子节点索引
+            let children = std::mem::take(&mut self.nodes[node_idx].children);
+            // 将子节点转为伪条目（用其 MBR 中心点作为代表）
+            children.into_iter()
+                .map(|child_idx| {
+                    let b = &self.nodes[child_idx].bounds;
+                    let center = GeoPoint::new(
+                        (b.min_lat + b.max_lat) / 2.0,
+                        (b.min_lon + b.max_lon) / 2.0,
+                    );
+                    (format!("__child__{}", child_idx), center)
+                })
+                .collect()
+        };
+
+        if entries.len() < 2 {
+            return SplitResult { new_node_idx: node_idx };
+        }
+
+        // 1. 选种子：找两个组合 MBR 面积最大的（最大浪费）
+        let mut max_waste = f64::MIN;
+        let mut seed1 = 0;
+        let mut seed2 = 1;
+
+        for i in 0..entries.len() {
+            for j in (i + 1)..entries.len() {
+                let p1 = &entries[i].1;
+                let p2 = &entries[j].1;
+                let combined = GeoBoundingBox::new(
+                    p1.latitude.min(p2.latitude),
+                    p1.latitude.max(p2.latitude),
+                    p1.longitude.min(p2.longitude),
+                    p1.longitude.max(p2.longitude),
+                );
+                let waste = self.area(&combined);
+                if waste > max_waste {
+                    max_waste = waste;
+                    seed1 = i;
+                    seed2 = j;
+                }
+            }
+        }
+
+        // 2. 分配条目到两组
+        let mut group1: Vec<usize> = vec![seed1];
+        let mut group2: Vec<usize> = vec![seed2];
+
+        let p_seed1 = entries[seed1].1.clone();
+        let p_seed2 = entries[seed2].1.clone();
+
+        let mut bbox1 = GeoBoundingBox::new(
+            p_seed1.latitude, p_seed1.latitude,
+            p_seed1.longitude, p_seed1.longitude,
+        );
+        let mut bbox2 = GeoBoundingBox::new(
+            p_seed2.latitude, p_seed2.latitude,
+            p_seed2.longitude, p_seed2.longitude,
+        );
+
+        for i in 0..entries.len() {
+            if i == seed1 || i == seed2 {
+                continue;
+            }
+
+            let point = &entries[i].1;
+            let enlarg1 = enlargement_for_point(&bbox1, point);
+            let enlarg2 = enlargement_for_point(&bbox2, point);
+
+            // 平衡：如果一组远少于另一组，强制分配到少的组
+            if group1.len() + entries.len() - group1.len() - group2.len() - 1 <= self.min_entries
+                && group1.len() < self.min_entries
+            {
+                group1.push(i);
+                bbox1.update_bounds_for_point_ref(point);
+            } else if group2.len() < self.min_entries
+                && group2.len() + entries.len() - group1.len() - group2.len() - 1 <= self.min_entries
+            {
+                group2.push(i);
+                bbox2.update_bounds_for_point_ref(point);
+            } else if enlarg1 < enlarg2 {
+                group1.push(i);
+                bbox1.update_bounds_for_point_ref(point);
+            } else if enlarg2 < enlarg1 {
+                group2.push(i);
+                bbox2.update_bounds_for_point_ref(point);
+            } else if self.area(&bbox1) < self.area(&bbox2) {
+                group1.push(i);
+                bbox1.update_bounds_for_point_ref(point);
+            } else {
+                group2.push(i);
+                bbox2.update_bounds_for_point_ref(point);
+            }
+        }
+
+        // 3. 重建节点
+        // 原节点保留 group1
+        let parent = self.nodes[node_idx].parent;
+        self.nodes[node_idx] = RTreeNode::new_leaf();
+        self.nodes[node_idx].parent = parent;
+        self.nodes[node_idx].bounds = bbox1.clone();
+        for &i in &group1 {
+            self.nodes[node_idx].entries.push(entries[i].clone());
+        }
+
+        // 新节点存放 group2
+        let new_node = RTreeNode::new_leaf();
+        let new_node_idx = self.nodes.len();
+
+        let mut new_node = new_node;
+        new_node.bounds = bbox2.clone();
+        for &i in &group2 {
+            new_node.entries.push(entries[i].clone());
+        }
+        self.nodes.push(new_node);
+
+        // 如果是内部节点分裂，需要恢复 children 关系
+        if !is_leaf {
+            // 将伪条目转回子节点索引
+            let g1_children: Vec<usize> = self.nodes[node_idx].entries.drain(..)
+                .filter_map(|(key, _)| key.strip_prefix("__child__").and_then(|s| s.parse::<usize>().ok()))
+                .collect();
+            let g2_children: Vec<usize> = self.nodes[new_node_idx].entries.drain(..)
+                .filter_map(|(key, _)| key.strip_prefix("__child__").and_then(|s| s.parse::<usize>().ok()))
+                .collect();
+
+            self.nodes[node_idx].is_leaf = false;
+            self.nodes[node_idx].children = g1_children.clone();
+            self.nodes[new_node_idx].is_leaf = false;
+            self.nodes[new_node_idx].children = g2_children.clone();
+
+            // 更新子节点的 parent 指针
+            for &child_idx in &g1_children {
+                if child_idx < self.nodes.len() {
+                    self.nodes[child_idx].parent = Some(node_idx);
+                }
+            }
+            for &child_idx in &g2_children {
+                if child_idx < self.nodes.len() {
+                    self.nodes[child_idx].parent = Some(new_node_idx);
+                }
+            }
+        }
+
+        SplitResult { new_node_idx }
     }
 
     pub fn search(&self, query: &GeoBoundingBox) -> Vec<(String, GeoPoint)> {
         let mut results = Vec::new();
-        self.search_node(0, query, &mut results);
+        self.search_node(self.root, query, &mut results);
         results
     }
 
     fn search_node(&self, node_idx: usize, query: &GeoBoundingBox, results: &mut Vec<(String, GeoPoint)>) {
+        if node_idx >= self.nodes.len() {
+            return;
+        }
         let node = &self.nodes[node_idx];
-        
+
         if !node.bounds.intersects(query) {
             return;
         }
 
         if node.is_leaf {
-            for (id, point) in &node.points {
+            for (id, point) in &node.entries {
                 if query.contains(point) {
                     results.push((id.clone(), point.clone()));
                 }
@@ -258,6 +576,54 @@ impl RTree {
                 self.search_node(child_idx, query, results);
             }
         }
+    }
+
+    pub fn height(&self) -> usize {
+        let mut h = 1;
+        let mut node = &self.nodes[self.root];
+        while !node.is_leaf && !node.children.is_empty() {
+            h += 1;
+            node = &self.nodes[node.children[0]];
+        }
+        h
+    }
+
+    pub fn count(&self) -> usize {
+        let mut count = 0;
+        self.count_node(self.root, &mut count);
+        count
+    }
+
+    fn count_node(&self, node_idx: usize, count: &mut usize) {
+        if node_idx >= self.nodes.len() {
+            return;
+        }
+        let node = &self.nodes[node_idx];
+        if node.is_leaf {
+            *count += node.entries.len();
+        } else {
+            for &child_idx in &node.children {
+                self.count_node(child_idx, count);
+            }
+        }
+    }
+}
+
+struct SplitResult {
+    new_node_idx: usize,
+}
+
+/// 为 GeoBoundingBox 添加辅助方法（通过 trait extension）
+trait BBoxExt {
+    fn update_bounds_for_point_ref(&mut self, point: &GeoPoint);
+}
+
+impl BBoxExt for GeoBoundingBox {
+    fn update_bounds_for_point_ref(&mut self, point: &GeoPoint) {
+        self.min_lat = self.min_lat.min(point.latitude);
+        self.max_lat = self.max_lat.max(point.latitude);
+        self.min_lon = self.min_lon.min(point.longitude);
+        self.max_lon = self.max_lon.max(point.longitude);
     }
 }
 
@@ -418,6 +784,240 @@ impl GeoQuery {
 impl Default for GeoQuery {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GeoPoint3D {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl GeoPoint3D {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn distance_to(&self, other: &GeoPoint3D) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        let dz = self.z - other.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    pub fn distance_to_line(&self, start: &GeoPoint3D, end: &GeoPoint3D) -> f64 {
+        let ab = GeoPoint3D::new(end.x - start.x, end.y - start.y, end.z - start.z);
+        let ac = GeoPoint3D::new(self.x - start.x, self.y - start.y, self.z - start.z);
+
+        let ab_len_sq = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z;
+        if ab_len_sq == 0.0 {
+            return self.distance_to(start);
+        }
+
+        let t = (ac.x * ab.x + ac.y * ab.y + ac.z * ab.z) / ab_len_sq;
+        let t = t.max(0.0).min(1.0);
+
+        let proj = GeoPoint3D::new(
+            start.x + t * ab.x,
+            start.y + t * ab.y,
+            start.z + t * ab.z,
+        );
+
+        self.distance_to(&proj)
+    }
+
+    pub fn bounding_box(&self, radius: f64) -> (f64, f64, f64, f64, f64, f64) {
+        (
+            self.x - radius, self.x + radius,
+            self.y - radius, self.y + radius,
+            self.z - radius, self.z + radius,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GeoLineString3D {
+    pub points: Vec<GeoPoint3D>,
+}
+
+impl GeoLineString3D {
+    pub fn new(points: Vec<GeoPoint3D>) -> Self {
+        Self { points }
+    }
+
+    pub fn length(&self) -> f64 {
+        let mut total = 0.0;
+        for i in 1..self.points.len() {
+            total += self.points[i - 1].distance_to(&self.points[i]);
+        }
+        total
+    }
+
+    pub fn distance_to_point(&self, point: &GeoPoint3D) -> f64 {
+        let mut min_dist = f64::MAX;
+        for i in 1..self.points.len() {
+            let dist = point.distance_to_line(&self.points[i - 1], &self.points[i]);
+            min_dist = min_dist.min(dist);
+        }
+        min_dist
+    }
+
+    pub fn distance_to_line(&self, other: &GeoLineString3D) -> f64 {
+        let mut min_dist = f64::MAX;
+        for i in 1..self.points.len() {
+            for j in 1..other.points.len() {
+                let dist = Self::segment_to_segment_distance(
+                    &self.points[i - 1], &self.points[i],
+                    &other.points[j - 1], &other.points[j],
+                );
+                min_dist = min_dist.min(dist);
+            }
+        }
+        min_dist
+    }
+
+    fn segment_to_segment_distance(
+        a1: &GeoPoint3D, a2: &GeoPoint3D,
+        b1: &GeoPoint3D, b2: &GeoPoint3D,
+    ) -> f64 {
+        let d1 = a2.x - a1.x; let d2 = a2.y - a1.y; let d3 = a2.z - a1.z;
+        let e1 = b2.x - b1.x; let e2 = b2.y - b1.y; let e3 = b2.z - b1.z;
+        let f1 = a1.x - b1.x; let f2 = a1.y - b1.y; let f3 = a1.z - b1.z;
+
+        let a = d1*d1 + d2*d2 + d3*d3;
+        let b = d1*e1 + d2*e2 + d3*e3;
+        let c = e1*e1 + e2*e2 + e3*e3;
+        let d = d1*f1 + d2*f2 + d3*f3;
+        let e = e1*f1 + e2*f2 + e3*f3;
+        let det = a*c - b*b;
+
+        let mut s = 0.0;
+        let mut t = 0.0;
+
+        if det > 1e-12 {
+            s = (b*e - c*d) / det;
+            t = (a*e - b*d) / det;
+            s = s.max(0.0).min(1.0);
+            t = t.max(0.0).min(1.0);
+        }
+
+        let px = a1.x + s*d1;
+        let py = a1.y + s*d2;
+        let pz = a1.z + s*d3;
+        let qx = b1.x + t*e1;
+        let qy = b1.y + t*e2;
+        let qz = b1.z + t*e3;
+
+        let dx = px - qx;
+        let dy = py - qy;
+        let dz = pz - qz;
+        (dx*dx + dy*dy + dz*dz).sqrt()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GeoPolygon3D {
+    pub vertices: Vec<GeoPoint3D>,
+}
+
+impl GeoPolygon3D {
+    pub fn new(vertices: Vec<GeoPoint3D>) -> Self {
+        Self { vertices }
+    }
+
+    pub fn area(&self) -> f64 {
+        let n = self.vertices.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut cx = 0.0; let mut cy = 0.0; let mut cz = 0.0;
+        for v in &self.vertices {
+            cx += v.x; cy += v.y; cz += v.z;
+        }
+        cx /= n as f64; cy /= n as f64; cz /= n as f64;
+
+        let mut nx = 0.0; let mut ny = 0.0; let mut nz = 0.0;
+        let mut j = n - 1;
+        for i in 0..n {
+            let (x1, y1, z1) = (self.vertices[j].x - cx, self.vertices[j].y - cy, self.vertices[j].z - cz);
+            let (x2, y2, z2) = (self.vertices[i].x - cx, self.vertices[i].y - cy, self.vertices[i].z - cz);
+            nx += y1 * z2 - z1 * y2;
+            ny += z1 * x2 - x1 * z2;
+            nz += x1 * y2 - y1 * x2;
+            j = i;
+        }
+        let norm = (nx*nx + ny*ny + nz*nz).sqrt();
+        if norm == 0.0 { return 0.0; }
+        (norm / 2.0).abs()
+    }
+
+    pub fn distance_to_point(&self, point: &GeoPoint3D) -> f64 {
+        let n = self.vertices.len();
+        if n < 3 {
+            return self.vertices.iter().map(|v| v.distance_to(point)).fold(f64::MAX, f64::min);
+        }
+        let mut min_dist = f64::MAX;
+        let mut j = n - 1;
+        for i in 0..n {
+            let dist = point.distance_to_line(&self.vertices[j], &self.vertices[i]);
+            min_dist = min_dist.min(dist);
+            j = i;
+        }
+        min_dist
+    }
+
+    pub fn distance_to_polygon(&self, other: &GeoPolygon3D) -> f64 {
+        let mut min_dist = f64::MAX;
+        for v in &self.vertices {
+            let dist = other.distance_to_point(v);
+            min_dist = min_dist.min(dist);
+        }
+        for v in &other.vertices {
+            let dist = self.distance_to_point(v);
+            min_dist = min_dist.min(dist);
+        }
+        min_dist
+    }
+
+    pub fn bounding_box(&self) -> (f64, f64, f64, f64, f64, f64) {
+        let mut min_x = f64::MAX; let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX; let mut max_y = f64::MIN;
+        let mut min_z = f64::MAX; let mut max_z = f64::MIN;
+        for v in &self.vertices {
+            min_x = min_x.min(v.x); max_x = max_x.max(v.x);
+            min_y = min_y.min(v.y); max_y = max_y.max(v.y);
+            min_z = min_z.min(v.z); max_z = max_z.max(v.z);
+        }
+        (min_x, max_x, min_y, max_y, min_z, max_z)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GeoBoundingBox3D {
+    pub min_x: f64,
+    pub max_x: f64,
+    pub min_y: f64,
+    pub max_y: f64,
+    pub min_z: f64,
+    pub max_z: f64,
+}
+
+impl GeoBoundingBox3D {
+    pub fn new(min_x: f64, max_x: f64, min_y: f64, max_y: f64, min_z: f64, max_z: f64) -> Self {
+        Self { min_x, max_x, min_y, max_y, min_z, max_z }
+    }
+
+    pub fn contains(&self, point: &GeoPoint3D) -> bool {
+        point.x >= self.min_x && point.x <= self.max_x
+            && point.y >= self.min_y && point.y <= self.max_y
+            && point.z >= self.min_z && point.z <= self.max_z
+    }
+
+    pub fn intersects(&self, other: &GeoBoundingBox3D) -> bool {
+        !(self.max_x < other.min_x || self.min_x > other.max_x
+            || self.max_y < other.min_y || self.min_y > other.max_y
+            || self.max_z < other.min_z || self.min_z > other.max_z)
     }
 }
 

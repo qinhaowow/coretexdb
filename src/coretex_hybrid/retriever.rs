@@ -7,13 +7,12 @@ use crate::coretex_hybrid::fusion::{ScoreFusionEngine, MultiModalResult, ScoreFu
 use crate::coretex_index::SearchResult;
 use crate::coretex_bm25::BM25Index;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex};
 
 pub struct HybridRetriever {
-    vector_index: Arc<RwLock<Option<Box<dyn VectorRetriever>>>>,
-    text_index: Arc<RwLock<Option<Box<dyn TextRetriever>>>>,
-    scalar_storage: Arc<RwLock<HashMap<String, HashMap<String, serde_json::Value>>>>,
+    vector_index: Arc<Mutex<Option<Box<dyn VectorRetriever>>>>,
+    text_index: Arc<Mutex<Option<Box<dyn TextRetriever>>>>,
+    scalar_storage: Arc<Mutex<HashMap<String, HashMap<String, serde_json::Value>>>>,
     fusion_engine: ScoreFusionEngine,
     coarse_top_k: usize,
 }
@@ -37,9 +36,9 @@ pub struct TextSearchResult {
 impl HybridRetriever {
     pub fn new() -> Self {
         Self {
-            vector_index: Arc::new(RwLock::new(None)),
-            text_index: Arc::new(RwLock::new(None)),
-            scalar_storage: Arc::new(RwLock::new(HashMap::new())),
+            vector_index: Arc::new(Mutex::new(None)),
+            text_index: Arc::new(Mutex::new(None)),
+            scalar_storage: Arc::new(Mutex::new(HashMap::new())),
             fusion_engine: ScoreFusionEngine::new(ScoreFusion::RRF { k: 60 }),
             coarse_top_k: 100,
         }
@@ -47,13 +46,13 @@ impl HybridRetriever {
 
     pub fn with_vector_index<T: VectorRetriever + 'static>(self, index: T) -> Self {
         let index: Box<dyn VectorRetriever> = Box::new(index);
-        self.vector_index.blocking_write().replace(index);
+        self.vector_index.lock().unwrap().replace(index);
         self
     }
 
     pub fn with_text_index<T: TextRetriever + 'static>(self, index: T) -> Self {
         let index: Box<dyn TextRetriever> = Box::new(index);
-        self.text_index.blocking_write().replace(index);
+        self.text_index.lock().unwrap().replace(index);
         self
     }
 
@@ -69,20 +68,20 @@ impl HybridRetriever {
 
     pub async fn index_document(&self, doc: &MultiModalDocument) -> Result<(), String> {
         if let Some(ref vector) = doc.vector {
-            let index = self.vector_index.read().await;
+            let index = self.vector_index.lock().unwrap();
             if let Some(ref idx) = *index {
                 idx.add_vector(&doc.id, &vector.values);
             }
         }
 
         if let Some(ref text) = doc.text {
-            let index = self.text_index.read().await;
+            let index = self.text_index.lock().unwrap();
             if let Some(ref idx) = *index {
                 idx.add_text(&doc.id, &text.content);
             }
         }
 
-        let mut storage = self.scalar_storage.write().await;
+        let mut storage = self.scalar_storage.lock().unwrap();
         let doc_fields: HashMap<String, serde_json::Value> = doc.scalar_fields
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(serde_json::Value::Null)))
@@ -96,7 +95,7 @@ impl HybridRetriever {
         let mut results = Vec::new();
 
         if let Some(ref vq) = query.vector_query {
-            if let Some(index) = self.vector_index.read().await.as_ref() {
+            if let Some(index) = self.vector_index.lock().unwrap().as_ref() {
                 let vector_results = index.search(&vq.vector, self.coarse_top_k, vq.metric);
                 for (rank, result) in vector_results.into_iter().enumerate() {
                     results.push(MultiModalResult {
@@ -112,7 +111,7 @@ impl HybridRetriever {
         }
 
         if let Some(ref tq) = query.text_query {
-            if let Some(index) = self.text_index.read().await.as_ref() {
+            if let Some(index) = self.text_index.lock().unwrap().as_ref() {
                 let text_results = index.search(&tq.query, self.coarse_top_k);
                 for (rank, result) in text_results.into_iter().enumerate() {
                     results.push(MultiModalResult {
@@ -143,7 +142,7 @@ impl HybridRetriever {
         results: Vec<MultiModalResult>,
         filters: &[crate::coretex_hybrid::query::ScalarFilter],
     ) -> Vec<MultiModalResult> {
-        let storage = self.scalar_storage.read().await;
+        let storage = self.scalar_storage.lock().unwrap();
 
         results.into_iter()
             .filter(|r| {
@@ -290,12 +289,14 @@ fn calculate_distance(a: &[f32], b: &[f32], metric: &str) -> f32 {
 
 pub struct BM25TextAdapter {
     index: BM25Index,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl BM25TextAdapter {
     pub fn new(k1: f32, b: f32) -> Self {
         Self {
             index: BM25Index::new(k1, b),
+            runtime: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
@@ -307,8 +308,7 @@ impl BM25TextAdapter {
 
 impl TextRetriever for BM25TextAdapter {
     fn search(&self, query: &str, k: usize) -> Vec<TextSearchResult> {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        self.runtime.block_on(async {
             self.index.search(query, k)
                 .await
                 .unwrap_or_default()
@@ -320,8 +320,7 @@ impl TextRetriever for BM25TextAdapter {
 
     fn add_text(&self, id: &str, text: &str) {
         let doc = crate::coretex_bm25::Document::new(id.to_string(), text.to_string());
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        self.runtime.block_on(async {
             let _ = self.index.add_document(doc).await;
         });
     }

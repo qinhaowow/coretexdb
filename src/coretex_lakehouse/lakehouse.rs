@@ -219,6 +219,7 @@ pub struct LakehouseStats {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_lakehouse() {
