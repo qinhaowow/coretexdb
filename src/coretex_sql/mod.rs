@@ -215,15 +215,13 @@ impl SQLParser {
     }
 
     fn parse_select(&mut self) -> Result<SQLStatement, String> {
-        self.advance();
+        self.advance(); // consume SELECT
         
-        let mut columns = Vec::new();
+        let mut columns: Vec<SelectColumn> = Vec::new();
         
         if !self.check(&SQLToken::Keyword("FROM".to_string())) {
             loop {
-                if let SQLToken::Identifier(name) = self.current().clone() {
-                    columns.push(name);
-                }
+                columns.push(self.parse_select_column()?);
                 
                 if self.check(&SQLToken::Comma) {
                     self.advance();
@@ -252,6 +250,53 @@ impl SQLParser {
             self.advance();
             where_clause = Some(self.parse_where_clause()?);
         }
+
+        // GROUP BY
+        let mut group_by = Vec::new();
+        if self.check(&SQLToken::Keyword("GROUP".to_string())) {
+            self.advance();
+            self.advance_through(SQLToken::Keyword("BY".to_string()));
+            loop {
+                group_by.push(self.expect_identifier()?);
+                if self.check(&SQLToken::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // HAVING
+        let mut having = None;
+        if self.check(&SQLToken::Keyword("HAVING".to_string())) {
+            self.advance();
+            having = Some(self.parse_where_clause()?);
+        }
+
+        // ORDER BY
+        let mut order_by = Vec::new();
+        if self.check(&SQLToken::Keyword("ORDER".to_string())) {
+            self.advance();
+            self.advance_through(SQLToken::Keyword("BY".to_string()));
+            loop {
+                let col = self.expect_identifier()?;
+                let asc = if self.check(&SQLToken::Keyword("DESC".to_string())) {
+                    self.advance();
+                    false
+                } else {
+                    if self.check(&SQLToken::Keyword("ASC".to_string())) {
+                        self.advance();
+                    }
+                    true
+                };
+                order_by.push((col, asc));
+                if self.check(&SQLToken::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
         
         let mut limit = None;
         if self.check(&SQLToken::Keyword("LIMIT".to_string())) {
@@ -268,7 +313,58 @@ impl SQLParser {
             where_clause,
             limit,
             joins,
+            group_by,
+            having,
+            order_by,
         }))
+    }
+
+    /// Parse a single SELECT column: either a plain identifier, `*`, or an aggregate function.
+    fn parse_select_column(&mut self) -> Result<SelectColumn, String> {
+        match self.current().clone() {
+            SQLToken::Identifier(ref s) if s == "*" => {
+                self.advance();
+                Ok(SelectColumn::Column("*".to_string()))
+            }
+            SQLToken::Keyword(ref k)
+                if k == "COUNT" || k == "SUM" || k == "AVG" || k == "MIN" || k == "MAX" =>
+            {
+                let func = match k.as_str() {
+                    "COUNT" => AggregateFunction::Count,
+                    "SUM"   => AggregateFunction::Sum,
+                    "AVG"   => AggregateFunction::Avg,
+                    "MIN"   => AggregateFunction::Min,
+                    "MAX"   => AggregateFunction::Max,
+                    _ => unreachable!(),
+                };
+                self.advance(); // consume function name
+                self.advance_through(SQLToken::LParen);
+
+                let target = if self.check(&SQLToken::Identifier("*".to_string())) {
+                    self.advance();
+                    "*".to_string()
+                } else {
+                    self.expect_identifier()?
+                };
+
+                self.advance_through(SQLToken::RParen);
+
+                // Optional alias: AS alias_name
+                let alias = if self.check(&SQLToken::Keyword("AS".to_string())) {
+                    self.advance();
+                    Some(self.expect_identifier()?)
+                } else {
+                    None
+                };
+
+                Ok(SelectColumn::Aggregate { func, target, alias })
+            }
+            SQLToken::Identifier(name) => {
+                self.advance();
+                Ok(SelectColumn::Column(name))
+            }
+            other => Err(format!("Unexpected token in SELECT: {:?}", other)),
+        }
     }
 
     /// Parse: [INNER|LEFT|RIGHT] JOIN table ON left_col = right_col
@@ -567,11 +663,59 @@ pub enum SQLStatement {
 
 #[derive(Debug, Clone)]
 pub struct SQLSelect {
-    pub columns: Vec<String>,
+    pub columns: Vec<SelectColumn>,
     pub table: String,
     pub where_clause: Option<SQLCondition>,
     pub limit: Option<usize>,
     pub joins: Vec<JoinClause>,
+    pub group_by: Vec<String>,
+    pub having: Option<SQLCondition>,
+    pub order_by: Vec<(String, bool)>, // (column, ascending)
+}
+
+/// A column reference in a SELECT clause — either a bare column or an aggregate function.
+#[derive(Debug, Clone)]
+pub enum SelectColumn {
+    /// A simple column reference, e.g. `name` or `*`
+    Column(String),
+    /// An aggregate function, e.g. `COUNT(*)`, `SUM(price)`, `AVG(score) AS avg_score`
+    Aggregate {
+        func: AggregateFunction,
+        target: String, // column name, or "*" for COUNT(*)
+        alias: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum AggregateFunction {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl SelectColumn {
+    /// Return the output column name for projection and result construction.
+    pub fn output_name(&self) -> String {
+        match self {
+            SelectColumn::Column(name) => name.clone(),
+            SelectColumn::Aggregate { func, target, alias } => {
+                if let Some(a) = alias {
+                    a.clone()
+                } else {
+                    let fn_name = match func {
+                        AggregateFunction::Count => "count",
+                        AggregateFunction::Sum => "sum",
+                        AggregateFunction::Avg => "avg",
+                        AggregateFunction::Min => "min",
+                        AggregateFunction::Max => "max",
+                    };
+                    format!("{}({})", fn_name, target)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -672,6 +816,26 @@ impl SQLExecutor {
         collections.insert(name.to_string(), data);
     }
 
+    // ── Column helpers ──────────────────────────────────
+
+    /// Whether `SELECT *` was used (no explicit columns or `*` present).
+    fn is_star(cols: &[SelectColumn]) -> bool {
+        cols.is_empty() || cols.iter().any(|c| matches!(c, SelectColumn::Column(s) if s == "*"))
+    }
+
+    /// Extract plain column names from SelectColumn list (ignores aggregates).
+    fn plain_columns(cols: &[SelectColumn]) -> Vec<String> {
+        cols.iter().filter_map(|c| match c {
+            SelectColumn::Column(name) => Some(name.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    /// Whether any aggregate function is present.
+    fn has_aggregates(cols: &[SelectColumn]) -> bool {
+        cols.iter().any(|c| matches!(c, SelectColumn::Aggregate { .. }))
+    }
+
     pub async fn execute(&self, sql: &str) -> Result<SQLResult, String> {
         let mut lexer = SQLLexer::new(sql);
         let tokens = lexer.tokenize();
@@ -695,7 +859,15 @@ impl SQLExecutor {
     }
 
     async fn execute_select(&self, select: SQLSelect) -> Result<SQLResult, String> {
-        // If there are JOINs, route to join executor
+        // Aggregate / GROUP BY path
+        if Self::has_aggregates(&select.columns) || !select.group_by.is_empty() {
+            if let Some(ref dm) = self.data_manager {
+                return self.execute_aggregate_select_dm(dm, select).await;
+            }
+            return self.execute_aggregate_select_local(select).await;
+        }
+
+        // JOIN path
         if !select.joins.is_empty() {
             if let Some(ref dm) = self.data_manager {
                 return self.execute_join_select_dm(dm, select).await;
@@ -703,6 +875,7 @@ impl SQLExecutor {
             return self.execute_join_select_local(select).await;
         }
 
+        // Plain SELECT
         if let Some(ref dm) = self.data_manager {
             return self.execute_select_dm(dm, select).await;
         }
@@ -726,35 +899,30 @@ impl SQLExecutor {
             return Ok(SQLResult::Select(Vec::new()));
         }
 
-        // 收集所有记录
         let mut rows: Vec<HashMap<String, SQLValue>> = Vec::new();
-
-        // 使用内部数据引用直接遍历
         let data_map = dm.data_ref().read().await;
         let collection_data = data_map.get(&select.table)
             .ok_or_else(|| format!("Collection '{}' not found in data", select.table))?;
 
-        for (id, record) in collection_data.iter() {
-            // 构建行：id + 元数据字段
-            let mut row = HashMap::new();
-            let cols_all = select.columns.is_empty()
-                || select.columns.iter().any(|c| c == "*");
+        let cols_all = Self::is_star(&select.columns);
+        let plain_cols = Self::plain_columns(&select.columns);
 
-            if cols_all || select.columns.iter().any(|c| c == "id") {
+        for (id, record) in collection_data.iter() {
+            let mut row = HashMap::new();
+
+            if cols_all || plain_cols.iter().any(|c| c == "id") {
                 row.insert("id".to_string(), SQLValue::String(id.clone()));
             }
 
-            // 从 metadata (serde_json::Value) 转换为 SQLValue
             if let Some(obj) = record.metadata.as_object() {
                 for (key, val) in obj {
-                    if cols_all || select.columns.contains(key) {
+                    if cols_all || plain_cols.contains(key) {
                         let sql_val = json_to_sql_value(val);
                         row.insert(key.clone(), sql_val);
                     }
                 }
             }
 
-            // WHERE 过滤
             if let Some(ref cond) = select.where_clause {
                 if !evaluate_condition(&row, cond) {
                     continue;
@@ -762,6 +930,22 @@ impl SQLExecutor {
             }
 
             rows.push(row);
+        }
+
+        // ORDER BY (non-aggregate)
+        if !select.order_by.is_empty() {
+            rows.sort_by(|a, b| {
+                for (col, asc) in &select.order_by {
+                    let va = a.get(col);
+                    let vb = b.get(col);
+                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if ord != std::cmp::Ordering::Equal {
+                        return if *asc { ord } else { ord.reverse() };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
         }
 
         // LIMIT
@@ -802,10 +986,11 @@ impl SQLExecutor {
         }
 
         // Project columns (with table prefix handling: "users.name" → "name")
-        if !select.columns.is_empty()
-            && !select.columns.iter().any(|c| c == "*")
-        {
-            left_rows = self.project_columns(&left_rows, &select.columns);
+        if !Self::is_star(&select.columns) {
+            let col_names: Vec<String> = select.columns.iter()
+                .map(|c| c.output_name())
+                .collect();
+            left_rows = self.project_columns(&left_rows, &col_names);
         }
 
         // LIMIT
@@ -963,16 +1148,195 @@ impl SQLExecutor {
             left_rows.retain(|row| evaluate_condition(row, cond));
         }
 
-        if !select.columns.is_empty()
-            && !select.columns.iter().any(|c| c == "*")
-        {
-            left_rows = self.project_columns(&left_rows, &select.columns);
+        if !Self::is_star(&select.columns) {
+            let col_names: Vec<String> = select.columns.iter()
+                .map(|c| c.output_name())
+                .collect();
+            left_rows = self.project_columns(&left_rows, &col_names);
         }
 
         let limit = select.limit.unwrap_or(left_rows.len());
         left_rows.truncate(limit);
 
         Ok(SQLResult::Select(left_rows))
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AGGREGATE execution — DataManager path
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_aggregate_select_dm(
+        &self,
+        dm: &DataManager,
+        select: SQLSelect,
+    ) -> Result<SQLResult, String> {
+        let rows = self.load_all_rows_dm(dm, &select.table).await?;
+        self.execute_aggregate(rows, &select)
+    }
+
+    /// Common aggregation logic (shared by DM and local paths).
+    fn execute_aggregate(
+        &self,
+        mut rows: Vec<HashMap<String, SQLValue>>,
+        select: &SQLSelect,
+    ) -> Result<SQLResult, String> {
+        // Apply WHERE before grouping
+        if let Some(ref cond) = select.where_clause {
+            rows.retain(|row| evaluate_condition(row, cond));
+        }
+
+        // Group rows
+        let groups = if select.group_by.is_empty() {
+            // No GROUP BY → one group with all rows
+            vec![("".to_string(), rows)]
+        } else {
+            let mut map: HashMap<String, Vec<HashMap<String, SQLValue>>> = HashMap::new();
+            for row in rows {
+                let key_parts: Vec<String> = select.group_by.iter()
+                    .map(|col| sql_value_to_key(row.get(col)))
+                    .collect();
+                let key = key_parts.join("|");
+                map.entry(key).or_default().push(row);
+            }
+            map.into_iter().collect()
+        };
+
+        // Compute aggregates per group
+        let mut result_rows: Vec<HashMap<String, SQLValue>> = Vec::new();
+
+        for (_key, group_rows) in &groups {
+            if group_rows.is_empty() {
+                continue;
+            }
+
+            let mut row = HashMap::new();
+
+            // Output GROUP BY columns
+            for gb_col in &select.group_by {
+                if let Some(val) = group_rows[0].get(gb_col) {
+                    row.insert(gb_col.clone(), val.clone());
+                }
+            }
+
+            // Compute aggregates
+            for col in &select.columns {
+                match col {
+                    SelectColumn::Aggregate { func, target, alias } => {
+                        let name = col.output_name();
+                        let val = match func {
+                            AggregateFunction::Count => {
+                                if target == "*" {
+                                    SQLValue::Number(group_rows.len() as f64)
+                                } else {
+                                    let c = group_rows.iter()
+                                        .filter(|r| r.get(target).is_some())
+                                        .count();
+                                    SQLValue::Number(c as f64)
+                                }
+                            }
+                            AggregateFunction::Sum => {
+                                let sum: f64 = group_rows.iter()
+                                    .filter_map(|r| r.get(target))
+                                    .filter_map(|v| match v {
+                                        SQLValue::Number(n) => Some(*n),
+                                        _ => None,
+                                    })
+                                    .sum();
+                                SQLValue::Number(sum)
+                            }
+                            AggregateFunction::Avg => {
+                                let nums: Vec<f64> = group_rows.iter()
+                                    .filter_map(|r| r.get(target))
+                                    .filter_map(|v| match v {
+                                        SQLValue::Number(n) => Some(*n),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                if nums.is_empty() {
+                                    SQLValue::Null
+                                } else {
+                                    SQLValue::Number(nums.iter().sum::<f64>() / nums.len() as f64)
+                                }
+                            }
+                            AggregateFunction::Min => {
+                                let mut vals: Vec<&SQLValue> = group_rows.iter()
+                                    .filter_map(|r| r.get(target))
+                                    .collect();
+                                vals.sort_by(|a, b| sql_value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
+                                vals.first().map(|v| (*v).clone()).unwrap_or(SQLValue::Null)
+                            }
+                            AggregateFunction::Max => {
+                                let mut vals: Vec<&SQLValue> = group_rows.iter()
+                                    .filter_map(|r| r.get(target))
+                                    .collect();
+                                vals.sort_by(|a, b| sql_value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal).reverse());
+                                vals.first().map(|v| (*v).clone()).unwrap_or(SQLValue::Null)
+                            }
+                        };
+                        row.insert(name, val);
+                    }
+                    SelectColumn::Column(name) if name != "*" => {
+                        // Non-aggregate column in aggregate query: take first group's value
+                        if let Some(val) = group_rows[0].get(name) {
+                            row.insert(name.clone(), val.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            result_rows.push(row);
+        }
+
+        // HAVING filter
+        if let Some(ref having) = select.having {
+            result_rows.retain(|row| evaluate_condition(row, having));
+        }
+
+        // ORDER BY
+        if !select.order_by.is_empty() {
+            result_rows.sort_by(|a, b| {
+                for (col, asc) in &select.order_by {
+                    let va = a.get(col);
+                    let vb = b.get(col);
+                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if ord != std::cmp::Ordering::Equal {
+                        return if *asc { ord } else { ord.reverse() };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // LIMIT
+        let limit = select.limit.unwrap_or(result_rows.len());
+        result_rows.truncate(limit);
+
+        Ok(SQLResult::Select(result_rows))
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AGGREGATE execution — Local fallback path
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_aggregate_select_local(
+        &self,
+        select: SQLSelect,
+    ) -> Result<SQLResult, String> {
+        let collections = self.collections.read().await;
+        let collection = collections.get(&select.table)
+            .ok_or_else(|| format!("Collection '{}' not found", select.table))?;
+
+        let rows: Vec<HashMap<String, SQLValue>> = collection.vectors.iter()
+            .map(|(id, (_vec, meta))| {
+                let mut row = meta.clone();
+                row.insert("id".to_string(), SQLValue::String(id.clone()));
+                row
+            })
+            .collect();
+
+        self.execute_aggregate(rows, &select)
     }
 
     /// 降级路径：本地 CollectionData
@@ -983,18 +1347,18 @@ impl SQLExecutor {
             .ok_or_else(|| format!("Collection '{}' not found", select.table))?;
 
         let mut rows: Vec<HashMap<String, SQLValue>> = Vec::new();
+        let cols_all = Self::is_star(&select.columns);
+        let plain_cols = Self::plain_columns(&select.columns);
 
         for (id, (_vec, meta)) in &collection.vectors {
             let mut row = HashMap::new();
-            let cols_all = select.columns.is_empty()
-                || select.columns.iter().any(|c| c == "*");
 
-            if cols_all || select.columns.iter().any(|c| c == "id") {
+            if cols_all || plain_cols.iter().any(|c| c == "id") {
                 row.insert("id".to_string(), SQLValue::String(id.clone()));
             }
 
             for (key, val) in meta {
-                if cols_all || select.columns.contains(key) {
+                if cols_all || plain_cols.contains(key) {
                     row.insert(key.clone(), val.clone());
                 }
             }
@@ -1006,6 +1370,22 @@ impl SQLExecutor {
             }
 
             rows.push(row);
+        }
+
+        // ORDER BY
+        if !select.order_by.is_empty() {
+            rows.sort_by(|a, b| {
+                for (col, asc) in &select.order_by {
+                    let va = a.get(col);
+                    let vb = b.get(col);
+                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if ord != std::cmp::Ordering::Equal {
+                        return if *asc { ord } else { ord.reverse() };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
         }
 
         let limit = select.limit.unwrap_or(rows.len());
