@@ -91,6 +91,123 @@ fn make_collection(name: &str, data: Vec<(&str, HashMap<&str, SQLValue>)>) -> Co
         name: name.to_string(),
         vectors,
     }
+
+    // ── Hybrid: WHERE on column NOT in SELECT ─────────────────
+    #[tokio::test]
+    async fn test_hybrid_where_on_unselected_column() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("inv", make_collection_with_vectors("inv", vec![
+            ("i1", vec![1.0, 0.0], HashMap::from([("sku", s("A100")), ("qty", n(5.0)), ("price", n(99.0))])),
+            ("i2", vec![0.9, 0.1], HashMap::from([("sku", s("B200")), ("qty", n(0.0)), ("price", n(150.0))])),
+            ("i3", vec![0.0, 1.0], HashMap::from([("sku", s("C300")), ("qty", n(10.0)), ("price", n(30.0))])),
+        ])).await;
+
+        // SELECT only id — WHERE filters on qty which is NOT in SELECT
+        let r = executor.execute(
+            "SELECT id FROM inv VECTOR SEARCH vec WITH [1.0, 0.0] WHERE qty > 0"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                // i1 (qty=5) and i3 (qty=10) should match; i2 (qty=0) filtered
+                assert_eq!(rows.len(), 2);
+                let ids: Vec<&str> = rows.iter()
+                    .map(|r| match r.get("id").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" })
+                    .collect();
+                assert!(ids.contains(&"i1"));
+                assert!(ids.contains(&"i3"));
+                // qty column should NOT be in output (not in SELECT)
+                for row in &rows {
+                    assert!(!row.contains_key("qty"), "qty should not appear when not selected");
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: pre-filter with range + multiple conditions ───
+    #[tokio::test]
+    async fn test_hybrid_pre_filter_range() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("catalog", make_collection_with_vectors("catalog", vec![
+            ("c1", vec![1.0, 0.0, 0.0], HashMap::from([("price", n(10.0)), ("stock", n(1.0))])),
+            ("c2", vec![0.9, 0.1, 0.0], HashMap::from([("price", n(50.0)), ("stock", n(5.0))])),
+            ("c3", vec![0.8, 0.2, 0.0], HashMap::from([("price", n(100.0)), ("stock", n(3.0))])),
+            ("c4", vec![0.0, 1.0, 0.0], HashMap::from([("price", n(25.0)), ("stock", n(0.0))])),
+        ])).await;
+
+        // Pre-filter: price < 80 AND stock > 0 (excludes c3=100, c4=stock=0)
+        // Then cosine on remaining: c1, c2
+        let r = executor.execute(
+            "SELECT id, price, stock FROM catalog VECTOR SEARCH vec WITH [1.0, 0.0, 0.0] WHERE price < 80 AND stock > 0"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2, "c1(10,1) and c2(50,5) match; c3(100>80) and c4(stock=0) excluded");
+                for row in &rows {
+                    let p = match row.get("price").unwrap() { SQLValue::Number(v) => *v, _ => 0.0 };
+                    let s = match row.get("stock").unwrap() { SQLValue::Number(v) => *v, _ => 0.0 };
+                    assert!(p < 80.0, "price {} should be < 80", p);
+                    assert!(s > 0.0, "stock {} should be > 0", s);
+                }
+                // c1 should rank first (closest to [1,0,0])
+                assert_eq!(rows[0].get("id"), Some(&s("c1")), "c1 is closest to query");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: vector + LIKE in WHERE ────────────────────────
+    #[tokio::test]
+    async fn test_hybrid_where_like() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("articles", make_collection_with_vectors("articles", vec![
+            ("a1", vec![1.0, 0.0], HashMap::from([("title", s("Rust async tutorial")), ("tag", s("rust"))])),
+            ("a2", vec![0.9, 0.1], HashMap::from([("title", s("Python async guide")), ("tag", s("python"))])),
+            ("a3", vec![0.0, 1.0], HashMap::from([("title", s("Rust web framework")), ("tag", s("rust"))])),
+        ])).await;
+
+        // LIKE 'Rust%' — should match a1 and a3
+        let r = executor.execute(
+            "SELECT id, title FROM articles VECTOR SEARCH vec WITH [1.0, 0.0] WHERE title LIKE 'Rust%'"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                for row in &rows {
+                    let t = match row.get("title").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" };
+                    assert!(t.starts_with("Rust"), "title should start with 'Rust': {}", t);
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: no WHERE, no LIMIT — returns all sorted ──────
+    #[tokio::test]
+    async fn test_hybrid_no_where_no_limit() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("allvec", make_collection_with_vectors("allvec", vec![
+            ("v1", vec![1.0, 0.0], HashMap::from([("label", s("first"))])),
+            ("v2", vec![0.0, 1.0], HashMap::from([("label", s("second"))])),
+            ("v3", vec![0.5, 0.5], HashMap::from([("label", s("middle"))])),
+        ])).await;
+
+        let r = executor.execute(
+            "SELECT id, label FROM allvec VECTOR SEARCH vec WITH [1.0, 0.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 3, "no LIMIT → all rows");
+                // First should be closest to [1,0,0]
+                assert_eq!(rows[0].get("id"), Some(&s("v1")));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
 }
 
 fn s(val: &str) -> SQLValue { SQLValue::String(val.to_string()) }
@@ -125,6 +242,161 @@ async fn test_sql_inner_join() {
             assert!(has_alice_eng);
         }
         other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Vector Search tests
+// ═══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod vector_search_tests {
+    use std::collections::HashMap;
+
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue, CollectionData};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    fn make_collection_with_vectors(
+        name: &str,
+        entries: Vec<(&str, Vec<f32>, HashMap<&str, SQLValue>)>,
+    ) -> CollectionData {
+        let mut vectors = HashMap::new();
+        for (id, vec, meta) in entries {
+            let meta_owned: HashMap<String, SQLValue> = meta
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            vectors.insert(id.to_string(), (vec, meta_owned));
+        }
+        CollectionData { name: name.to_string(), vectors }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_basic() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("docs", make_collection_with_vectors("docs", vec![
+            ("d1", vec![1.0, 0.0, 0.0], HashMap::from([("title", s("Apple"))])),
+            ("d2", vec![0.0, 1.0, 0.0], HashMap::from([("title", s("Banana"))])),
+            ("d3", vec![0.0, 0.0, 1.0], HashMap::from([("title", s("Cherry"))])),
+        ])).await;
+
+        // Query vector [1.0, 0.0, 0.0] — closest to d1
+        let r = executor.execute(
+            "SELECT * FROM docs VECTOR SEARCH vec WITH [1.0, 0.0, 0.0] LIMIT 2"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                // d1 should be first (cosine sim = 1.0)
+                assert_eq!(rows[0].get("id"), Some(&s("d1")));
+                // _distance column present
+                assert!(rows[0].contains_key("_distance"));
+                let dist = match rows[0].get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number for _distance"),
+                };
+                assert!(dist > 0.99);
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_with_where() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("products", make_collection_with_vectors("products", vec![
+            ("p1", vec![1.0, 0.0], HashMap::from([("cat", s("A")), ("price", n(10.0))])),
+            ("p2", vec![0.9, 0.1], HashMap::from([("cat", s("A")), ("price", n(50.0))])),
+            ("p3", vec![0.0, 1.0], HashMap::from([("cat", s("B")), ("price", n(5.0))])),
+        ])).await;
+
+        // Search for [1.0, 0.0]-like vectors, but only category "A"
+        let r = executor.execute(
+            "SELECT id, cat, price FROM products VECTOR SEARCH vec WITH [1.0, 0.0] WHERE cat = 'A' LIMIT 5"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                // Only p1 and p2 should match (cat = A); p3 filtered out
+                assert_eq!(rows.len(), 2);
+                for row in &rows {
+                    assert_eq!(row.get("cat"), Some(&s("A")));
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_distance_column() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("vecs", make_collection_with_vectors("vecs", vec![
+            ("a", vec![1.0, 1.0], HashMap::from([("label", s("close"))])),
+            ("b", vec![-1.0, -1.0], HashMap::from([("label", s("far"))])),
+        ])).await;
+
+        let r = executor.execute(
+            "SELECT label, _distance FROM vecs VECTOR SEARCH vec WITH [1.0, 1.0] LIMIT 2"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                // "close" should have higher similarity (near 1.0) than "far"
+                let d_close = rows.iter().find(|r| r.get("label") == Some(&s("close"))).unwrap();
+                let d_far   = rows.iter().find(|r| r.get("label") == Some(&s("far"))).unwrap();
+                let sim_close = match d_close.get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number"),
+                };
+                let sim_far = match d_far.get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number"),
+                };
+                assert!(sim_close > sim_far, "close should have higher similarity than far");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_specific_columns() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("emb", make_collection_with_vectors("emb", vec![
+            ("x", vec![1.0, 2.0, 3.0], HashMap::from([("name", s("X")), ("val", n(42.0))])),
+        ])).await;
+
+        // Only select name (not id, not vec)
+        let r = executor.execute(
+            "SELECT name FROM emb VECTOR SEARCH vec WITH [1.0, 2.0, 3.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("name"), Some(&s("X")));
+                assert!(!rows[0].contains_key("vec"), "vec column should not leak");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_empty_collection() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("empty", make_collection_with_vectors("empty", vec![])).await;
+
+        let r = executor.execute(
+            "SELECT * FROM empty VECTOR SEARCH vec WITH [1.0, 0.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => assert!(rows.is_empty()),
+            other => panic!("Expected Select, got {:?}", other),
+        }
     }
 }
 

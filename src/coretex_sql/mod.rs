@@ -235,6 +235,20 @@ impl SQLParser {
         
         let table = self.expect_identifier()?;
 
+        // Parse optional VECTOR SEARCH clause
+        let mut vector_search = None;
+        if self.check(&SQLToken::Keyword("VECTOR".to_string())) {
+            self.advance();
+            self.advance_through(SQLToken::Keyword("SEARCH".to_string()));
+            let column = self.expect_identifier()?;
+            self.advance_through(SQLToken::Keyword("WITH".to_string()));
+            let vec = self.parse_vector_literal()?;
+            vector_search = Some(VectorSearch {
+                column,
+                query_vector: vec,
+            });
+        }
+
         // Parse optional JOIN clauses
         let mut joins = Vec::new();
         while self.check(&SQLToken::Keyword("JOIN".to_string()))
@@ -310,6 +324,7 @@ impl SQLParser {
         Ok(SQLStatement::Select(SQLSelect {
             columns,
             table,
+            vector_search,
             where_clause,
             limit,
             joins,
@@ -618,6 +633,36 @@ impl SQLParser {
         Ok(SQLCondition { conditions })
     }
 
+    /// Parse a vector literal: `[1.0, 2.0, 3.0]`
+    fn parse_vector_literal(&mut self) -> Result<Vec<f32>, String> {
+        // Expect opening bracket
+        match self.current().clone() {
+            SQLToken::Operator(c) if c == '[' => self.advance(),
+            _ => return Err("Expected '[' for vector literal".to_string()),
+        }
+
+        let mut vals = Vec::new();
+        loop {
+            match self.current().clone() {
+                SQLToken::Number(n) => {
+                    vals.push(n as f32);
+                    self.advance();
+                }
+                SQLToken::Operator(c) if c == ']' => {
+                    self.advance();
+                    break;
+                }
+                SQLToken::Comma => {
+                    self.advance();
+                }
+                _ => return Err(format!(
+                    "Unexpected token in vector literal: {:?}", self.current()
+                )),
+            }
+        }
+        Ok(vals)
+    }
+
     fn expect_identifier(&mut self) -> Result<String, String> {
         if let SQLToken::Identifier(name) = self.current().clone() {
             self.advance();
@@ -665,12 +710,20 @@ pub enum SQLStatement {
 pub struct SQLSelect {
     pub columns: Vec<SelectColumn>,
     pub table: String,
+    pub vector_search: Option<VectorSearch>,
     pub where_clause: Option<SQLCondition>,
     pub limit: Option<usize>,
     pub joins: Vec<JoinClause>,
     pub group_by: Vec<String>,
     pub having: Option<SQLCondition>,
     pub order_by: Vec<(String, bool)>, // (column, ascending)
+}
+
+/// Vector search clause: `VECTOR SEARCH <column> WITH [vals]`
+#[derive(Debug, Clone)]
+pub struct VectorSearch {
+    pub column: String,
+    pub query_vector: Vec<f32>,
 }
 
 /// A column reference in a SELECT clause — either a bare column or an aggregate function.
@@ -859,6 +912,14 @@ impl SQLExecutor {
     }
 
     async fn execute_select(&self, select: SQLSelect) -> Result<SQLResult, String> {
+        // Vector search path — highest priority
+        if select.vector_search.is_some() {
+            if let Some(ref dm) = self.data_manager {
+                return self.execute_vector_search_dm(dm, select).await;
+            }
+            return self.execute_vector_search_local(select).await;
+        }
+
         // Aggregate / GROUP BY path
         if Self::has_aggregates(&select.columns) || !select.group_by.is_empty() {
             if let Some(ref dm) = self.data_manager {
@@ -880,6 +941,163 @@ impl SQLExecutor {
             return self.execute_select_dm(dm, select).await;
         }
         self.execute_select_local(select).await
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Vector search — DataManager path
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_vector_search_dm(
+        &self,
+        dm: &DataManager,
+        select: SQLSelect,
+    ) -> Result<SQLResult, String> {
+        let vs = select.vector_search.as_ref().unwrap();
+        let query = &vs.query_vector;
+        let has_where = select.where_clause.is_some();
+
+        let data_map = dm.data_ref().read().await;
+        let collection_data = data_map.get(&select.table)
+            .ok_or_else(|| format!("Collection '{}' not found", select.table))?;
+
+        // Compute similarities with optional pre-filter
+        let mut scored: Vec<(f32, String, Vec<f32>, serde_json::Value)> = Vec::new();
+        for (id, record) in collection_data.iter() {
+            // Pre-filter: WHERE before similarity (skip expensive cosine for filtered rows)
+            if has_where {
+                let mut check_row = HashMap::new();
+                check_row.insert("id".to_string(), SQLValue::String(id.clone()));
+                if let Some(obj) = record.metadata.as_object() {
+                    for (key, val) in obj {
+                        check_row.insert(key.clone(), json_to_sql_value(val));
+                    }
+                }
+                if let Some(ref cond) = select.where_clause {
+                    if !evaluate_condition(&check_row, cond) {
+                        continue;
+                    }
+                }
+            }
+
+            let sim = cosine_similarity(query, &record.vector);
+            scored.push((sim, id.clone(), record.vector.clone(), record.metadata.clone()));
+        }
+
+        // Note: finalize_vector_search re-applies WHERE for safety (idempotent pre+post filter)
+        self.finalize_vector_search(scored, &select)
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Vector search — Local fallback path
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_vector_search_local(
+        &self,
+        select: SQLSelect,
+    ) -> Result<SQLResult, String> {
+        let vs = select.vector_search.as_ref().unwrap();
+        let query = &vs.query_vector;
+        let has_where = select.where_clause.is_some();
+
+        let collections = self.collections.read().await;
+        let collection = collections.get(&select.table)
+            .ok_or_else(|| format!("Collection '{}' not found", select.table))?;
+
+        let mut scored: Vec<(f32, String, Vec<f32>, serde_json::Value)> = Vec::new();
+        for (id, (vec, meta)) in &collection.vectors {
+            // Pre-filter: WHERE before similarity
+            if has_where {
+                let mut check_row = HashMap::new();
+                check_row.insert("id".to_string(), SQLValue::String(id.clone()));
+                for (key, val) in meta {
+                    check_row.insert(key.clone(), val.clone());
+                }
+                if let Some(ref cond) = select.where_clause {
+                    if !evaluate_condition(&check_row, cond) {
+                        continue;
+                    }
+                }
+            }
+
+            let sim = cosine_similarity(query, vec);
+            let meta_json: serde_json::Value = serde_json::to_value(
+                meta.iter().map(|(k, v)| (k.clone(), sql_value_to_json(v))).collect::<HashMap<_, _>>()
+            ).unwrap_or(serde_json::json!({}));
+            scored.push((sim, id.clone(), vec.clone(), meta_json));
+        }
+
+        self.finalize_vector_search(scored, &select)
+    }
+
+    /// Common vector search finalization: pre-filter (WHERE), sort, limit, project.
+    fn finalize_vector_search(
+        &self,
+        scored: Vec<(f32, String, Vec<f32>, serde_json::Value)>,
+        select: &SQLSelect,
+    ) -> Result<SQLResult, String> {
+        let cols_all = Self::is_star(&select.columns);
+        let plain_cols = Self::plain_columns(&select.columns);
+        let has_where = select.where_clause.is_some();
+
+        // Step 1: Build full rows (ALL metadata columns) for WHERE evaluation
+        let mut candidates: Vec<(f32, HashMap<String, SQLValue>)> = Vec::new();
+
+        for (sim, id, _vec, meta) in &scored {
+            let mut full_row = HashMap::new();
+            full_row.insert("_distance".to_string(), SQLValue::Number(*sim as f64));
+            full_row.insert("id".to_string(), SQLValue::String(id.clone()));
+
+            if let Some(obj) = meta.as_object() {
+                for (key, val) in obj {
+                    full_row.insert(key.clone(), json_to_sql_value(val));
+                }
+            }
+
+            // WHERE filter — evaluated on FULL row
+            if let Some(ref cond) = select.where_clause {
+                if !evaluate_condition(&full_row, cond) {
+                    continue;
+                }
+            }
+
+            candidates.push((*sim, full_row));
+        }
+
+        // Step 2: Sort by similarity descending
+        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Step 3: Project to requested columns
+        let mut rows: Vec<HashMap<String, SQLValue>> = Vec::new();
+        for (_sim, full_row) in &candidates {
+            let mut row = HashMap::new();
+
+            for col in &plain_cols {
+                if col == "*" {
+                    // SELECT * → return everything except raw vector
+                    for (key, val) in full_row {
+                        row.insert(key.clone(), val.clone());
+                    }
+                } else if let Some(val) = full_row.get(col) {
+                    row.insert(col.clone(), val.clone());
+                }
+            }
+
+            // If * was used, we already filled everything above
+            if cols_all && !plain_cols.iter().any(|c| c == "*") {
+                // SELECT * without explicit columns
+                for (key, val) in full_row {
+                    row.insert(key.clone(), val.clone());
+                }
+            }
+
+            rows.push(row);
+        }
+
+        // Step 4: LIMIT
+        let limit = select.limit.unwrap_or(rows.len());
+        rows.truncate(limit);
+
+        Ok(SQLResult::Select(rows))
     }
 
     /// DataManager 路径：从真实存储中读取
@@ -1831,6 +2049,22 @@ fn sql_value_like(a: &SQLValue, pattern: &SQLValue) -> bool {
         }
         _ => false,
     }
+}
+
+/// Compute cosine similarity between two vectors.
+/// Returns 1.0 for identical vectors, 0.0 for orthogonal, -1.0 for opposite.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b).max(1e-12)
 }
 
 #[cfg(test)]
