@@ -246,6 +246,180 @@ async fn test_sql_inner_join() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Operations / DBA commands
+// ═══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod operations_tests {
+    use std::collections::HashMap;
+
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue, CollectionData};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    fn make_collection(name: &str, entries: Vec<(&str, HashMap<&str, SQLValue>)>) -> CollectionData {
+        let mut vectors = HashMap::new();
+        for (id, meta) in entries {
+            let meta_owned: HashMap<String, SQLValue> = meta
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            vectors.insert(id.to_string(), (vec![0.0_f32; 128], meta_owned)); // dummy 128-dim vectors
+        }
+        CollectionData { name: name.to_string(), vectors }
+    }
+
+    // ── SHOW COLLECTIONS ─────────────────────────────────────
+    #[tokio::test]
+    async fn test_show_collections_empty() {
+        let executor = SQLExecutor::new();
+        let r = executor.execute("SHOW COLLECTIONS").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => assert!(rows.is_empty()),
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_show_collections_with_data() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("users", make_collection("users", vec![
+            ("u1", HashMap::from([("name", s("Alice"))])),
+        ])).await;
+        executor.register_collection("products", make_collection("products", vec![
+            ("p1", HashMap::from([("sku", s("X100"))])),
+            ("p2", HashMap::from([("sku", s("X200"))])),
+        ])).await;
+
+        let r = executor.execute("SHOW COLLECTIONS").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                let names: Vec<&str> = rows.iter()
+                    .map(|r| match r.get("name").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" })
+                    .collect();
+                assert!(names.contains(&"users"));
+                assert!(names.contains(&"products"));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_show_tables_alias() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("t1", make_collection("t1", vec![])).await;
+
+        // SHOW TABLES should work the same as SHOW COLLECTIONS
+        let r = executor.execute("SHOW TABLES").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("name"), Some(&s("t1")));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── DESCRIBE ─────────────────────────────────────────────
+    #[tokio::test]
+    async fn test_describe_basic() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("docs", make_collection("docs", vec![
+            ("d1", HashMap::from([("title", s("Hello")), ("tag", s("greeting"))])),
+            ("d2", HashMap::from([("title", s("World")), ("tag", s("farewell"))])),
+        ])).await;
+
+        let r = executor.execute("DESCRIBE docs").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert!(rows.len() >= 4, "expected at least 4 rows: collection, count, dim, meta.title, meta.tag");
+
+                // Find by field name
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+
+                assert_eq!(get_val("_collection"), "docs");
+                assert_eq!(get_val("record_count"), "2");
+                assert_eq!(get_val("vector_dim"), "128");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_describe_short_form() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("x", make_collection("x", vec![
+            ("a", HashMap::from([("col1", s("v1"))])),
+        ])).await;
+
+        // DESC is alias for DESCRIBE
+        let r = executor.execute("DESC x").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+                assert_eq!(get_val("_collection"), "x");
+                assert_eq!(get_val("record_count"), "1");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_describe_not_found() {
+        let executor = SQLExecutor::new();
+        let r = executor.execute("DESCRIBE nonexistent").await;
+        assert!(r.is_err(), "DESCRIBE on unknown collection should error");
+        assert!(r.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_describe_empty_collection() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("nobody", make_collection("nobody", vec![])).await;
+
+        let r = executor.execute("DESCRIBE nobody").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+                assert_eq!(get_val("_collection"), "nobody");
+                assert_eq!(get_val("record_count"), "0");
+                assert_eq!(get_val("vector_dim"), "0"); // no vectors → dim 0
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 // Vector Search tests
 // ═══════════════════════════════════════════════════════════
 

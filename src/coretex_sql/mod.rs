@@ -189,8 +189,6 @@ impl SQLParser {
     }
 
     pub fn parse(&mut self) -> Result<SQLStatement, String> {
-        self.advance_through(SQLToken::Keyword("INSERT".to_string()));
-        
         if self.check(&SQLToken::Keyword("SELECT".to_string())) {
             return self.parse_select();
         }
@@ -209,6 +207,14 @@ impl SQLParser {
         
         if self.check(&SQLToken::Keyword("CREATE".to_string())) {
             return self.parse_create();
+        if self.check(&SQLToken::Keyword("SHOW".to_string())) {
+            return self.parse_show();
+        }
+
+        if self.check(&SQLToken::Keyword("DESCRIBE".to_string()))
+            || self.check(&SQLToken::Keyword("DESC".to_string()))
+        {
+            return self.parse_describe();
         }
         
         Err("Unsupported SQL statement".to_string())
@@ -599,6 +605,30 @@ impl SQLParser {
         Err("Unsupported CREATE statement".to_string())
     }
 
+    /// `SHOW COLLECTIONS` or `SHOW TABLES`
+    fn parse_show(&mut self) -> Result<SQLStatement, String> {
+        self.advance(); // consume SHOW
+        // Accept COLLECTIONS or TABLES
+        match self.current().clone() {
+            SQLToken::Keyword(k) if k == "COLLECTIONS" || k == "TABLES" => {
+                self.advance();
+                Ok(SQLStatement::ShowCollections)
+            }
+            SQLToken::Identifier(s) if s.eq_ignore_ascii_case("collections") || s.eq_ignore_ascii_case("tables") => {
+                self.advance();
+                Ok(SQLStatement::ShowCollections)
+            }
+            _ => Err("Expected COLLECTIONS or TABLES after SHOW".to_string()),
+        }
+    }
+
+    /// `DESCRIBE <table>` or `DESC <table>`
+    fn parse_describe(&mut self) -> Result<SQLStatement, String> {
+        self.advance(); // consume DESCRIBE or DESC
+        let table = self.expect_identifier()?;
+        Ok(SQLStatement::Describe(table))
+    }
+
     fn parse_where_clause(&mut self) -> Result<SQLCondition, String> {
         let mut conditions = Vec::new();
         
@@ -704,6 +734,10 @@ pub enum SQLStatement {
     Delete(SQLDelete),
     Update(SQLUpdate),
     CreateIndex(SQLCreateIndex),
+    /// `SHOW COLLECTIONS` or `SHOW TABLES`
+    ShowCollections,
+    /// `DESCRIBE <table>` or `DESC <table>`
+    Describe(String),
 }
 
 #[derive(Debug, Clone)]
@@ -908,6 +942,8 @@ impl SQLExecutor {
             SQLStatement::Delete(d) => self.execute_delete(d).await,
             SQLStatement::CreateIndex(c) => self.execute_create_index(c).await,
             SQLStatement::Update(u) => self.execute_update(u).await,
+            SQLStatement::ShowCollections => self.execute_show_collections().await,
+            SQLStatement::Describe(table) => self.execute_describe(&table).await,
         }
     }
 
@@ -1796,6 +1832,125 @@ impl SQLExecutor {
         }
 
         Ok(SQLResult::CreateIndex(true))
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // SHOW COLLECTIONS / SHOW TABLES
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_show_collections(&self) -> Result<SQLResult, String> {
+        // DM path
+        if let Some(ref dm) = self.data_manager {
+            let data_map = dm.data_ref().read().await;
+            let rows: Vec<HashMap<String, SQLValue>> = data_map
+                .keys()
+                .map(|name| {
+                    let mut row = HashMap::new();
+                    row.insert("name".to_string(), SQLValue::String(name.clone()));
+                    row
+                })
+                .collect();
+            return Ok(SQLResult::Select(rows));
+        }
+
+        // Local path
+        let collections = self.collections.read().await;
+        let rows: Vec<HashMap<String, SQLValue>> = collections
+            .keys()
+            .map(|name| {
+                let mut row = HashMap::new();
+                row.insert("name".to_string(), SQLValue::String(name.clone()));
+                row
+            })
+            .collect();
+        Ok(SQLResult::Select(rows))
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // DESCRIBE <table> / DESC <table>
+    // ═══════════════════════════════════════════════════════════
+
+    async fn execute_describe(&self, table: &str) -> Result<SQLResult, String> {
+        // DM path
+        if let Some(ref dm) = self.data_manager {
+            let data_map = dm.data_ref().read().await;
+            let collection_data = data_map.get(table)
+                .ok_or_else(|| format!("Collection '{}' not found", table))?;
+
+            let mut rows = Vec::new();
+
+            // Row 0: collection name
+            let mut name_row = HashMap::new();
+            name_row.insert("field".to_string(), SQLValue::String("_collection".to_string()));
+            name_row.insert("value".to_string(), SQLValue::String(table.to_string()));
+            rows.push(name_row);
+
+            // Row 1: record count
+            let mut count_row = HashMap::new();
+            count_row.insert("field".to_string(), SQLValue::String("record_count".to_string()));
+            count_row.insert("value".to_string(), SQLValue::Number(collection_data.len() as f64));
+            rows.push(count_row);
+
+            // Row 2: vector dimension (sample first record)
+            let dim = collection_data.iter().next()
+                .map(|(_, r)| r.vector.len())
+                .unwrap_or(0);
+            let mut dim_row = HashMap::new();
+            dim_row.insert("field".to_string(), SQLValue::String("vector_dim".to_string()));
+            dim_row.insert("value".to_string(), SQLValue::Number(dim as f64));
+            rows.push(dim_row);
+
+            // Row 3+: metadata fields (sample first record for keys)
+            if let Some((_, first)) = collection_data.iter().next() {
+                if let Some(obj) = first.metadata.as_object() {
+                    for key in obj.keys() {
+                        let mut f_row = HashMap::new();
+                        f_row.insert("field".to_string(), SQLValue::String(format!("meta.{}", key)));
+                        f_row.insert("value".to_string(), SQLValue::String("<present>".to_string()));
+                        rows.push(f_row);
+                    }
+                }
+            }
+
+            return Ok(SQLResult::Select(rows));
+        }
+
+        // Local path
+        let collections = self.collections.read().await;
+        let collection = collections.get(table)
+            .ok_or_else(|| format!("Collection '{}' not found", table))?;
+
+        let mut rows = Vec::new();
+
+        let mut name_row = HashMap::new();
+        name_row.insert("field".to_string(), SQLValue::String("_collection".to_string()));
+        name_row.insert("value".to_string(), SQLValue::String(table.to_string()));
+        rows.push(name_row);
+
+        let mut count_row = HashMap::new();
+        count_row.insert("field".to_string(), SQLValue::String("record_count".to_string()));
+        count_row.insert("value".to_string(), SQLValue::Number(collection.vectors.len() as f64));
+        rows.push(count_row);
+
+        let dim = collection.vectors.values().next()
+            .map(|(v, _)| v.len())
+            .unwrap_or(0);
+        let mut dim_row = HashMap::new();
+        dim_row.insert("field".to_string(), SQLValue::String("vector_dim".to_string()));
+        dim_row.insert("value".to_string(), SQLValue::Number(dim as f64));
+        rows.push(dim_row);
+
+        // Metadata fields
+        if let Some((_, meta)) = collection.vectors.values().next() {
+            for key in meta.keys() {
+                let mut f_row = HashMap::new();
+                f_row.insert("field".to_string(), SQLValue::String(format!("meta.{}", key)));
+                f_row.insert("value".to_string(), SQLValue::String("<present>".to_string()));
+                rows.push(f_row);
+            }
+        }
+
+        Ok(SQLResult::Select(rows))
     }
 
     /// UPDATE 语句执行
