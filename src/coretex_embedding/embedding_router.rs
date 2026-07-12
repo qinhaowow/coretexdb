@@ -1,7 +1,7 @@
 //! Embedding router -统一多模态嵌入服务
 
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::coretex_core::Result;
 
 use crate::coretex_embedding::{
     TextEmbeddingService,
@@ -55,7 +55,7 @@ impl EmbeddingRouter {
         }
     }
 
-    pub fn embed(&self, request: &EmbeddingRequest) -> Result<EmbeddingResponse, Box<dyn Error + Send + Sync>> {
+    pub fn embed(&self, request: &EmbeddingRequest) -> Result<EmbeddingResponse> {
         match request.data_type {
             DataType::Text => {
                 let embedding = self.text_service.embed_text(&request.data)?;
@@ -110,24 +110,24 @@ impl EmbeddingRouter {
         }
     }
 
-    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         self.text_service.embed_text(text)
     }
 
-    pub fn embed_image(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_image(&self, path: &str) -> Result<Vec<f32>> {
         let image_data = std::fs::read(path)?;
         self.image_service.embed_image(&image_data)
     }
 
-    pub fn embed_audio(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_audio(&self, path: &str) -> Result<Vec<f32>> {
         self.audio_service.embed_audio_path(path)
     }
 
-    pub fn embed_video(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_video(&self, path: &str) -> Result<Vec<f32>> {
         self.video_service.embed_video_path(path)
     }
 
-    pub fn embed_pointcloud(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_pointcloud(&self, path: &str) -> Result<Vec<f32>> {
         self.pointcloud_service.embed_point_cloud_path(path)
     }
 
@@ -151,6 +151,7 @@ impl Default for EmbeddingRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_text() {

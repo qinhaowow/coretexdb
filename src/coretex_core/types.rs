@@ -126,35 +126,176 @@ pub enum IndexType {
 /// Error type for CoreTexDB 
 #[derive(Debug, thiserror::Error)] 
 pub enum CoreTexError { 
+    // === External error wrappers ===
     #[error("IO error: {0}")] 
     Io(#[from] std::io::Error), 
     
     #[error("Serialization error: {0}")] 
     Serialization(#[from] serde_json::Error), 
-    
-    #[error("Vector dimension mismatch: expected {expected}, got {actual}")] 
-    DimensionMismatch { expected: usize, actual: usize }, 
-    
+
+    #[error("Bincode error: {0}")]
+    Bincode(Box<bincode::ErrorKind>),
+
+    #[error("UTF-8 conversion error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
+
+    #[error("Slice conversion error: {0}")]
+    SliceConversion(String),
+
+    #[error("Parse error: {0}")]
+    Parse(String),
+
+    // === Data errors ===
     #[error("Collection not found: {0}")] 
     CollectionNotFound(String), 
+
+    #[error("Collection already exists: {0}")]
+    CollectionAlreadyExists(String),
     
     #[error("Document not found: {0}")] 
     DocumentNotFound(String), 
-    
+
+    #[error("Vector dimension mismatch: expected {expected}, got {actual}")] 
+    DimensionMismatch { expected: usize, actual: usize }, 
+
+    #[error("Invalid dimension: {0}")]
+    InvalidDimension(String),
+
+    // === Index errors ===
     #[error("Index error: {0}")] 
     IndexError(String), 
-    
+
+    #[error("Index not found: {0}")]
+    IndexNotFound(String),
+
+    // === Storage errors ===
     #[error("Storage error: {0}")] 
     StorageError(String), 
-    
+
+    #[error("Storage not initialized")]
+    StorageNotInitialized,
+
+    // === Transaction errors ===
+    #[error("Transaction not found: {0}")]
+    TransactionNotFound(String),
+
+    #[error("Invalid transaction state: {0}")]
+    InvalidTransactionState(String),
+
+    #[error("Write conflict on key: {0}")]
+    WriteConflict(String),
+
+    #[error("Snapshot not found: {0}")]
+    SnapshotNotFound(String),
+
+    // === CDC errors ===
+    #[error("CDC connection error: {0}")]
+    CdcConnectionError(String),
+
+    #[error("CDC query error: {0}")]
+    CdcQueryError(String),
+
+    #[error("CDC position error: {0}")]
+    CdcPositionError(String),
+
+    #[error("CDC transform error: {0}")]
+    CdcTransformError(String),
+
+    // === Backup errors ===
+    #[error("Backup not found: {0}")]
+    BackupNotFound(String),
+
+    #[error("Backup incomplete: {0}")]
+    BackupIncomplete(String),
+
+    // === Persistence errors ===
+    #[error("Compression error: {0}")]
+    CompressionError(String),
+
+    #[error("Checkpoint not found: {0}")]
+    CheckpointNotFound(String),
+
+    // === Graph errors ===
+    #[error("Node not found: {0}")]
+    NodeNotFound(String),
+
+    #[error("Edge not found: {0}")]
+    EdgeNotFound(String),
+
+    #[error("Node already exists: {0}")]
+    NodeAlreadyExists(String),
+
+    #[error("Edge already exists: {0}")]
+    EdgeAlreadyExists(String),
+
+    #[error("Invalid graph operation: {0}")]
+    InvalidGraphOperation(String),
+
+    // === General errors ===
     #[error("Validation error: {0}")] 
     ValidationError(String), 
     
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
-    #[error("Invalid dimension: {0}")]
-    InvalidDimension(String),
-} 
+    #[error("Transaction error: {0}")]
+    TransactionError(String),
 
+    #[error("{0}")]
+    Other(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
+    #[error("Operation timed out: {0}")]
+    Timeout(String),
+
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+
+    #[error("Out of memory: {0}")]
+    OutOfMemory(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+// Additional From impls that can't use #[from] due to orphan rules or boxing
+impl From<bincode::Error> for CoreTexError {
+    fn from(e: bincode::Error) -> Self {
+        CoreTexError::Bincode(Box::new(*e))
+    }
+}
+
+impl From<std::array::TryFromSliceError> for CoreTexError {
+    fn from(e: std::array::TryFromSliceError) -> Self {
+        CoreTexError::SliceConversion(e.to_string())
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for CoreTexError {
+    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        CoreTexError::Internal(e.to_string())
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for CoreTexError {
+    fn from(e: Box<dyn std::error::Error>) -> Self {
+        CoreTexError::Internal(e.to_string())
+    }
+}
+
+impl From<String> for CoreTexError {
+    fn from(s: String) -> Self {
+        CoreTexError::Internal(s)
+    }
+}
+
+impl From<&str> for CoreTexError {
+    fn from(s: &str) -> Self {
+        CoreTexError::Internal(s.to_string())
+    }
+}
+
+/// Standard result type for CoreTexDB
 pub type Result<T> = std::result::Result<T, CoreTexError>; 

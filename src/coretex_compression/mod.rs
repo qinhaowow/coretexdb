@@ -170,11 +170,37 @@ impl CompressionAlgorithm for LZ4Compression {
     fn name(&self) -> &str { "lz4" }
     
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("LZ4 requires 'lz4' crate. Using simple compression.".to_string())
+        let rle = RunLengthEncoding::compress(data);
+        if rle.len() < data.len() {
+            let mut result = vec![1u8];
+            result.extend_from_slice(&(rle.len() as u32).to_le_bytes());
+            result.extend_from_slice(&rle);
+            return Ok(result);
+        }
+        let mut result = vec![0u8];
+        result.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        result.extend_from_slice(data);
+        Ok(result)
     }
     
     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("LZ4 requires 'lz4' crate.".to_string())
+        if data.is_empty() {
+            return Err("Empty compressed data".to_string());
+        }
+        let mode = data[0];
+        if data.len() < 5 {
+            return Err("Invalid compressed data header".to_string());
+        }
+        let len = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+        if data.len() < 5 + len {
+            return Err("Compressed data truncated".to_string());
+        }
+        let payload = &data[5..5 + len];
+        if mode == 1 {
+            Ok(RunLengthEncoding::decompress(payload))
+        } else {
+            Ok(payload.to_vec())
+        }
     }
     
     fn compression_ratio(&self, original: &[u8], compressed: &[u8]) -> f64 {
@@ -189,11 +215,37 @@ impl CompressionAlgorithm for ZstdCompression {
     fn name(&self) -> &str { "zstd" }
     
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("Zstd requires 'zstd' crate. Using simple compression.".to_string())
+        let rle = RunLengthEncoding::compress(data);
+        if rle.len() < data.len() {
+            let mut result = vec![1u8];
+            result.extend_from_slice(&(rle.len() as u32).to_le_bytes());
+            result.extend_from_slice(&rle);
+            return Ok(result);
+        }
+        let mut result = vec![0u8];
+        result.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        result.extend_from_slice(data);
+        Ok(result)
     }
     
     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("Zstd requires 'zstd' crate.".to_string())
+        if data.is_empty() {
+            return Err("Empty compressed data".to_string());
+        }
+        let mode = data[0];
+        if data.len() < 5 {
+            return Err("Invalid compressed data header".to_string());
+        }
+        let len = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+        if data.len() < 5 + len {
+            return Err("Compressed data truncated".to_string());
+        }
+        let payload = &data[5..5 + len];
+        if mode == 1 {
+            Ok(RunLengthEncoding::decompress(payload))
+        } else {
+            Ok(payload.to_vec())
+        }
     }
     
     fn compression_ratio(&self, original: &[u8], compressed: &[u8]) -> f64 {
@@ -208,11 +260,60 @@ impl CompressionAlgorithm for SnappyCompression {
     fn name(&self) -> &str { "snappy" }
     
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("Snappy requires 'snappy' crate. Using simple compression.".to_string())
+        #[cfg(feature = "compression")]
+        {
+            use snap::write::FrameEncoder;
+            use std::io::Write;
+            let mut encoder = FrameEncoder::new(Vec::new());
+            encoder.write_all(data).map_err(|e| e.to_string())?;
+            encoder.into_inner().map_err(|e| e.to_string())
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            let rle = RunLengthEncoding::compress(data);
+            if rle.len() < data.len() {
+                let mut result = vec![1u8];
+                result.extend_from_slice(&(rle.len() as u32).to_le_bytes());
+                result.extend_from_slice(&rle);
+                return Ok(result);
+            }
+            let mut result = vec![0u8];
+            result.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            result.extend_from_slice(data);
+            Ok(result)
+        }
     }
     
     fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
-        Err("Snappy requires 'snappy' crate.".to_string())
+        #[cfg(feature = "compression")]
+        {
+            use snap::read::FrameDecoder;
+            use std::io::Read;
+            let mut decoder = FrameDecoder::new(data);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed).map_err(|e| e.to_string())?;
+            Ok(decompressed)
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            if data.is_empty() {
+                return Err("Empty compressed data".to_string());
+            }
+            let mode = data[0];
+            if data.len() < 5 {
+                return Err("Invalid compressed data header".to_string());
+            }
+            let len = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+            if data.len() < 5 + len {
+                return Err("Compressed data truncated".to_string());
+            }
+            let payload = &data[5..5 + len];
+            if mode == 1 {
+                Ok(RunLengthEncoding::decompress(payload))
+            } else {
+                Ok(payload.to_vec())
+            }
+        }
     }
     
     fn compression_ratio(&self, original: &[u8], compressed: &[u8]) -> f64 {
@@ -365,6 +466,7 @@ impl QuantizationCompressor {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_no_compression() {

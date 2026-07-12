@@ -328,6 +328,7 @@ impl BackpressureStreamEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_streaming_embedder_push() {

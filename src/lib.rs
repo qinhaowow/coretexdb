@@ -25,11 +25,13 @@ pub mod coretex_ann;
 pub mod coretex_distributed;
 pub mod coretex_auth;
 pub mod coretex_monitoring;
+pub mod coretex_spatial_transaction;
 pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
 #[cfg(feature = "python")]
 pub mod coretex_python;
+#[cfg(feature = "onnx")]
 pub mod coretex_onnx;
 pub mod coretex_bm25;
 pub mod coretex_incremental;
@@ -43,13 +45,20 @@ pub mod coretex_permissions;
 pub mod coretex_tracing;
 pub mod coretex_persistence;
 pub mod coretex_backup;
-pub mod coretex_monitoring_v2;
 // pub mod coretex_tantivy;
 pub mod coretex_graph;
 pub mod coretex_hybrid;
 pub mod coretex_rerank;
 pub mod coretex_lakehouse;
 pub mod coretex_document;
+pub mod coretex_data;
+pub mod coretex_domain_index;
+pub mod coretex_search_pipeline;
+pub mod coretex_observability_extra;
+pub mod coretex_ha_extra;
+pub mod coretex_bio;
+pub mod coretex_types_extra;
+pub mod coretex_grpo;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -59,12 +68,16 @@ mod coretex_security_tests;
 mod coretex_transaction_tests;
 #[cfg(test)]
 mod coretex_embedding_tests;
+#[cfg(test)]
+mod tests_integration;
+#[cfg(test)]
+mod wal_integration_tests;
 
 #[cfg(feature = "python")]
-pub use coretex_python::{PyCortexDB, PySearchResult, PyCollectionInfo, PyCoreTexError};
+pub use coretex_python::{PyCortexDB, PyAsyncCortexDB, PySearchResult, PyCollectionInfo, PyHealth, PyCoreTexError};
 pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
-pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig};
-pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog};
+pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig, CdcSource, CdcError, PostgresCdcSource, MysqlCdcSource, MongodbCdcSource, VectorSyncHandler, VectorSyncEvent, SchemaChangeType};
+pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog, IsolationLevel, TransactionError, WalEntry, WalOperation, LockManager, LockMode, LockRequest, DeadlockInfo};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
@@ -72,15 +85,14 @@ pub use coretex_storage::{StorageEngine, MemoryStorage};
 #[cfg(feature = "rocksdb")]
 pub use coretex_storage::PersistentStorage; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
-pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem}; 
+pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem};
+pub use coretex_query::cost_model::{IndexSelector as QueryIndexSelector, CostInput, CostEstimate, IndexKind as QueryIndexKind, JoinType, JoinPlan, JoinPushdownOptimizer, OptimizationStats};
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
 pub use coretex_api::rest::{start_server, ApiConfig};
-pub use coretex_api::graphql::{GraphQLExecutor, GraphQLServer, GraphQLRequest, GraphQLResponse}; 
+pub use coretex_api::graphql::{AppSchema, build_schema}; 
 pub use coretex_cli::run_cli; 
 pub use coretex_utils::{
-    LockManager, Transaction, TransactionOperation, TransactionState,
     ClusterManager, ClusterNode, NodeRole, NodeState, Shard,
-    BackupManager, MonitoringService, Metrics,
     cosine_similarity, euclidean_distance, normalize_vector, parse_vector, random_vector,
     LRUCache, TimedLRUCache, AsyncLRUCache, MultiLevelCache, CacheStats, MultiLevelCacheStats
 }; 
@@ -91,24 +103,37 @@ pub use coretex_embedding::{
     StreamingEmbedder, StreamItem, StreamResult, EmbeddingStream, StreamingStats,
     BatchedStreamEmbedder, WindowedStreamEmbedder, BackpressureStreamEmbedder, BackpressureSignal
 }; 
-pub use coretex_grpc::{CoretexService, start_grpc_server}; 
-pub use coretex_gis::{GeoIndex, GeoPoint, GeoBoundingBox, GeoPolygon, GeoLineString, GeoQuery}; 
+pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsInterceptor, ComposedInterceptor};
+pub mod grpc_client {
+    pub use crate::coretex_grpc::server::client::{connect, AuthApply};
+}
+pub use coretex_gis::{GeoIndex, GeoPoint, GeoBoundingBox, GeoPolygon, GeoLineString, GeoQuery, GeoPoint3D, GeoLineString3D, GeoPolygon3D, GeoBoundingBox3D}; 
 pub use coretex_timeseries::{TimeSeriesIndex, TimeSeries, TimeSeriesPoint, TimeSeriesStats, Aggregation, RollingWindow, ExponentialMovingAverage};
 pub use coretex_export::{DataExporter, VectorExporter, BatchExporter, CollectionExporter, ExportResult, ExportFormat};
 pub use coretex_ann::{ANNConfig, ANNAlgorithm, ANNParameters, HNSWParameters, IVFParameters, PQParameters, NSGParameters, SearchParameters, ANNTuner, IndexOptimizer, PerformanceRecord};
-pub use coretex_distributed::{TwoPhaseCommit, DistributedTransaction, DistributedOperation, DistributedTransactionState, TransactionCoordinator, DistributedLockManager, DistributedLock, ParticipantState, ParticipantStatus};
+pub use coretex_distributed::{TwoPhaseCommit, DistributedTransaction, DistributedOperation, DistributedTransactionState, TransactionCoordinator, DistributedLockManager, DistributedLock, ParticipantState, ParticipantStatus, ParticipantRpc, LocalParticipantRpc, LockPeerRpc, LocalLockPeerRpc};
 pub use coretex_auth::{AuthService, User, Role, Permission, JWTConfig, TokenClaims, AuthToken, UserInfo, RateLimiter};
-pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient};
-pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser};
+pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient, SlowQueryConfig, SlowQueryEntry, SlowQueryLogger};
+pub use coretex_spatial_transaction::{RTreeIndex, RTreeEntry, RTreeNode, MBR, SplitStrategy, SpatialTransaction, SpatialTxState, SpatialOperation, TlsSpatialCoordinator, TlsChannel, TlsHandshakeResult};
+pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser, SQLCreateIndex, SQLCondition, SQLToken, SQLUpdate, SelectColumn, AggregateFunction, VectorSearch};
+pub use coretex_sql::optimizer::{SQLOptimizer, ExecutionPlan, SQLOperator, SQLOperatorKind, IndexKind, VectorPushdownOperator, FilterOperator, FilterOp, FilterValue, ProjectionOperator, LimitOperator, DistanceOp};
 pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
 pub use coretex_simd::{simd_utils, SimdCapabilities};
-pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats}; 
+pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats, HeartbeatInfo, ReconnectInfo, AckInfo, HeartbeatManager, WsRateLimiter, ConnectionState, AuthRequest, AuthOkResponse, SearchRequest as WsSearchRequest, SearchResponse as WsSearchResponse, SearchResult as WsSearchResult, VectorEntry as WsVectorEntry, InsertRequest as WsInsertRequest, InsertResponse as WsInsertResponse, DeleteRequest as WsDeleteRequest, DeleteResponse as WsDeleteResponse, SubscribeRequest as WsSubscribeRequest, UnsubscribeRequest as WsUnsubscribeRequest, DataChangeEvent as WsDataChangeEvent, ErrorResponse as WsErrorResponse};
+pub use coretex_api::graphql::{
+    start_graphql_server,
+    QueryRoot, MutationRoot, SubscriptionRoot,
+    CollectionSchema as GqlCollectionSchema, SearchResultItem, VectorItem,
+    InsertResult, DeleteResult, HealthInfo, DataChangeEvent as GqlDataChangeEvent,
+    SearchInput, BatchSearchInput, CreateCollectionInput, VectorInput as GqlVectorInput,
+    MetadataFilterInput, CompositeFilterInput, DistanceMetricEnum,
+};
 // pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
 pub use coretex_graph::{GraphDatabase, GraphNode, GraphEdge, GraphPath, GraphError};
 pub use coretex_hybrid::{
     MultiModalDocument, VectorData, TextData, ScalarValue, TimeSeriesData, GeoLocation,
-    HybridQuery, VectorQuery, TextQuery, ScalarFilter, FilterOperator, QueryWeights, DistanceMetric,
+    HybridQuery, VectorQuery, TextQuery, ScalarFilter, QueryWeights, DistanceMetric,
     ScoreFusion, ScoreFusionEngine, MultiModalResult, FusedResult,
     HybridRetriever, VectorRetriever, TextRetriever,
 };
@@ -126,13 +151,20 @@ pub use coretex_document::{
     DocumentParser, DocumentParserRegistry, PdfParser, ImageParser, AudioParser,
     HighDimVector, HighDimVectorStore, PQCompressor,
 }; 
+pub use coretex_data::{DataManager, VectorRecord, BulkResult, UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
+pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse, LogEntry, LogCommand, AppendEntriesRequest, AppendEntriesResponse, RaftLog, LogReplicator};
+pub use coretex_domain_index::{DomainIndex, DomainDocument, DomainSearchResult, DomainIndexManager, NewsWeatherIndex, GeoLocationIndex, FinancialIndex, KnowledgeIndex};
+pub use coretex_search_pipeline::{TextTokenizer, StopWords, Stemmer, RRFFusion, Candidate, RerankScorer, BM25RerankScorer, LengthPenaltyScorer, RerankPipeline, Modality, EmbeddingModel, RoutingStrategy, RoutingWeights, CrossModalResult, CrossModalRetriever};
+pub use coretex_grpo::{GRPOConfig, PolicyNetwork, GRPOExperience, GRPOStats, GRPOOptimizer, GRPOUpdateResult, GRPOSearchOptimizer, SearchAction};
+pub use coretex_bio::{KmerIndexer, SequenceChunker, SequenceChunk, SequenceChunkWithMeta, BinaryVector, IntegerVector, SpacetimeIndex, SpacetimePoint, UserDefinedFunction, UdfType, UdfParameter, UdfParamType, UdfRegistry};
+pub use coretex_types_extra::{DE9IM, SpatialRelation, Topology3D, WindowType, WindowFunction, WindowResult, TimeSeriesWindow, DocumentChunk, RagResult, RagRetriever, ECommerceIndex, Product, Order, InventoryItem, MedicalIndex, Patient, Diagnosis, Drug, LogisticsIndex, Package, Route, Carrier};
+pub use coretex_observability_extra::{AlertChannel, AlertNotification, WebhookChannel, SlackChannel, EmailChannel, EmailMessage, PagerDutyChannel, AlertDispatcher, DispatchResult, SpanContext, ContextPropagator, TraceHeaderFormat, PITRManager, TimelineEntry, BackupRecord, PITRReport};
+pub use coretex_ha_extra::{RaftSnapshot, InstallSnapshotRequest, InstallSnapshotResponse, SnapshotStore, ExtendedRaftRpc, HttpExtendedRaftRpc, RaftSnapshotManager, TwoPCState, ParticipantStateFull, TwoPCTransaction, TwoPCCoordinator, TwoPCRpc, MockTwoPCRpc, CheckpointRecord, CrashRecoveryManager, RecoveryReport};
 
 pub struct CoreTexDB {
-    pub storage: Arc<RwLock<Box<dyn StorageEngine>>>,
-    pub index_manager: Arc<IndexManager>,
-    pub collections: Arc<RwLock<HashMap<String, CollectionSchema>>>,
-    pub data: Arc<RwLock<HashMap<String, HashMap<String, (Vec<f32>, serde_json::Value)>>>>,
+    pub data_manager: DataManager,
     pub config: DbConfig,
+    pub wal: Option<Arc<WriteAheadLog>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +178,8 @@ pub struct DbConfig {
     pub memory_only: bool,
     pub max_vectors_per_collection: usize,
     pub create_dirs_on_init: bool,
+    pub wal_enabled: bool,
+    pub wal_max_segment_size: u64,
 }
 
 impl Default for DbConfig {
@@ -161,6 +195,8 @@ impl Default for DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
+            wal_enabled: true,
+            wal_max_segment_size: 64 * 1024 * 1024, // 64 MB
         }
     }
 }
@@ -199,6 +235,8 @@ impl DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
+            wal_enabled: true,
+            wal_max_segment_size: 64 * 1024 * 1024,
         }
     }
 }
@@ -206,13 +244,14 @@ impl DbConfig {
 impl CoreTexDB {
     pub fn new() -> Self {
         let storage: Box<dyn StorageEngine> = Box::new(MemoryStorage::new());
+        let storage = Arc::new(RwLock::new(storage));
+        let index_manager = Arc::new(IndexManager::new());
+        let data_manager = DataManager::new(storage, index_manager);
         
         Self {
-            storage: Arc::new(RwLock::new(storage)),
-            index_manager: Arc::new(IndexManager::new()),
-            collections: Arc::new(RwLock::new(HashMap::new())),
-            data: Arc::new(RwLock::new(HashMap::new())),
+            data_manager,
             config: DbConfig::default(),
+            wal: None,
         }
     }
 
@@ -223,15 +262,16 @@ impl CoreTexDB {
             #[cfg(feature = "rocksdb")]
             { Box::new(PersistentStorage::new(&config.data_dir)) }
             #[cfg(not(feature = "rocksdb"))]
-            { Box::new(MemoryStorage::new()) }
+            { panic!("memory_only=false requires the 'rocksdb' feature. Enable it in Cargo.toml or set memory_only=true") }
         };
+        let storage = Arc::new(RwLock::new(storage));
+        let index_manager = Arc::new(IndexManager::new());
+        let data_manager = DataManager::new(storage, index_manager);
         
         Self {
-            storage: Arc::new(RwLock::new(storage)),
-            index_manager: Arc::new(IndexManager::new()),
-            collections: Arc::new(RwLock::new(HashMap::new())),
-            data: Arc::new(RwLock::new(HashMap::new())),
+            data_manager,
             config,
+            wal: None,
         }
     }
 
@@ -240,11 +280,37 @@ impl CoreTexDB {
             self.create_directories().await?;
         }
         
-        let mut storage = self.storage.write().await;
-        storage.init().await.map_err(|e| CoreTexError::StorageError(e.to_string()))?;
-        
         if !self.config.memory_only {
             self.init_metadata().await?;
+        }
+
+        // Initialize WAL if enabled
+        if self.config.wal_enabled && !self.config.memory_only {
+            use crate::coretex_utils::wal::WriteAheadLog;
+            
+            let wal = Arc::new(
+                WriteAheadLog::new(&self.config.wal_dir)
+                    .with_max_segment_size(self.config.wal_max_segment_size)
+            );
+            wal.init().await
+                .map_err(|e| CoreTexError::Io(e.to_string()))?;
+
+            // Wire WAL into DataManager (OnceLock ensures this happens exactly once)
+            self.data_manager.set_wal(Arc::clone(&wal))
+                .map_err(|_| CoreTexError::Internal("WAL already set".into()))?;
+
+            // Recover from WAL (replay any unapplied entries)
+            let recovery_result = self.data_manager.recover_from_wal().await?;
+            
+            if !recovery_result.is_clean() {
+                eprintln!(
+                    "WAL recovery: {} total, {} replayed, {} skipped, {} corrupted",
+                    recovery_result.total_entries,
+                    recovery_result.replayed,
+                    recovery_result.skipped,
+                    recovery_result.corrupted,
+                );
+            }
         }
         
         Ok(())
@@ -323,207 +389,45 @@ impl CoreTexDB {
     }
 
     pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
-        let mut collections = self.collections.write().await;
-        
-        if collections.contains_key(name) {
-            return Err(CoreTexError::ValidationError(format!("Collection '{}' already exists", name)));
-        }
-
-        let schema = CollectionSchema {
-            name: name.to_string(),
-            dimension,
-            distance_metric: match metric {
-                "euclidean" => coretex_core::DistanceMetric::Euclidean,
-                "dotproduct" => coretex_core::DistanceMetric::DotProduct,
-                "manhattan" => coretex_core::DistanceMetric::Manhattan,
-                _ => coretex_core::DistanceMetric::Cosine,
-            },
-            indexes: vec![],
-            metadata_schema: None,
-        };
-
-        collections.insert(name.to_string(), schema.clone());
-
-        let mut data = self.data.write().await;
-        data.insert(name.to_string(), HashMap::new());
-
-        let index_name = format!("{}_hnsw", name);
-        self.index_manager.create_index(&index_name, "hnsw", metric).await
-            .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
-
-        Ok(())
+        self.data_manager.create_collection(name, dimension, metric).await
     }
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
-        let mut collections = self.collections.write().await;
-        
-        if !collections.contains_key(name) {
-            return Err(CoreTexError::CollectionNotFound(name.to_string()));
-        }
+        self.data_manager.delete_collection(name).await
+    }
 
-        collections.remove(name);
-
-        let mut data = self.data.write().await;
-        data.remove(name);
-
-        let index_name = format!("{}_hnsw", name);
-        self.index_manager.delete_index(&index_name).await
-            .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
-
-        Ok(())
+    pub async fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.data_manager.rename_collection(old_name, new_name).await
     }
 
     pub async fn list_collections(&self) -> Result<Vec<String>> {
-        let collections = self.collections.read().await;
-        Ok(collections.keys().cloned().collect())
+        self.data_manager.list_collections().await
     }
 
     pub async fn get_collection(&self, name: &str) -> Result<CollectionSchema> {
-        let collections = self.collections.read().await;
-        
-        collections.get(name)
-            .cloned()
-            .ok_or(CoreTexError::CollectionNotFound(name.to_string()))
+        self.data_manager.get_collection(name).await
     }
 
     pub async fn insert_vectors(&self, collection: &str, vectors: Vec<(String, Vec<f32>, serde_json::Value)>) -> Result<Vec<String>> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
-        for (_, vec, _) in &vectors {
-            if vec.len() != schema.dimension {
-                return Err(CoreTexError::DimensionMismatch { 
-                    expected: schema.dimension, 
-                    actual: vec.len() 
-                });
-            }
-        }
-        drop(collections);
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let index_name = format!("{}_hnsw", collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            for (id, vector, _) in &vectors {
-                let _ = index.add(id, vector).await;
-            }
-        }
-
-        let mut ids = Vec::new();
-        for (id, vector, metadata) in vectors {
-            collection_data.insert(id.clone(), (vector.clone(), metadata.clone()));
-            ids.push(id.clone());
-            
-            let storage = self.storage.read().await;
-            let storage_key = format!("{}:{}", collection, id);
-            let _ = storage.store(&storage_key, &vector, &metadata).await;
-        }
-
-        Ok(ids)
+        self.data_manager.insert_vectors(collection, vectors).await
     }
 
     pub async fn get_vector(&self, collection: &str, id: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>> {
-        let data = self.data.read().await;
-        let collection_data = data.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
-        Ok(collection_data.get(id).cloned())
+        self.data_manager.get_vector(collection, id).await.map(|opt| {
+            opt.map(|r| (r.vector, r.metadata))
+        })
     }
 
     pub async fn delete_vectors(&self, collection: &str, ids: &[String]) -> Result<usize> {
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let index_name = format!("{}_hnsw", collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            for id in ids {
-                let _ = index.remove(id).await;
-            }
-        }
-
-        let mut deleted = 0;
-        for id in ids {
-            if collection_data.remove(id).is_some() {
-                deleted += 1;
-                
-                let storage = self.storage.read().await;
-                let storage_key = format!("{}:{}", collection, id);
-                let _ = storage.delete(&storage_key).await;
-            }
-        }
-
-        Ok(deleted)
+        self.data_manager.delete_vectors(collection, ids).await
     }
 
     pub async fn search(&self, collection: &str, query: Vec<f32>, k: usize, filter: Option<serde_json::Value>) -> Result<Vec<SearchResult>> {
-        let collections = self.collections.read().await;
-        let _schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        drop(collections);
-
-        let index_name = format!("{}_hnsw", collection);
-        
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            let results = index.search(&query, k * 2).await
-                .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
-            
-            if let Some(filter_obj) = filter {
-                let data = self.data.read().await;
-                let collection_data = data.get(collection);
-                
-                let filtered: Vec<SearchResult> = results.into_iter()
-                    .filter(|r| {
-                        if let Some(cd) = collection_data {
-                            if let Some((_, metadata)) = cd.get(&r.id) {
-                                return Self::matches_filter(metadata, &filter_obj);
-                            }
-                        }
-                        true
-                    })
-                    .take(k)
-                    .collect();
-                
-                return Ok(filtered);
-            }
-            
-            return Ok(results.into_iter().take(k).collect());
-        }
-
-        let data = self.data.read().await;
-        let collection_data = data.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let mut results: Vec<SearchResult> = collection_data
-            .iter()
-            .map(|(id, (vec, _))| {
-                let distance = Self::cosine_distance(&query, vec);
-                SearchResult {
-                    id: id.clone(),
-                    distance,
-                }
-            })
-            .collect();
-
-        Self::sort_search_results(&mut results);
-        Ok(results.into_iter().take(k).collect())
-    }
-
-    fn sort_search_results(results: &mut Vec<SearchResult>) {
-        results.sort_by(|a, b| {
-            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        self.data_manager.search(collection, query, k, filter).await
     }
 
     pub async fn get_vectors_count(&self, collection: &str) -> Result<usize> {
-        let data = self.data.read().await;
-        let collection_data = data.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        
-        Ok(collection_data.len())
+        self.data_manager.get_vectors_count(collection).await
     }
 
     pub async fn update_vector(
@@ -533,35 +437,7 @@ impl CoreTexDB {
         vector: Vec<f32>,
         metadata: Option<serde_json::Value>,
     ) -> Result<bool> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        if vector.len() != schema.dimension {
-            return Err(CoreTexError::DimensionMismatch {
-                expected: schema.dimension,
-                actual: vector.len()
-            });
-        }
-        drop(collections);
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        if !collection_data.contains_key(id) {
-            return Ok(false);
-        }
-
-        let meta = metadata.unwrap_or(serde_json::json!({}));
-        collection_data.insert(id.to_string(), (vector.clone(), meta));
-
-        let index_name = format!("{}_hnsw", collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            let _ = index.add(id, &vector).await;
-        }
-
-        Ok(true)
+        self.data_manager.update_vector(collection, id, vector, metadata).await
     }
 
     pub async fn upsert_vectors(
@@ -569,38 +445,7 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<(Vec<String>, Vec<String>)> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != schema.dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: schema.dimension,
-                    actual: vector.len()
-                });
-            }
-        }
-        drop(collections);
-
-        let mut inserted = Vec::new();
-        let mut updated = Vec::new();
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (id, vector, metadata) in vectors {
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), (vector, metadata));
-                updated.push(id);
-            } else {
-                collection_data.insert(id.clone(), (vector, metadata));
-                inserted.push(id);
-            }
-        }
-
-        Ok((inserted, updated))
+        self.data_manager.upsert_vectors(collection, vectors).await
     }
 
     pub async fn bulk_insert(
@@ -608,31 +453,7 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != schema.dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: schema.dimension,
-                    actual: vector.len()
-                });
-            }
-        }
-        drop(collections);
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let mut ids = Vec::new();
-        for (id, vector, metadata) in vectors {
-            collection_data.insert(id.clone(), (vector, metadata));
-            ids.push(id.clone());
-        }
-
-        Ok(ids)
+        self.data_manager.bulk_insert(collection, vectors).await
     }
 
     pub async fn bulk_update(
@@ -640,33 +461,7 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != schema.dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: schema.dimension,
-                    actual: vector.len()
-                });
-            }
-        }
-        drop(collections);
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let mut updated_ids = Vec::new();
-        for (id, vector, metadata) in vectors {
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), (vector, metadata));
-                updated_ids.push(id);
-            }
-        }
-
-        Ok(updated_ids)
+        self.data_manager.bulk_update(collection, vectors).await
     }
 
     pub async fn bulk_delete(
@@ -674,19 +469,7 @@ impl CoreTexDB {
         collection: &str,
         ids: Vec<String>,
     ) -> Result<Vec<String>> {
-        let mut deleted_ids = Vec::new();
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for id in &ids {
-            if collection_data.remove(id).is_some() {
-                deleted_ids.push(id.clone());
-            }
-        }
-
-        Ok(deleted_ids)
+        self.data_manager.bulk_delete(collection, ids).await
     }
 
     pub async fn bulk_upsert(
@@ -694,75 +477,16 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<BulkResult> {
-        let collections = self.collections.read().await;
-        let schema = collections.get(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != schema.dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: schema.dimension,
-                    actual: vector.len(),
-                });
-            }
-        }
-        drop(collections);
-
-        let mut inserted = Vec::new();
-        let mut updated = Vec::new();
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (id, vector, metadata) in vectors {
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), (vector, metadata));
-                updated.push(id);
-            } else {
-                collection_data.insert(id.clone(), (vector, metadata));
-                inserted.push(id);
-            }
-        }
-
-        Ok(BulkResult {
-            inserted,
-            updated,
-        })
+        self.data_manager.bulk_upsert(collection, vectors).await
     }
 
-    fn matches_filter(metadata: &serde_json::Value, filter: &serde_json::Value) -> bool {
-        if let (Some(metadata_obj), Some(filter_obj)) = (
-            metadata.as_object(),
-            filter.as_object()
-        ) {
-            for (key, value) in filter_obj {
-                if let Some(meta_val) = metadata_obj.get(key) {
-                    if meta_val != value {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() || a.is_empty() {
-            return f32::MAX;
-        }
-
-        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            return 1.0;
-        }
-
-        1.0 - (dot / (norm_a * norm_b))
+    pub async fn get_vectors_by_ids(
+        &self,
+        collection: &str,
+        ids: &[String],
+    ) -> Result<Vec<(String, (Vec<f32>, serde_json::Value))>> {
+        self.data_manager.get_vectors_by_ids(collection, ids).await
+            .map(|vec| vec.into_iter().map(|(id, r)| (id, (r.vector, r.metadata))).collect())
     }
 }
 
@@ -770,12 +494,6 @@ impl Default for CoreTexDB {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BulkResult {
-    pub inserted: Vec<String>,
-    pub updated: Vec<String>,
 }
 
 #[cfg(test)]

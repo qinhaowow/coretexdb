@@ -1,478 +1,656 @@
-//! GraphQL API module for CoreTexDB
-//! Provides flexible query interface via GraphQL
+//! GraphQL API for CoreTexDB
+//!
+//! 提供完整的 GraphQL 端点：
+//! - Query: collections / collection / vector / search / batchSearch
+//! - Mutation: createCollection / deleteCollection / insertVectors / deleteVectors
+//! - Subscription: dataChanges / searchUpdates
+//! - Filter: MetadataFilter 支持多条件组合
 
-use std::collections::HashMap;
+use async_graphql::{
+    Context, EmptySubscription, Object, Schema, ID, Subscription,
+    SimpleObject, InputObject, Enum, FieldResult,
+};
+use async_graphql_axum::GraphQL;
+use axum::{
+    extract::State,
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
+    Router,
+};
+use futures_util::stream::Stream;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::collections::HashMap;
+use tokio::sync::{RwLock, broadcast};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone)]
-pub struct GraphQLSchema {
-    pub query_type: String,
-    pub mutation_type: String,
-    pub types: HashMap<String, GraphQLType>,
-}
+use crate::CoreTexDB;
 
-#[derive(Debug, Clone)]
-pub struct GraphQLType {
+// ==================== 类型定义 ====================
+
+/// Collection 元信息
+#[derive(Clone, SimpleObject, Serialize, Deserialize)]
+pub struct CollectionSchema {
     pub name: String,
-    pub fields: HashMap<String, GraphQLField>,
+    pub dimension: i32,
+    pub distance_metric: String,
+    pub vector_count: i32,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct GraphQLField {
-    pub name: String,
-    pub field_type: GraphQLTypeRef,
-    pub args: Vec<GraphQLArg>,
+/// 搜索结果项
+#[derive(Clone, SimpleObject)]
+pub struct SearchResultItem {
+    pub id: String,
+    pub score: f64,
+    pub distance: f64,
+    pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone)]
-pub enum GraphQLTypeRef {
-    Named(String),
-    List(Box<GraphQLTypeRef>),
-    NonNull(Box<GraphQLTypeRef>),
+/// 向量项
+#[derive(Clone, SimpleObject)]
+pub struct VectorItem {
+    pub id: String,
+    pub vector: Vec<f64>,
+    pub metadata: serde_json::Value,
+    pub collection: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct GraphQLArg {
-    pub name: String,
-    pub arg_type: GraphQLTypeRef,
-    pub default_value: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphQLRequest {
-    pub query: String,
-    pub operation_name: Option<String>,
-    pub variables: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphQLResponse {
-    pub data: Option<serde_json::Value>,
-    pub errors: Option<Vec<GraphQLError>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphQLError {
+/// 插入结果
+#[derive(Clone, SimpleObject)]
+pub struct InsertResult {
+    pub ids: Vec<String>,
+    pub count: i32,
+    pub success: bool,
     pub message: String,
-    pub locations: Option<Vec<GraphQLLocation>>,
-    pub path: Option<Vec<serde_json::Value>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphQLLocation {
-    pub line: usize,
-    pub column: usize,
+/// 删除结果
+#[derive(Clone, SimpleObject)]
+pub struct DeleteResult {
+    pub deleted_count: i32,
+    pub success: bool,
+    pub message: String,
 }
 
-pub struct GraphQLExecutor {
-    schema: Arc<GraphQLSchema>,
-    resolvers: Arc<RwLock<HashMap<String, GraphQLResolver>>>,
-    collections: Arc<RwLock<HashMap<String, CollectionInfo>>>,
+/// 元数据过滤操作
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
+pub enum FilterOp {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Gte,
+    Lte,
+    In,
+    Contains,
+    StartsWith,
+    EndsWith,
 }
 
-#[derive(Debug, Clone)]
-pub struct CollectionInfo {
-    pub name: String,
-    pub dimension: usize,
-    pub count: usize,
+/// 元数据过滤条件
+#[derive(InputObject, Clone, Serialize, Deserialize)]
+pub struct MetadataFilterInput {
+    pub field: String,
+    pub op: FilterOp,
+    pub value: String,
+    #[graphql(default)]
+    pub case_sensitive: bool,
 }
 
-#[derive(Clone)]
-pub struct GraphQLResolver {
-    pub field_name: String,
-    pub type_name: String,
-    pub resolver_fn: ResolverFunction,
-}
+impl MetadataFilterInput {
+    pub fn matches(&self, meta: &serde_json::Value) -> bool {
+        let field_val = meta.get(&self.field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-impl std::fmt::Debug for GraphQLResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GraphQLResolver")
-            .field("field_name", &self.field_name)
-            .field("type_name", &self.type_name)
-            .field("resolver_fn", &"<function>")
-            .finish()
-    }
-}
-
-pub type ResolverFunction = Arc<dyn Fn(&GraphQLContext, &str, &HashMap<String, serde_json::Value>) -> Result<serde_json::Value, String> + Send + Sync>;
-
-#[derive(Debug, Clone)]
-pub struct GraphQLContext {
-    pub request_id: String,
-    pub user_id: Option<String>,
-    pub variables: HashMap<String, serde_json::Value>,
-}
-
-impl GraphQLExecutor {
-    pub fn new() -> Self {
-        let schema = Self::build_default_schema();
-        
-        Self {
-            schema: Arc::new(schema),
-            resolvers: Arc::new(RwLock::new(HashMap::new())),
-            collections: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    fn build_default_schema() -> GraphQLSchema {
-        let mut types = HashMap::new();
-        
-        let query_type = GraphQLType {
-            name: "Query".to_string(),
-            fields: HashMap::from([
-                ("collections".to_string(), GraphQLField {
-                    name: "collections".to_string(),
-                    field_type: GraphQLTypeRef::Named("CollectionConnection".to_string()),
-                    args: vec![],
-                }),
-                ("collection".to_string(), GraphQLField {
-                    name: "collection".to_string(),
-                    field_type: GraphQLTypeRef::Named("Collection".to_string()),
-                    args: vec![GraphQLArg {
-                        name: "name".to_string(),
-                        arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                        default_value: None,
-                    }],
-                }),
-                ("search".to_string(), GraphQLField {
-                    name: "search".to_string(),
-                    field_type: GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("SearchResult".to_string()))),
-                    args: vec![
-                        GraphQLArg {
-                            name: "collection".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                        GraphQLArg {
-                            name: "vector".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("Float".to_string()))))),
-                            default_value: None,
-                        },
-                        GraphQLArg {
-                            name: "limit".to_string(),
-                            arg_type: GraphQLTypeRef::Named("Int".to_string()),
-                            default_value: Some(serde_json::json!(10)),
-                        },
-                    ],
-                }),
-                ("vector".to_string(), GraphQLField {
-                    name: "vector".to_string(),
-                    field_type: GraphQLTypeRef::Named("Vector".to_string()),
-                    args: vec![
-                        GraphQLArg {
-                            name: "collection".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                        GraphQLArg {
-                            name: "id".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                    ],
-                }),
-            ]),
-        };
-        
-        let mutation_type = GraphQLType {
-            name: "Mutation".to_string(),
-            fields: HashMap::from([
-                ("createCollection".to_string(), GraphQLField {
-                    name: "createCollection".to_string(),
-                    field_type: GraphQLTypeRef::Named("Collection".to_string()),
-                    args: vec![
-                        GraphQLArg {
-                            name: "name".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                        GraphQLArg {
-                            name: "dimension".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("Int".to_string()))),
-                            default_value: None,
-                        },
-                    ],
-                }),
-                ("insertVectors".to_string(), GraphQLField {
-                    name: "insertVectors".to_string(),
-                    field_type: GraphQLTypeRef::Named("InsertResult".to_string()),
-                    args: vec![
-                        GraphQLArg {
-                            name: "collection".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                        GraphQLArg {
-                            name: "vectors".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::List(Box::new(GraphQLTypeRef::Named("VectorInput".to_string()))))),
-                            default_value: None,
-                        },
-                    ],
-                }),
-                ("deleteCollection".to_string(), GraphQLField {
-                    name: "deleteCollection".to_string(),
-                    field_type: GraphQLTypeRef::Named("Boolean".to_string()),
-                    args: vec![
-                        GraphQLArg {
-                            name: "name".to_string(),
-                            arg_type: GraphQLTypeRef::NonNull(Box::new(GraphQLTypeRef::Named("String".to_string()))),
-                            default_value: None,
-                        },
-                    ],
-                }),
-            ]),
-        };
-        
-        types.insert("Query".to_string(), query_type);
-        types.insert("Mutation".to_string(), mutation_type);
-        
-        types.insert("Collection".to_string(), GraphQLType {
-            name: "Collection".to_string(),
-            fields: HashMap::from([
-                ("name".to_string(), GraphQLField {
-                    name: "name".to_string(),
-                    field_type: GraphQLTypeRef::Named("String".to_string()),
-                    args: vec![],
-                }),
-                ("dimension".to_string(), GraphQLField {
-                    name: "dimension".to_string(),
-                    field_type: GraphQLTypeRef::Named("Int".to_string()),
-                    args: vec![],
-                }),
-                ("count".to_string(), GraphQLField {
-                    name: "count".to_string(),
-                    field_type: GraphQLTypeRef::Named("Int".to_string()),
-                    args: vec![],
-                }),
-            ]),
-        });
-        
-        types.insert("SearchResult".to_string(), GraphQLType {
-            name: "SearchResult".to_string(),
-            fields: HashMap::from([
-                ("id".to_string(), GraphQLField {
-                    name: "id".to_string(),
-                    field_type: GraphQLTypeRef::Named("String".to_string()),
-                    args: vec![],
-                }),
-                ("distance".to_string(), GraphQLField {
-                    name: "distance".to_string(),
-                    field_type: GraphQLTypeRef::Named("Float".to_string()),
-                    args: vec![],
-                }),
-                ("metadata".to_string(), GraphQLField {
-                    name: "metadata".to_string(),
-                    field_type: GraphQLTypeRef::Named("JSON".to_string()),
-                    args: vec![],
-                }),
-            ]),
-        });
-        
-        GraphQLSchema {
-            query_type: "Query".to_string(),
-            mutation_type: "Mutation".to_string(),
-            types,
-        }
-    }
-
-    pub async fn execute(&self, request: GraphQLRequest) -> GraphQLResponse {
-        let context = GraphQLContext {
-            request_id: uuid_simple(),
-            user_id: None,
-            variables: request.variables.unwrap_or_default(),
-        };
-        
-        match self.parse_and_execute(&request.query, &context) {
-            Ok(data) => GraphQLResponse {
-                data: Some(data),
-                errors: None,
-            },
-            Err(e) => GraphQLResponse {
-                data: None,
-                errors: Some(vec![GraphQLError {
-                    message: e,
-                    locations: None,
-                    path: None,
-                }]),
-            },
-        }
-    }
-
-    fn parse_and_execute(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
-        let query_lower = query.to_lowercase();
-        
-        if query_lower.contains("collections") && query_lower.contains("{") {
-            return self.execute_collections_query(context);
-        }
-        
-        if query_lower.contains("search") {
-            return self.execute_search_query(query, context);
-        }
-        
-        if query_lower.contains("collection") {
-            return self.execute_collection_query(query, context);
-        }
-        
-        if query_lower.contains("mutation") || query_lower.contains("createcollection") {
-            return self.execute_mutation(query, context);
-        }
-        
-        Err("Unsupported query".to_string())
-    }
-
-    fn execute_collections_query(&self, context: &GraphQLContext) -> Result<serde_json::Value, String> {
-        Ok(serde_json::json!({
-            "collections": []
-        }))
-    }
-
-    fn execute_search_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
-        Ok(serde_json::json!({
-            "search": []
-        }))
-    }
-
-    fn execute_collection_query(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
-        Ok(serde_json::json!({
-            "collection": null
-        }))
-    }
-
-    fn execute_mutation(&self, query: &str, context: &GraphQLContext) -> Result<serde_json::Value, String> {
-        let query_lower = query.to_lowercase();
-        
-        if query_lower.contains("createcollection") {
-            Ok(serde_json::json!({
-                "createCollection": {
-                    "name": "new_collection",
-                    "dimension": 128,
-                    "count": 0
-                }
-            }))
-        } else if query_lower.contains("insertvectors") {
-            Ok(serde_json::json!({
-                "insertVectors": {
-                    "ids": []
-                }
-            }))
+        let a = if self.case_sensitive {
+            field_val.to_string()
         } else {
-            Ok(serde_json::json!(true))
+            field_val.to_lowercase()
+        };
+        let b = if self.case_sensitive {
+            self.value.clone()
+        } else {
+            self.value.to_lowercase()
+        };
+
+        match self.op {
+            FilterOp::Eq => a == b,
+            FilterOp::Ne => a != b,
+            FilterOp::Gt => a > b,
+            FilterOp::Lt => a < b,
+            FilterOp::Gte => a >= b,
+            FilterOp::Lte => a <= b,
+            FilterOp::In => b.split(',').any(|x| x.trim() == a),
+            FilterOp::Contains => a.contains(&b),
+            FilterOp::StartsWith => a.starts_with(&b),
+            FilterOp::EndsWith => a.ends_with(&b),
         }
     }
+}
 
-    pub async fn register_collection(&self, name: &str, dimension: usize, count: usize) {
-        let mut collections = self.collections.write().await;
-        collections.insert(name.to_string(), CollectionInfo {
-            name: name.to_string(),
-            dimension,
-            count,
-        });
+/// 组合过滤：AND/OR
+#[derive(InputObject, Clone)]
+pub struct CompositeFilterInput {
+    pub and: Option<Vec<MetadataFilterInput>>,
+    pub or: Option<Vec<MetadataFilterInput>>,
+    pub conditions: Option<Vec<MetadataFilterInput>>,
+}
+
+impl CompositeFilterInput {
+    pub fn matches(&self, meta: &serde_json::Value) -> bool {
+        if let Some(conds) = &self.conditions {
+            for c in conds {
+                if !c.matches(meta) { return false; }
+            }
+        }
+        if let Some(ands) = &self.and {
+            for c in ands {
+                if !c.matches(meta) { return false; }
+            }
+        }
+        if let Some(ors) = &self.or {
+            if !ors.is_empty() {
+                let mut any = false;
+                for c in ors {
+                    if c.matches(meta) { any = true; break; }
+                }
+                if !any { return false; }
+            }
+        }
+        true
     }
+}
 
-    pub fn schema_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "query": "Query type for CoreTexDB",
-            "mutation": "Mutation type for CoreTexDB"
+/// 距离度量
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum DistanceMetricEnum {
+    Cosine,
+    Euclidean,
+    DotProduct,
+}
+
+impl DistanceMetricEnum {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DistanceMetricEnum::Cosine => "cosine",
+            DistanceMetricEnum::Euclidean => "euclidean",
+            DistanceMetricEnum::DotProduct => "dotproduct",
+        }
+    }
+}
+
+/// 搜索输入
+#[derive(InputObject)]
+pub struct SearchInput {
+    pub collection: String,
+    pub vector: Vec<f64>,
+    #[graphql(default = 10)]
+    pub limit: i32,
+    pub filter: Option<CompositeFilterInput>,
+    #[graphql(default)]
+    pub with_vector: bool,
+    #[graphql(default)]
+    pub with_metadata: bool,
+}
+
+/// 批量搜索输入
+#[derive(InputObject)]
+pub struct BatchSearchInput {
+    pub collection: String,
+    pub queries: Vec<Vec<f64>>,
+    #[graphql(default = 10)]
+    pub limit: i32,
+}
+
+/// 向量输入
+#[derive(InputObject, Clone)]
+pub struct VectorInput {
+    pub id: Option<String>,
+    pub vector: Vec<f64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Collection 创建输入
+#[derive(InputObject)]
+pub struct CreateCollectionInput {
+    pub name: String,
+    pub dimension: i32,
+    pub metric: Option<DistanceMetricEnum>,
+    #[graphql(default = "hnsw")]
+    pub index_type: String,
+}
+
+/// 数据变更事件
+#[derive(Clone, SimpleObject, Serialize, Deserialize)]
+pub struct DataChangeEvent {
+    pub collection: String,
+    pub event_type: String,
+    pub ids: Vec<String>,
+    pub timestamp: i64,
+    pub count: i32,
+}
+
+/// 健康检查响应
+#[derive(Clone, SimpleObject)]
+pub struct HealthInfo {
+    pub status: String,
+    pub version: String,
+    pub uptime_secs: i64,
+    pub collections: i32,
+}
+
+// ==================== Query ====================
+
+pub struct QueryRoot {
+    pub start_time: std::time::Instant,
+}
+
+impl Default for QueryRoot {
+    fn default() -> Self {
+        Self { start_time: std::time::Instant::now() }
+    }
+}
+
+#[Object]
+impl QueryRoot {
+    /// 健康检查
+    async fn health(&self, ctx: &Context<'_>) -> FieldResult<HealthInfo> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        let collections = db.list_collections().await.unwrap_or_default().len() as i32;
+        Ok(HealthInfo {
+            status: "ok".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs: self.start_time.elapsed().as_secs() as i64,
+            collections,
         })
     }
-}
 
-fn uuid_simple() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{:x}", timestamp)
-}
-
-impl Default for GraphQLExecutor {
-    fn default() -> Self {
-        Self::new()
+    /// 列出所有 collections
+    async fn collections(&self, ctx: &Context<'_>) -> FieldResult<Vec<String>> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        Ok(db.list_collections().await.unwrap_or_default())
     }
-}
 
-pub struct GraphQLServer {
-    executor: Arc<GraphQLExecutor>,
-    address: String,
-    port: u16,
-}
-
-impl GraphQLServer {
-    pub fn new(address: &str, port: u16) -> Self {
-        Self {
-            executor: Arc::new(GraphQLExecutor::new()),
-            address: address.to_string(),
-            port,
+    /// 获取 collection 详情
+    async fn collection(&self, ctx: &Context<'_>, name: String) -> FieldResult<Option<CollectionSchema>> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        match db.get_collection(&name).await.ok() {
+            Some(s) => {
+                let count = db.get_vectors_count(&name).await.unwrap_or(0);
+                Ok(Some(CollectionSchema {
+                    name: s.name,
+                    dimension: s.dimension as i32,
+                    distance_metric: format!("{:?}", s.distance_metric),
+                    vector_count: count as i32,
+                    created_at: None,
+                    updated_at: None,
+                }))
+            }
+            None => Ok(None),
         }
     }
 
-    pub fn executor(&self) -> Arc<GraphQLExecutor> {
-        self.executor.clone()
+    /// 获取指定向量
+    async fn vector(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+        id: String,
+    ) -> FieldResult<Option<VectorItem>> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        match db.get_vector(&collection, &id).await.ok().flatten() {
+            Some((v, m)) => Ok(Some(VectorItem {
+                id,
+                vector: v.iter().map(|x| *x as f64).collect(),
+                metadata: m,
+                collection,
+            })),
+            None => Ok(None),
+        }
     }
 
-    pub async fn handle_request(&self, request: GraphQLRequest) -> GraphQLResponse {
-        self.executor.execute(request).await
+    /// 搜索
+    async fn search(&self, ctx: &Context<'_>, input: SearchInput) -> FieldResult<Vec<SearchResultItem>> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+
+        let qv: Vec<f32> = input.vector.iter().map(|x| *x as f32).collect();
+        let results = db.search(&input.collection, qv, input.limit as usize, None).await?;
+
+        let mut out = Vec::new();
+        for r in results {
+            let mut item = SearchResultItem {
+                id: r.id.clone(),
+                score: (1.0 - r.distance) as f64,
+                distance: r.distance as f64,
+                metadata: None,
+            };
+            if input.with_metadata || input.with_vector {
+                if let Ok(Some((_vec, meta))) = db.get_vector(&input.collection, &r.id).await {
+                    item.metadata = Some(meta);
+                }
+            }
+            out.push(item);
+        }
+        Ok(out)
     }
 
-    pub async fn start(&self) -> Result<(), String> {
-        println!("GraphQL server starting on {}:{}", self.address, self.port);
-        Ok(())
+    /// 批量搜索
+    async fn batch_search(&self, ctx: &Context<'_>, input: BatchSearchInput) -> FieldResult<Vec<Vec<SearchResultItem>>> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        let mut out = Vec::new();
+        for q in input.queries {
+            let qv: Vec<f32> = q.iter().map(|x| *x as f32).collect();
+            let results = db.search(&input.collection, qv, input.limit as usize, None).await?;
+            let items: Vec<SearchResultItem> = results.into_iter().map(|r| SearchResultItem {
+                id: r.id,
+                score: (1.0 - r.distance) as f64,
+                distance: r.distance as f64,
+                metadata: None,
+            }).collect();
+            out.push(items);
+        }
+        Ok(out)
     }
+
+    /// 数据库版本
+    async fn version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+}
+
+// ==================== Mutation ====================
+
+pub struct MutationRoot;
+
+#[Object]
+impl MutationRoot {
+    /// 创建 collection
+    async fn create_collection(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateCollectionInput,
+    ) -> FieldResult<CollectionSchema> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        let metric = input.metric.unwrap_or(DistanceMetricEnum::Cosine).as_str();
+        db.create_collection(&input.name, input.dimension as usize, metric).await?;
+        Ok(CollectionSchema {
+            name: input.name,
+            dimension: input.dimension,
+            distance_metric: metric.to_string(),
+            vector_count: 0,
+            created_at: Some(chrono::Utc::now().timestamp()),
+            updated_at: Some(chrono::Utc::now().timestamp()),
+        })
+    }
+
+    /// 删除 collection
+    async fn delete_collection(&self, ctx: &Context<'_>, name: String) -> FieldResult<bool> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        db.delete_collection(&name).await?;
+        Ok(true)
+    }
+
+    /// 插入向量
+    async fn insert_vectors(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+        vectors: Vec<VectorInput>,
+    ) -> FieldResult<InsertResult> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+
+        let data: Vec<(String, Vec<f32>, serde_json::Value)> = vectors
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let id = v.id.unwrap_or_else(|| format!("vec_{}", Uuid::new_v4()));
+                let vf: Vec<f32> = v.vector.iter().map(|x| *x as f32).collect();
+                (id, vf, v.metadata.unwrap_or(serde_json::json!({})))
+            })
+            .collect();
+
+        let ids = db.insert_vectors(&collection, data.clone()).await?;
+        let count = ids.len() as i32;
+
+        // 通知订阅者
+        if let Some(broadcaster) = ctx.data_opt::<Arc<broadcast::Sender<DataChangeEvent>>>() {
+            let _ = broadcaster.send(DataChangeEvent {
+                collection: collection.clone(),
+                event_type: "insert".to_string(),
+                ids: ids.clone(),
+                timestamp: chrono::Utc::now().timestamp(),
+                count,
+            });
+        }
+
+        Ok(InsertResult {
+            ids,
+            count,
+            success: true,
+            message: "Inserted successfully".to_string(),
+        })
+    }
+
+    /// 删除向量
+    async fn delete_vectors(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+        ids: Vec<String>,
+    ) -> FieldResult<DeleteResult> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        let deleted = db.delete_vectors(&collection, &ids).await? as i32;
+
+        if let Some(broadcaster) = ctx.data_opt::<Arc<broadcast::Sender<DataChangeEvent>>>() {
+            let _ = broadcaster.send(DataChangeEvent {
+                collection: collection.clone(),
+                event_type: "delete".to_string(),
+                ids: ids.clone(),
+                timestamp: chrono::Utc::now().timestamp(),
+                count: deleted,
+            });
+        }
+
+        Ok(DeleteResult {
+            deleted_count: deleted,
+            success: true,
+            message: format!("Deleted {} vectors", deleted),
+        })
+    }
+
+    /// 更新元数据
+    async fn update_metadata(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+        id: String,
+        metadata: serde_json::Value,
+    ) -> FieldResult<bool> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        let result = db.get_vector(&collection, &id).await?;
+        if let Some((v, _)) = result {
+            db.update_vector(&collection, &id, v, Some(metadata.clone())).await?;
+            if let Some(broadcaster) = ctx.data_opt::<Arc<broadcast::Sender<DataChangeEvent>>>() {
+                let _ = broadcaster.send(DataChangeEvent {
+                    collection,
+                    event_type: "update".to_string(),
+                    ids: vec![id],
+                    timestamp: chrono::Utc::now().timestamp(),
+                    count: 1,
+                });
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+// ==================== Subscription ====================
+
+pub struct SubscriptionRoot;
+
+#[Subscription]
+impl SubscriptionRoot {
+    /// 订阅 collection 的数据变更
+    async fn data_changes(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+    ) -> Result<impl Stream<Item = DataChangeEvent>, async_graphql::Error> {
+        let broadcaster = ctx.data::<Arc<broadcast::Sender<DataChangeEvent>>>()?
+            .clone();
+        let mut rx = broadcaster.subscribe();
+        let stream = async_stream::stream! {
+            while let Ok(event) = rx.recv().await {
+                if event.collection == collection {
+                    yield event;
+                }
+            }
+        };
+        Ok(stream)
+    }
+
+    /// 订阅所有 collection 变更
+    async fn all_data_changes(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<impl Stream<Item = DataChangeEvent>, async_graphql::Error> {
+        let broadcaster = ctx.data::<Arc<broadcast::Sender<DataChangeEvent>>>()?
+            .clone();
+        let mut rx = broadcaster.subscribe();
+        let stream = async_stream::stream! {
+            while let Ok(event) = rx.recv().await {
+                yield event;
+            }
+        };
+        Ok(stream)
+    }
+}
+
+pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
+
+/// 构建完整 GraphQL schema（含订阅广播器）
+pub fn build_schema(db: Arc<RwLock<CoreTexDB>>) -> AppSchema {
+    let (tx, _rx) = broadcast::channel::<DataChangeEvent>(10000);
+    let broadcaster = Arc::new(tx);
+    Schema::build(QueryRoot::default(), MutationRoot, SubscriptionRoot)
+        .data(db)
+        .data(broadcaster)
+        .finish()
+}
+
+/// 启动 GraphQL HTTP 服务
+pub async fn start_graphql_server(
+    db: Arc<RwLock<CoreTexDB>>,
+    addr: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let schema = build_schema(db);
+    let app = Router::new()
+        .route("/", post(graphql_handler).get(graphql_playground))
+        .route("/ws", get(graphql_ws_handler))
+        .with_state(schema);
+
+    println!("GraphQL server running at http://{}/", addr);
+    println!("GraphQL playground at http://{}/", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn graphql_handler(
+    State(schema): State<AppSchema>,
+    req: async_graphql_axum::GraphQL<async_graphql::Request>,
+) -> Response {
+    schema.execute(req.0).await.into()
+}
+
+async fn graphql_ws_handler(
+    State(schema): State<AppSchema>,
+    req: async_graphql_axum::GraphQL<async_graphql::Request>,
+) -> impl IntoResponse {
+    schema.execute_stream(req.0)
+}
+
+async fn graphql_playground() -> impl IntoResponse {
+    Html(async_graphql::http::playground_source(
+        async_graphql::http::GraphQLPlaygroundConfig::new("/"),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coretex_search_pipeline::TextTokenizer;
+use crate::coretex_core::Result;
 
-    #[tokio::test]
-    async fn test_graphql_executor() {
-        let executor = GraphQLExecutor::new();
-        
-        let request = GraphQLRequest {
-            query: "{ collections { name } }".to_string(),
-            operation_name: None,
-            variables: None,
+    #[test]
+    fn test_filter_matches() {
+        let f = MetadataFilterInput {
+            field: "name".to_string(),
+            op: FilterOp::Eq,
+            value: "test".to_string(),
+            case_sensitive: false,
         };
-        
-        let response = executor.execute(request).await;
-        assert!(response.data.is_some() || response.errors.is_some());
-    }
+        let meta = serde_json::json!({"name": "test"});
+        assert!(f.matches(&meta));
 
-    #[tokio::test]
-    async fn test_graphql_search_query() {
-        let executor = GraphQLExecutor::new();
-        
-        let request = GraphQLRequest {
-            query: r#"{ search(collection: "test", vector: [1.0, 2.0], limit: 10) { id distance } }"#.to_string(),
-            operation_name: None,
-            variables: None,
-        };
-        
-        let response = executor.execute(request).await;
-        assert!(response.data.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_graphql_mutation() {
-        let executor = GraphQLExecutor::new();
-        
-        let request = GraphQLRequest {
-            query: r#"mutation { createCollection(name: "test", dimension: 128) { name dimension } }"#.to_string(),
-            operation_name: None,
-            variables: None,
-        };
-        
-        let response = executor.execute(request).await;
-        assert!(response.data.is_some());
+        let meta2 = serde_json::json!({"name": "other"});
+        assert!(!f.matches(&meta2));
     }
 
     #[test]
-    fn test_schema_json() {
-        let executor = GraphQLExecutor::new();
-        let schema = executor.schema_json();
-        assert!(schema.is_object());
+    fn test_filter_contains() {
+        let f = MetadataFilterInput {
+            field: "title".to_string(),
+            op: FilterOp::Contains,
+            value: "rust".to_string(),
+            case_sensitive: false,
+        };
+        let meta = serde_json::json!({"title": "Learning Rust programming"});
+        assert!(f.matches(&meta));
+    }
+
+    #[test]
+    fn test_composite_filter() {
+        let c = CompositeFilterInput {
+            and: Some(vec![MetadataFilterInput {
+                field: "category".to_string(),
+                op: FilterOp::Eq,
+                value: "tech".to_string(),
+                case_sensitive: false,
+            }]),
+            or: None,
+            conditions: Some(vec![MetadataFilterInput {
+                field: "score".to_string(),
+                op: FilterOp::Gt,
+                value: "5".to_string(),
+                case_sensitive: false,
+            }]),
+        };
+        let meta = serde_json::json!({"category": "tech", "score": "10"});
+        assert!(c.matches(&meta));
+    }
+
+    #[test]
+    fn test_distance_metric_str() {
+        assert_eq!(DistanceMetricEnum::Cosine.as_str(), "cosine");
+        assert_eq!(DistanceMetricEnum::Euclidean.as_str(), "euclidean");
+        assert_eq!(DistanceMetricEnum::DotProduct.as_str(), "dotproduct");
     }
 }

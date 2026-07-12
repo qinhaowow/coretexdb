@@ -8,3 +8,11 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 PROTOC = "g:\\cerebros\\CoretexDB\\protoc\\bin\\protoc.exe"
 LIBCLANG_PATH = "C:\\Users\\QH\\AppData\\Roaming\\Python\\Python311\\site-packages\\clang\\native\\libclang.dll"
 RUSTFLAGS = "--cap-lints warn"
+
+# MSVC 2026 toolchain configuration
+[target.x86_64-pc-windows-msvc]
+linker = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.32.31326\\bin\\Hostx64\\x64\\link.exe"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[build]
+target = "x86_64-pc-windows-msvc"

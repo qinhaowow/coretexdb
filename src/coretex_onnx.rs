@@ -280,6 +280,7 @@ impl SentenceTransformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_tokenizer_basic() {

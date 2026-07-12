@@ -303,6 +303,7 @@ impl CollectionExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_json_export() {

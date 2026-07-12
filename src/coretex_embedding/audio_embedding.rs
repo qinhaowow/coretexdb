@@ -1,6 +1,6 @@
 //! Audio embedding service
 
-use std::error::Error;
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct AudioEmbeddingService {
@@ -29,7 +29,7 @@ impl AudioEmbeddingService {
         )
     }
 
-    pub fn embed_audio(&self, audio_data: &[f32]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_audio(&self, audio_data: &[f32]) -> Result<Vec<f32>> {
         let mut embedding = vec![0.0; self.dimension];
         
         if audio_data.is_empty() {
@@ -51,7 +51,7 @@ impl AudioEmbeddingService {
         Ok(embedding)
     }
 
-    pub fn embed_audio_bytes(&self, audio_bytes: &[u8]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_audio_bytes(&self, audio_bytes: &[u8]) -> Result<Vec<f32>> {
         let audio_data: Vec<f32> = audio_bytes
             .chunks(2)
             .filter_map(|chunk| {
@@ -67,12 +67,12 @@ impl AudioEmbeddingService {
         self.embed_audio(&audio_data)
     }
 
-    pub fn embed_audio_path(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_audio_path(&self, path: &str) -> Result<Vec<f32>> {
         let audio_bytes = std::fs::read(path)?;
         self.embed_audio_bytes(&audio_bytes)
     }
 
-    pub fn embed_batch(&self, audios: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_batch(&self, audios: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
         audios.iter()
             .map(|audio| self.embed_audio(audio))
             .collect()
@@ -95,6 +95,7 @@ impl AudioEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_audio() {

@@ -89,6 +89,7 @@ pub struct AuthToken {
     pub token: String,
     pub token_type: String,
     pub expires_in: u64,
+    pub user_id: String,
 }
 
 pub struct AuthService {
@@ -245,6 +246,7 @@ impl AuthService {
             token,
             token_type: "Bearer".to_string(),
             expires_in: self.config.expiration_minutes * 60,
+            user_id: user.id.clone(),
         })
     }
 
@@ -317,19 +319,29 @@ impl AuthService {
     }
 
     fn hash_password(&self, password: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        password.hash(&mut hasher);
-        let salt = "coretexdb_salt";
-        (format!("{}{}", hasher.finish(), salt)).hash(&mut hasher);
-        
-        format!("{:x}", hasher.finish())
+        use argon2::{Argon2, PasswordHasher};
+        use argon2::password_hash::SaltString;
+        use rand_core::OsRng;
+
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .expect("Failed to hash password");
+        hash.to_string()
     }
 
     fn verify_password(&self, password: &str, hash: &str) -> bool {
-        self.hash_password(password) == hash
+        use argon2::{Argon2, PasswordVerifier};
+        use argon2::password_hash::PasswordHash;
+
+        let parsed_hash = match PasswordHash::new(hash) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok()
     }
 
     fn encode_jwt(&self, claims: &TokenClaims) -> Result<String, String> {
@@ -355,14 +367,15 @@ impl AuthService {
     }
 
     fn hmac_sha256(&self, data: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        self.config.secret_key.hash(&mut hasher);
-        
-        format!("{:x}", hasher.finish())
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.config.secret_key.as_bytes())
+            .expect("HMAC key should be valid");
+        mac.update(data.as_bytes());
+        let result = mac.finalize();
+        let code_bytes = result.into_bytes();
+        hex::encode(code_bytes)
     }
 
     pub async fn list_users(&self) -> Vec<UserInfo> {
@@ -524,6 +537,7 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_create_user() {

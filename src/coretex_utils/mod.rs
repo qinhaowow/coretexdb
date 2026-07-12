@@ -1,19 +1,15 @@
 //! Utility functions for CortexDB
 
-use std::error::Error;
+use crate::coretex_core::Result;
 
 pub mod wal;
-pub mod transaction;
 pub mod cluster;
-pub mod backup;
-pub mod monitoring;
 pub mod cache;
 
-pub use wal::WriteAheadLog;
-pub use transaction::{TransactionManager, LockManager, Transaction, TransactionOperation, TransactionState};
+pub use wal::{
+    WriteAheadLog, WalEntry, WalEntryType, WalStats, RecoveryManager, ReplayResult,
+};
 pub use cluster::{ClusterManager, ClusterNode, NodeRole, NodeState, Shard};
-pub use backup::BackupManager;
-pub use monitoring::{MonitoringService, Metrics};
 pub use cache::{LRUCache, TimedLRUCache, AsyncLRUCache, MultiLevelCache, CacheStats, MultiLevelCacheStats};
 
 /// Calculate cosine similarity between two vectors
@@ -57,7 +53,7 @@ pub fn normalize_vector(vector: &[f32]) -> Vec<f32> {
 }
 
 /// Parse a vector from a comma-separated string
-pub fn parse_vector(vector_str: &str) -> Result<Vec<f32>, Box<dyn Error>> {
+pub fn parse_vector(vector_str: &str) -> Result<Vec<f32>> {
     let parts: Vec<&str> = vector_str.split(',').collect();
     let mut vector = Vec::with_capacity(parts.len());
     
@@ -72,6 +68,7 @@ pub fn parse_vector(vector_str: &str) -> Result<Vec<f32>, Box<dyn Error>> {
 /// Generate a random vector of the specified dimension
 pub fn random_vector(dimension: usize) -> Vec<f32> {
     use rand::Rng;
+use crate::coretex_core::Result;
     
     let mut rng = rand::thread_rng();
     (0..dimension).map(|_| rng.gen::<f32>()).collect()

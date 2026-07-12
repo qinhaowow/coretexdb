@@ -1,6 +1,6 @@
 //! Text embedding service
 
-use std::error::Error;
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct TextEmbeddingService {
@@ -26,7 +26,7 @@ impl TextEmbeddingService {
         )
     }
 
-    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let mut embedding = vec![0.0; self.dimension];
         
         let words: Vec<&str> = text.split_whitespace().collect();
@@ -44,7 +44,7 @@ impl TextEmbeddingService {
         Ok(embedding)
     }
 
-    pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         texts.iter()
             .map(|text| self.embed_text(text))
             .collect()
@@ -75,6 +75,7 @@ impl TextEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_text() {

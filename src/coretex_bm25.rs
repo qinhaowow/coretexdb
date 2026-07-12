@@ -4,12 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::coretex_search_pipeline::TextTokenizer;
+
 pub struct BM25Index {
     documents: Arc<RwLock<HashMap<String, Document>>>,
     idf: Arc<RwLock<HashMap<String, f32>>>,
     avgdl: Arc<RwLock<f32>>,
     k1: f32,
     b: f32,
+    tokenizer: Arc<TextTokenizer>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,7 +25,18 @@ pub struct Document {
 
 impl Document {
     pub fn new(id: String, text: String) -> Self {
-        let tokens = Self::tokenize(&text);
+        let tokens = TextTokenizer::new().tokenize(&text);
+        Self {
+            id,
+            text,
+            tokens,
+            field_values: HashMap::new(),
+        }
+    }
+
+    /// 用自定义分词器构造
+    pub fn with_tokenizer(id: String, text: String, tokenizer: &TextTokenizer) -> Self {
+        let tokens = tokenizer.tokenize(&text);
         Self {
             id,
             text,
@@ -37,11 +51,7 @@ impl Document {
     }
 
     fn tokenize(text: &str) -> Vec<String> {
-        text.to_lowercase()
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect()
+        TextTokenizer::new().tokenize(text)
     }
 }
 
@@ -53,6 +63,18 @@ impl BM25Index {
             avgdl: Arc::new(RwLock::new(0.0)),
             k1,
             b,
+            tokenizer: Arc::new(TextTokenizer::new()),
+        }
+    }
+
+    pub fn with_tokenizer(k1: f32, b: f32, tokenizer: TextTokenizer) -> Self {
+        Self {
+            documents: Arc::new(RwLock::new(HashMap::new())),
+            idf: Arc::new(RwLock::new(HashMap::new())),
+            avgdl: Arc::new(RwLock::new(0.0)),
+            k1,
+            b,
+            tokenizer: Arc::new(tokenizer),
         }
     }
 
@@ -96,8 +118,8 @@ impl BM25Index {
     }
 
     pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<BM25Result>, String> {
-        let query_tokens = Document::tokenize(query);
-        
+        let query_tokens = self.tokenizer.tokenize(query);
+
         let docs = self.documents.read().await;
         let idf = self.idf.read().await;
         let avgdl = *self.avgdl.read().await;
@@ -374,6 +396,7 @@ impl FilterCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[tokio::test]
     async fn test_bm25_basic() {

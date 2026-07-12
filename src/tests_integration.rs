@@ -1,5 +1,6 @@
 //! Integration tests for CoreTexDB
 
+use std::collections::HashMap;
 use crate::{CoreTexDB, DbConfig};
 
 #[tokio::test]
@@ -70,4 +71,1504 @@ async fn test_multiple_collections() {
     assert_eq!(count1, 1);
     assert_eq!(count2, 1);
     assert_eq!(count3, 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// SQL JOIN tests
+// ═══════════════════════════════════════════════════════════
+
+use crate::coretex_sql::{SQLExecutor, CollectionData, SQLValue};
+
+fn make_collection(name: &str, data: Vec<(&str, HashMap<&str, SQLValue>)>) -> CollectionData {
+    let mut vectors = HashMap::new();
+    for (id, meta) in data {
+        let converted: HashMap<String, SQLValue> = meta.into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        vectors.insert(id.to_string(), (vec![0.0_f32; 4], converted));
+    }
+    CollectionData {
+        name: name.to_string(),
+        vectors,
+    }
+
+    // ── Hybrid: WHERE on column NOT in SELECT ─────────────────
+    #[tokio::test]
+    async fn test_hybrid_where_on_unselected_column() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("inv", make_collection_with_vectors("inv", vec![
+            ("i1", vec![1.0, 0.0], HashMap::from([("sku", s("A100")), ("qty", n(5.0)), ("price", n(99.0))])),
+            ("i2", vec![0.9, 0.1], HashMap::from([("sku", s("B200")), ("qty", n(0.0)), ("price", n(150.0))])),
+            ("i3", vec![0.0, 1.0], HashMap::from([("sku", s("C300")), ("qty", n(10.0)), ("price", n(30.0))])),
+        ])).await;
+
+        // SELECT only id — WHERE filters on qty which is NOT in SELECT
+        let r = executor.execute(
+            "SELECT id FROM inv VECTOR SEARCH vec WITH [1.0, 0.0] WHERE qty > 0"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                // i1 (qty=5) and i3 (qty=10) should match; i2 (qty=0) filtered
+                assert_eq!(rows.len(), 2);
+                let ids: Vec<&str> = rows.iter()
+                    .map(|r| match r.get("id").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" })
+                    .collect();
+                assert!(ids.contains(&"i1"));
+                assert!(ids.contains(&"i3"));
+                // qty column should NOT be in output (not in SELECT)
+                for row in &rows {
+                    assert!(!row.contains_key("qty"), "qty should not appear when not selected");
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: pre-filter with range + multiple conditions ───
+    #[tokio::test]
+    async fn test_hybrid_pre_filter_range() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("catalog", make_collection_with_vectors("catalog", vec![
+            ("c1", vec![1.0, 0.0, 0.0], HashMap::from([("price", n(10.0)), ("stock", n(1.0))])),
+            ("c2", vec![0.9, 0.1, 0.0], HashMap::from([("price", n(50.0)), ("stock", n(5.0))])),
+            ("c3", vec![0.8, 0.2, 0.0], HashMap::from([("price", n(100.0)), ("stock", n(3.0))])),
+            ("c4", vec![0.0, 1.0, 0.0], HashMap::from([("price", n(25.0)), ("stock", n(0.0))])),
+        ])).await;
+
+        // Pre-filter: price < 80 AND stock > 0 (excludes c3=100, c4=stock=0)
+        // Then cosine on remaining: c1, c2
+        let r = executor.execute(
+            "SELECT id, price, stock FROM catalog VECTOR SEARCH vec WITH [1.0, 0.0, 0.0] WHERE price < 80 AND stock > 0"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2, "c1(10,1) and c2(50,5) match; c3(100>80) and c4(stock=0) excluded");
+                for row in &rows {
+                    let p = match row.get("price").unwrap() { SQLValue::Number(v) => *v, _ => 0.0 };
+                    let s = match row.get("stock").unwrap() { SQLValue::Number(v) => *v, _ => 0.0 };
+                    assert!(p < 80.0, "price {} should be < 80", p);
+                    assert!(s > 0.0, "stock {} should be > 0", s);
+                }
+                // c1 should rank first (closest to [1,0,0])
+                assert_eq!(rows[0].get("id"), Some(&s("c1")), "c1 is closest to query");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: vector + LIKE in WHERE ────────────────────────
+    #[tokio::test]
+    async fn test_hybrid_where_like() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("articles", make_collection_with_vectors("articles", vec![
+            ("a1", vec![1.0, 0.0], HashMap::from([("title", s("Rust async tutorial")), ("tag", s("rust"))])),
+            ("a2", vec![0.9, 0.1], HashMap::from([("title", s("Python async guide")), ("tag", s("python"))])),
+            ("a3", vec![0.0, 1.0], HashMap::from([("title", s("Rust web framework")), ("tag", s("rust"))])),
+        ])).await;
+
+        // LIKE 'Rust%' — should match a1 and a3
+        let r = executor.execute(
+            "SELECT id, title FROM articles VECTOR SEARCH vec WITH [1.0, 0.0] WHERE title LIKE 'Rust%'"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                for row in &rows {
+                    let t = match row.get("title").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" };
+                    assert!(t.starts_with("Rust"), "title should start with 'Rust': {}", t);
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── Hybrid: no WHERE, no LIMIT — returns all sorted ──────
+    #[tokio::test]
+    async fn test_hybrid_no_where_no_limit() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("allvec", make_collection_with_vectors("allvec", vec![
+            ("v1", vec![1.0, 0.0], HashMap::from([("label", s("first"))])),
+            ("v2", vec![0.0, 1.0], HashMap::from([("label", s("second"))])),
+            ("v3", vec![0.5, 0.5], HashMap::from([("label", s("middle"))])),
+        ])).await;
+
+        let r = executor.execute(
+            "SELECT id, label FROM allvec VECTOR SEARCH vec WITH [1.0, 0.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 3, "no LIMIT → all rows");
+                // First should be closest to [1,0,0]
+                assert_eq!(rows[0].get("id"), Some(&s("v1")));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+}
+
+fn s(val: &str) -> SQLValue { SQLValue::String(val.to_string()) }
+fn n(val: f64) -> SQLValue { SQLValue::Number(val) }
+
+#[tokio::test]
+async fn test_sql_inner_join() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("Alice")), ("dept_id", n(1.0))])),
+        ("u2", HashMap::from([("name", s("Bob")),   ("dept_id", n(2.0))])),
+        ("u3", HashMap::from([("name", s("Carol")), ("dept_id", n(1.0))])),
+    ])).await;
+
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Engineering")), ("dept_id", n(1.0))])),
+        ("d2", HashMap::from([("dept_name", s("Marketing")),   ("dept_id", n(2.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, dept_name FROM users JOIN depts ON dept_id = dept_id"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 4, "Should have 4 joined rows (3 users × matching depts)");
+            // u1→d1, u2→d2, u3→d1
+            let has_alice_eng = rows.iter().any(|r|
+                r.get("name") == Some(&s("Alice")) && r.get("dept_name") == Some(&s("Engineering"))
+            );
+            assert!(has_alice_eng);
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Operations / DBA commands
+// ═══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod operations_tests {
+    use std::collections::HashMap;
+
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue, CollectionData};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    fn make_collection(name: &str, entries: Vec<(&str, HashMap<&str, SQLValue>)>) -> CollectionData {
+        let mut vectors = HashMap::new();
+        for (id, meta) in entries {
+            let meta_owned: HashMap<String, SQLValue> = meta
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            vectors.insert(id.to_string(), (vec![0.0_f32; 128], meta_owned)); // dummy 128-dim vectors
+        }
+        CollectionData { name: name.to_string(), vectors }
+    }
+
+    // ── SHOW COLLECTIONS ─────────────────────────────────────
+    #[tokio::test]
+    async fn test_show_collections_empty() {
+        let executor = SQLExecutor::new();
+        let r = executor.execute("SHOW COLLECTIONS").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => assert!(rows.is_empty()),
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_show_collections_with_data() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("users", make_collection("users", vec![
+            ("u1", HashMap::from([("name", s("Alice"))])),
+        ])).await;
+        executor.register_collection("products", make_collection("products", vec![
+            ("p1", HashMap::from([("sku", s("X100"))])),
+            ("p2", HashMap::from([("sku", s("X200"))])),
+        ])).await;
+
+        let r = executor.execute("SHOW COLLECTIONS").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                let names: Vec<&str> = rows.iter()
+                    .map(|r| match r.get("name").unwrap() { SQLValue::String(s) => s.as_str(), _ => "" })
+                    .collect();
+                assert!(names.contains(&"users"));
+                assert!(names.contains(&"products"));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_show_tables_alias() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("t1", make_collection("t1", vec![])).await;
+
+        // SHOW TABLES should work the same as SHOW COLLECTIONS
+        let r = executor.execute("SHOW TABLES").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("name"), Some(&s("t1")));
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    // ── DESCRIBE ─────────────────────────────────────────────
+    #[tokio::test]
+    async fn test_describe_basic() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("docs", make_collection("docs", vec![
+            ("d1", HashMap::from([("title", s("Hello")), ("tag", s("greeting"))])),
+            ("d2", HashMap::from([("title", s("World")), ("tag", s("farewell"))])),
+        ])).await;
+
+        let r = executor.execute("DESCRIBE docs").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                assert!(rows.len() >= 4, "expected at least 4 rows: collection, count, dim, meta.title, meta.tag");
+
+                // Find by field name
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+
+                assert_eq!(get_val("_collection"), "docs");
+                assert_eq!(get_val("record_count"), "2");
+                assert_eq!(get_val("vector_dim"), "128");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_describe_short_form() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("x", make_collection("x", vec![
+            ("a", HashMap::from([("col1", s("v1"))])),
+        ])).await;
+
+        // DESC is alias for DESCRIBE
+        let r = executor.execute("DESC x").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+                assert_eq!(get_val("_collection"), "x");
+                assert_eq!(get_val("record_count"), "1");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_describe_not_found() {
+        let executor = SQLExecutor::new();
+        let r = executor.execute("DESCRIBE nonexistent").await;
+        assert!(r.is_err(), "DESCRIBE on unknown collection should error");
+        assert!(r.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_describe_empty_collection() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("nobody", make_collection("nobody", vec![])).await;
+
+        let r = executor.execute("DESCRIBE nobody").await.unwrap();
+        match r {
+            SQLResult::Select(rows) => {
+                let get_val = |field: &str| -> String {
+                    rows.iter()
+                        .find(|r| r.get("field") == Some(&s(field)))
+                        .map(|r| match r.get("value").unwrap() {
+                            SQLValue::String(s) => s.clone(),
+                            SQLValue::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+                assert_eq!(get_val("_collection"), "nobody");
+                assert_eq!(get_val("record_count"), "0");
+                assert_eq!(get_val("vector_dim"), "0"); // no vectors → dim 0
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Vector Search tests
+// ═══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod vector_search_tests {
+    use std::collections::HashMap;
+
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue, CollectionData};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    fn make_collection_with_vectors(
+        name: &str,
+        entries: Vec<(&str, Vec<f32>, HashMap<&str, SQLValue>)>,
+    ) -> CollectionData {
+        let mut vectors = HashMap::new();
+        for (id, vec, meta) in entries {
+            let meta_owned: HashMap<String, SQLValue> = meta
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            vectors.insert(id.to_string(), (vec, meta_owned));
+        }
+        CollectionData { name: name.to_string(), vectors }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_basic() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("docs", make_collection_with_vectors("docs", vec![
+            ("d1", vec![1.0, 0.0, 0.0], HashMap::from([("title", s("Apple"))])),
+            ("d2", vec![0.0, 1.0, 0.0], HashMap::from([("title", s("Banana"))])),
+            ("d3", vec![0.0, 0.0, 1.0], HashMap::from([("title", s("Cherry"))])),
+        ])).await;
+
+        // Query vector [1.0, 0.0, 0.0] — closest to d1
+        let r = executor.execute(
+            "SELECT * FROM docs VECTOR SEARCH vec WITH [1.0, 0.0, 0.0] LIMIT 2"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                // d1 should be first (cosine sim = 1.0)
+                assert_eq!(rows[0].get("id"), Some(&s("d1")));
+                // _distance column present
+                assert!(rows[0].contains_key("_distance"));
+                let dist = match rows[0].get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number for _distance"),
+                };
+                assert!(dist > 0.99);
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_with_where() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("products", make_collection_with_vectors("products", vec![
+            ("p1", vec![1.0, 0.0], HashMap::from([("cat", s("A")), ("price", n(10.0))])),
+            ("p2", vec![0.9, 0.1], HashMap::from([("cat", s("A")), ("price", n(50.0))])),
+            ("p3", vec![0.0, 1.0], HashMap::from([("cat", s("B")), ("price", n(5.0))])),
+        ])).await;
+
+        // Search for [1.0, 0.0]-like vectors, but only category "A"
+        let r = executor.execute(
+            "SELECT id, cat, price FROM products VECTOR SEARCH vec WITH [1.0, 0.0] WHERE cat = 'A' LIMIT 5"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                // Only p1 and p2 should match (cat = A); p3 filtered out
+                assert_eq!(rows.len(), 2);
+                for row in &rows {
+                    assert_eq!(row.get("cat"), Some(&s("A")));
+                }
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_distance_column() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("vecs", make_collection_with_vectors("vecs", vec![
+            ("a", vec![1.0, 1.0], HashMap::from([("label", s("close"))])),
+            ("b", vec![-1.0, -1.0], HashMap::from([("label", s("far"))])),
+        ])).await;
+
+        let r = executor.execute(
+            "SELECT label, _distance FROM vecs VECTOR SEARCH vec WITH [1.0, 1.0] LIMIT 2"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 2);
+                // "close" should have higher similarity (near 1.0) than "far"
+                let d_close = rows.iter().find(|r| r.get("label") == Some(&s("close"))).unwrap();
+                let d_far   = rows.iter().find(|r| r.get("label") == Some(&s("far"))).unwrap();
+                let sim_close = match d_close.get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number"),
+                };
+                let sim_far = match d_far.get("_distance").unwrap() {
+                    SQLValue::Number(v) => *v,
+                    _ => panic!("Expected number"),
+                };
+                assert!(sim_close > sim_far, "close should have higher similarity than far");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_specific_columns() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("emb", make_collection_with_vectors("emb", vec![
+            ("x", vec![1.0, 2.0, 3.0], HashMap::from([("name", s("X")), ("val", n(42.0))])),
+        ])).await;
+
+        // Only select name (not id, not vec)
+        let r = executor.execute(
+            "SELECT name FROM emb VECTOR SEARCH vec WITH [1.0, 2.0, 3.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("name"), Some(&s("X")));
+                assert!(!rows[0].contains_key("vec"), "vec column should not leak");
+            }
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_empty_collection() {
+        let executor = SQLExecutor::new();
+        executor.register_collection("empty", make_collection_with_vectors("empty", vec![])).await;
+
+        let r = executor.execute(
+            "SELECT * FROM empty VECTOR SEARCH vec WITH [1.0, 0.0]"
+        ).await.unwrap();
+
+        match r {
+            SQLResult::Select(rows) => assert!(rows.is_empty()),
+            other => panic!("Expected Select, got {:?}", other),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// End-to-end: WAL recovery × SQL (JOIN + Aggregate)
+// ═══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod wal_sql_e2e {
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tempfile::TempDir;
+
+    use crate::coretex_core::{CollectionSchema, DistanceMetric};
+    use crate::coretex_data::DataManager;
+    use crate::coretex_index::IndexManager;
+    use crate::coretex_storage::{MemoryStorage, StorageEngine};
+    use crate::coretex_utils::wal::{WriteAheadLog, WalEntryType, RecoveryManager};
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    async fn setup_dm_sql(dir: &TempDir) -> (Arc<DataManager>, SQLExecutor) {
+        let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+            Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+        let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+        let wal = Arc::new(WriteAheadLog::new(dir.path().to_string_lossy().as_ref()));
+        wal.init().await.unwrap();
+        let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager)
+            .with_wal(Arc::clone(&wal)));
+        let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+        (dm, executor)
+    }
+
+    async fn insert_via_dm(dm: &DataManager, coll: &str, entries: Vec<(&str, serde_json::Value)>) {
+        let vectors: Vec<_> = entries.into_iter().map(|(id, meta)| {
+            (id.to_string(), vec![0.0_f32; 4], meta)
+        }).collect();
+        dm.insert_vectors(coll, vectors).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_sql_select_after_crash() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        // ── Phase 1: Write data, then crash ──
+        {
+            let (dm, executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("users", 4, "cosine").await.unwrap();
+
+            insert_via_dm(&dm, "users", vec![
+                ("u1", serde_json::json!({"name": "Alice", "age": 30})),
+                ("u2", serde_json::json!({"name": "Bob",   "age": 25})),
+            ]).await;
+
+            // Verify pre-crash
+            let r = executor.execute("SELECT name, age FROM users ORDER BY age ASC").await.unwrap();
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].get("name"), Some(&s("Bob")));
+            } else { panic!("Expected Select"); }
+        } // crash — everything dropped
+
+        // ── Phase 2: Recover and query ──
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            // Replay into fresh storage
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            // Re-create DataManager pointing at recovered storage
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            // Re-create the collection so DM knows about it
+            dm.create_collection("users", 4, "cosine").await.unwrap();
+
+            // Replay WAL entries through DataManager to populate its internal state
+            for (etype, coll, key, _vec, meta) in &entries {
+                match etype {
+                    WalEntryType::Insert => {
+                        dm.insert_vectors(coll, vec![
+                            (key.clone(), vec![0.0; 4], meta.clone())
+                        ]).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+            let r = executor.execute("SELECT name, age FROM users WHERE age > 20").await.unwrap();
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 2, "Both users should survive recovery");
+            } else { panic!("Expected Select"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_sql_join_after_crash() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let (dm, _executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("users", 4, "cosine").await.unwrap();
+            dm.create_collection("depts", 4, "cosine").await.unwrap();
+
+            insert_via_dm(&dm, "users", vec![
+                ("u1", serde_json::json!({"name": "Alice", "dept_id": 1})),
+                ("u2", serde_json::json!({"name": "Bob",   "dept_id": 2})),
+            ]).await;
+            insert_via_dm(&dm, "depts", vec![
+                ("d1", serde_json::json!({"dept_name": "Eng", "dept_id": 1})),
+                ("d2", serde_json::json!({"dept_name": "Mkt", "dept_id": 2})),
+            ]).await;
+        }
+
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            dm.create_collection("users", 4, "cosine").await.unwrap();
+            dm.create_collection("depts", 4, "cosine").await.unwrap();
+
+            for (etype, coll, key, _vec, meta) in &entries {
+                if *etype == WalEntryType::Insert {
+                    dm.insert_vectors(coll, vec![(key.clone(), vec![0.0; 4], meta.clone())])
+                        .await.unwrap();
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+            let r = executor.execute(
+                "SELECT name, dept_name FROM users JOIN depts ON dept_id = dept_id"
+            ).await.unwrap();
+
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 2);
+                let alice = rows.iter().find(|r| r.get("name") == Some(&s("Alice"))).unwrap();
+                assert_eq!(alice.get("dept_name"), Some(&s("Eng")));
+            } else { panic!("Expected Select"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_sql_group_by_after_crash() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let (dm, _executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("orders", 4, "cosine").await.unwrap();
+
+            insert_via_dm(&dm, "orders", vec![
+                ("o1", serde_json::json!({"dept": "A", "amount": 10})),
+                ("o2", serde_json::json!({"dept": "A", "amount": 20})),
+                ("o3", serde_json::json!({"dept": "B", "amount": 5})),
+            ]).await;
+        }
+
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            dm.create_collection("orders", 4, "cosine").await.unwrap();
+
+            for (etype, coll, key, _vec, meta) in &entries {
+                if *etype == WalEntryType::Insert {
+                    dm.insert_vectors(coll, vec![(key.clone(), vec![0.0; 4], meta.clone())])
+                        .await.unwrap();
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+            let r = executor.execute(
+                "SELECT dept, SUM(amount) AS total, COUNT(*) AS cnt FROM orders GROUP BY dept ORDER BY dept"
+            ).await.unwrap();
+
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].get("dept"), Some(&s("A")));
+                assert_eq!(rows[0].get("total"), Some(&n(30.0)));
+                assert_eq!(rows[0].get("cnt"), Some(&n(2.0)));
+                assert_eq!(rows[1].get("dept"), Some(&s("B")));
+                assert_eq!(rows[1].get("total"), Some(&n(5.0)));
+            } else { panic!("Expected Select"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_full_pipeline() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let (dm, _executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("orders", 4, "cosine").await.unwrap();
+            dm.create_collection("products", 4, "cosine").await.unwrap();
+
+            insert_via_dm(&dm, "orders", vec![
+                ("o1", serde_json::json!({"product_id": 1, "qty": 3, "price": 10})),
+                ("o2", serde_json::json!({"product_id": 1, "qty": 2, "price": 10})),
+                ("o3", serde_json::json!({"product_id": 2, "qty": 5, "price": 8})),
+                ("o4", serde_json::json!({"product_id": 2, "qty": 1, "price": 8})),
+            ]).await;
+            insert_via_dm(&dm, "products", vec![
+                ("p1", serde_json::json!({"product_id": 1, "name": "Widget"})),
+                ("p2", serde_json::json!({"product_id": 2, "name": "Gadget"})),
+            ]).await;
+        }
+
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            dm.create_collection("orders", 4, "cosine").await.unwrap();
+            dm.create_collection("products", 4, "cosine").await.unwrap();
+
+            for (etype, coll, key, _vec, meta) in &entries {
+                if *etype == WalEntryType::Insert {
+                    dm.insert_vectors(coll, vec![(key.clone(), vec![0.0; 4], meta.clone())])
+                        .await.unwrap();
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+
+            // JOIN + GROUP BY + HAVING + ORDER BY + LIMIT — all after recovery
+            let r = executor.execute(
+                "SELECT name, SUM(qty) AS total_qty, COUNT(*) AS order_count \
+                 FROM orders JOIN products ON product_id = product_id \
+                 GROUP BY name \
+                 HAVING SUM(qty) > 4 \
+                 ORDER BY total_qty DESC \
+                 LIMIT 1"
+            ).await.unwrap();
+
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 1, "Only Gadget has qty > 4 (6 total)");
+                assert_eq!(rows[0].get("name"), Some(&s("Gadget")));
+                assert_eq!(rows[0].get("total_qty"), Some(&n(6.0)));
+            } else { panic!("Expected Select"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_delete_then_select() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let (dm, _executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("items", 4, "cosine").await.unwrap();
+            insert_via_dm(&dm, "items", vec![
+                ("keep",   serde_json::json!({"name": "keep-me"})),
+                ("remove", serde_json::json!({"name": "delete-me"})),
+            ]).await;
+            dm.delete_vectors("items", &["remove"]).await.unwrap();
+        }
+
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            dm.create_collection("items", 4, "cosine").await.unwrap();
+
+            for (etype, coll, key, _vec, meta) in &entries {
+                match etype {
+                    WalEntryType::Insert => {
+                        dm.insert_vectors(coll, vec![(key.clone(), vec![0.0; 4], meta.clone())])
+                            .await.unwrap();
+                    }
+                    WalEntryType::Delete => {
+                        let _ = dm.delete_vectors(coll, &[key]).await;
+                    }
+                    _ => {}
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+            let r = executor.execute("SELECT name FROM items").await.unwrap();
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows.len(), 1, "Only 'keep' should survive delete recovery");
+                assert_eq!(rows[0].get("name"), Some(&s("keep-me")));
+            } else { panic!("Expected Select"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wal_recovery_count_star_after_crash() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let (dm, _executor) = setup_dm_sql(&dir).await;
+            dm.create_collection("events", 4, "cosine").await.unwrap();
+            for i in 0..5 {
+                insert_via_dm(&dm, "events", vec![
+                    (format!("e{}", i).as_str(), serde_json::json!({"val": i})),
+                ]).await;
+            }
+        }
+
+        {
+            let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+                Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+
+            let recovery = RecoveryManager::new(Arc::clone(&wal));
+            let entries = recovery.recover_storage_entries().await.unwrap();
+
+            {
+                let s = storage.write().await;
+                for (_etype, _coll, key, vector, metadata) in &entries {
+                    let _ = s.store(key, vector, metadata).await;
+                }
+            }
+
+            let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager));
+            dm.create_collection("events", 4, "cosine").await.unwrap();
+
+            for (etype, coll, key, _vec, meta) in &entries {
+                if *etype == WalEntryType::Insert {
+                    dm.insert_vectors(coll, vec![(key.clone(), vec![0.0; 4], meta.clone())])
+                        .await.unwrap();
+                }
+            }
+
+            let executor = SQLExecutor::with_data_manager(Arc::clone(&dm));
+            let r = executor.execute("SELECT COUNT(*) FROM events").await.unwrap();
+            if let SQLResult::Select(rows) = r {
+                assert_eq!(rows[0].get("count(*)"), Some(&n(5.0)), "All 5 events should survive");
+            } else { panic!("Expected Select"); }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_sql_left_join_preserves_unmatched() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("Alice")), ("dept_id", n(1.0))])),
+        ("u2", HashMap::from([("name", s("Bob")),   ("dept_id", n(99.0))])), // no matching dept
+    ])).await;
+
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Engineering")), ("dept_id", n(1.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, dept_name FROM users LEFT JOIN depts ON dept_id = dept_id"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 2, "LEFT JOIN should preserve both users");
+            let bob_row = rows.iter().find(|r| r.get("name") == Some(&s("Bob"))).unwrap();
+            assert_eq!(bob_row.get("dept_name"), Some(&SQLValue::Null),
+                "Bob's dept_name should be NULL (no match)");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_join_with_where() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("Alice")), ("age", n(30.0)), ("dept_id", n(1.0))])),
+        ("u2", HashMap::from([("name", s("Bob")),   ("age", n(25.0)), ("dept_id", n(1.0))])),
+    ])).await;
+
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Engineering")), ("dept_id", n(1.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, dept_name FROM users JOIN depts ON dept_id = dept_id WHERE age = 25"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1, "Only Bob should match age=25");
+            assert_eq!(rows[0].get("name"), Some(&s("Bob")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_inner_join_explicit_keyword() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("a", make_collection("a", vec![
+        ("k1", HashMap::from([("x", s("foo")), ("join_key", n(1.0))])),
+    ])).await;
+    executor.register_collection("b", make_collection("b", vec![
+        ("k2", HashMap::from([("y", s("bar")), ("join_key", n(1.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT x, y FROM a INNER JOIN b ON join_key = join_key"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("x"), Some(&s("foo")));
+            assert_eq!(rows[0].get("y"), Some(&s("bar")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_multiple_joins() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("Alice")), ("dept_id", n(1.0)), ("city_id", n(10.0))])),
+    ])).await;
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Eng")), ("dept_id", n(1.0))])),
+    ])).await;
+    executor.register_collection("cities", make_collection("cities", vec![
+        ("c1", HashMap::from([("city_name", s("NYC")), ("city_id", n(10.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, dept_name, city_name FROM users JOIN depts ON dept_id = dept_id JOIN cities ON city_id = city_id"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("name"), Some(&s("Alice")));
+            assert_eq!(rows[0].get("dept_name"), Some(&s("Eng")));
+            assert_eq!(rows[0].get("city_name"), Some(&s("NYC")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_join_no_matches_inner() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("a", make_collection("a", vec![
+        ("k1", HashMap::from([("val", s("left")), ("key", n(1.0))])),
+    ])).await;
+    executor.register_collection("b", make_collection("b", vec![
+        ("k2", HashMap::from([("val", s("right")), ("key", n(999.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT a.val FROM a JOIN b ON key = key"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 0, "INNER JOIN with no matches should return 0 rows");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_join_with_limit() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("A")), ("dept_id", n(1.0))])),
+        ("u2", HashMap::from([("name", s("B")), ("dept_id", n(1.0))])),
+        ("u3", HashMap::from([("name", s("C")), ("dept_id", n(1.0))])),
+    ])).await;
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Eng")), ("dept_id", n(1.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, dept_name FROM users JOIN depts ON dept_id = dept_id LIMIT 2"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 2, "LIMIT 2 should apply after join");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// SQL Aggregate tests
+// ═══════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_sql_count_star() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("orders", make_collection("orders", vec![
+        ("o1", HashMap::from([("amount", n(100.0))])),
+        ("o2", HashMap::from([("amount", n(200.0))])),
+        ("o3", HashMap::from([("amount", n(300.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT COUNT(*) FROM orders").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("count(*)"), Some(&n(3.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_count_column() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("t", make_collection("t", vec![
+        ("a", HashMap::from([("status", s("active"))])),
+        ("b", HashMap::from([("status", s("active"))])),
+        ("c", HashMap::new()), // no "status" field
+    ])).await;
+
+    let result = executor.execute("SELECT COUNT(status) FROM t").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("count(status)"), Some(&n(2.0)),
+                "Only rows with status field should be counted");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_sum_avg() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("sales", make_collection("sales", vec![
+        ("s1", HashMap::from([("amount", n(10.0))])),
+        ("s2", HashMap::from([("amount", n(20.0))])),
+        ("s3", HashMap::from([("amount", n(30.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT SUM(amount), AVG(amount) FROM sales").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("sum(amount)"), Some(&n(60.0)));
+            assert_eq!(rows[0].get("avg(amount)"), Some(&n(20.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_min_max() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("prices", make_collection("prices", vec![
+        ("p1", HashMap::from([("price", n(5.0))])),
+        ("p2", HashMap::from([("price", n(99.0))])),
+        ("p3", HashMap::from([("price", n(42.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT MIN(price), MAX(price) FROM prices").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("min(price)"), Some(&n(5.0)));
+            assert_eq!(rows[0].get("max(price)"), Some(&n(99.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_group_by() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("orders", make_collection("orders", vec![
+        ("o1", HashMap::from([("dept", s("A")), ("amount", n(10.0))])),
+        ("o2", HashMap::from([("dept", s("A")), ("amount", n(20.0))])),
+        ("o3", HashMap::from([("dept", s("B")), ("amount", n(5.0))])),
+        ("o4", HashMap::from([("dept", s("B")), ("amount", n(15.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT dept, SUM(amount) FROM orders GROUP BY dept ORDER BY SUM(amount) DESC"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 2);
+            // B=20, A=30. DESC puts A first.
+            assert_eq!(rows[0].get("dept"), Some(&s("A")));
+            assert_eq!(rows[0].get("sum(amount)"), Some(&n(30.0)));
+            assert_eq!(rows[1].get("dept"), Some(&s("B")));
+            assert_eq!(rows[1].get("sum(amount)"), Some(&n(20.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_having() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("orders", make_collection("orders", vec![
+        ("o1", HashMap::from([("dept", s("A")), ("amount", n(10.0))])),
+        ("o2", HashMap::from([("dept", s("A")), ("amount", n(5.0))])),
+        ("o3", HashMap::from([("dept", s("B")), ("amount", n(100.0))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT dept, SUM(amount) FROM orders GROUP BY dept HAVING SUM(amount) > 20"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1, "Only dept B has sum > 20");
+            assert_eq!(rows[0].get("dept"), Some(&s("B")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_aggregate_with_alias() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("t", make_collection("t", vec![
+        ("x", HashMap::from([("val", n(42.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT COUNT(*) AS cnt, AVG(val) AS average FROM t").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("cnt"), Some(&n(1.0)));
+            assert_eq!(rows[0].get("average"), Some(&n(42.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_order_by_asc() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("items", make_collection("items", vec![
+        ("i1", HashMap::from([("name", s("Z")), ("score", n(10.0))])),
+        ("i2", HashMap::from([("name", s("A")), ("score", n(30.0))])),
+        ("i3", HashMap::from([("name", s("M")), ("score", n(20.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT name, score FROM items ORDER BY score ASC").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("name"), Some(&s("Z"))); // score=10
+            assert_eq!(rows[1].get("name"), Some(&s("M"))); // score=20
+            assert_eq!(rows[2].get("name"), Some(&s("A"))); // score=30
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_order_by_desc() {
+    let executor = SQLExecutor::new();
+    executor.register_collection("items", make_collection("items", vec![
+        ("i1", HashMap::from([("name", s("A")), ("score", n(10.0))])),
+        ("i2", HashMap::from([("name", s("B")), ("score", n(30.0))])),
+    ])).await;
+
+    let result = executor.execute("SELECT name, score FROM items ORDER BY score DESC").await.unwrap();
+    match result {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("score"), Some(&n(30.0)));
+            assert_eq!(rows[1].get("score"), Some(&n(10.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// End-to-end scenario tests (JOIN + Aggregate + CRUD)
+// ═══════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_e2e_insert_select_update_delete() {
+    // Full CRUD lifecycle on a single collection
+    let executor = SQLExecutor::new();
+
+    // CREATE (implicit via INSERT)
+    let r = executor.execute("INSERT INTO products (name, price, stock) VALUES ('Widget', 9.99, 100)").await.unwrap();
+    assert!(matches!(r, SQLResult::Insert(1)));
+
+    let r = executor.execute("INSERT INTO products (name, price, stock) VALUES ('Gadget', 19.99, 50)").await.unwrap();
+    assert!(matches!(r, SQLResult::Insert(1)));
+
+    // SELECT with WHERE
+    let r = executor.execute("SELECT name, price FROM products WHERE name = 'Widget'").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("name"), Some(&s("Widget")));
+            assert_eq!(rows[0].get("price"), Some(&n(9.99)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+
+    // UPDATE
+    let r = executor.execute("UPDATE products SET price = 8.99 WHERE name = 'Widget'").await.unwrap();
+    assert!(matches!(r, SQLResult::Update(1)));
+
+    // Verify UPDATE
+    let r = executor.execute("SELECT price FROM products WHERE name = 'Widget'").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("price"), Some(&n(8.99)), "Price should be updated");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+
+    // DELETE
+    let r = executor.execute("DELETE FROM products WHERE name = 'Gadget'").await.unwrap();
+    assert!(matches!(r, SQLResult::Delete(1)));
+
+    // Verify DELETE
+    let r = executor.execute("SELECT COUNT(*) FROM products").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("count(*)"), Some(&n(1.0)), "Only Widget should remain");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_aggregate_after_inserts() {
+    let executor = SQLExecutor::new();
+
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('East', 100)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('East', 200)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('West', 50)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('West', 150)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('North', 300)").await.unwrap();
+
+    let r = executor.execute(
+        "SELECT region, SUM(amount) AS total, COUNT(*) AS cnt FROM sales GROUP BY region ORDER BY total DESC"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 3, "Three regions");
+            // North=300, East=300, West=200 — DESC
+            assert_eq!(rows[0].get("total"), Some(&n(300.0))); // North
+            assert_eq!(rows[0].get("cnt"), Some(&n(1.0)));
+            assert_eq!(rows[1].get("total"), Some(&n(300.0))); // East
+            assert_eq!(rows[1].get("cnt"), Some(&n(2.0)));
+            assert_eq!(rows[2].get("total"), Some(&n(200.0))); // West
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_join_with_aggregate_data() {
+    // JOIN two tables with data suitable for aggregation
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("employees", make_collection("employees", vec![
+        ("e1", HashMap::from([("name", s("Alice")), ("dept_id", n(1.0))])),
+        ("e2", HashMap::from([("name", s("Bob")),   ("dept_id", n(1.0))])),
+        ("e3", HashMap::from([("name", s("Carol")), ("dept_id", n(2.0))])),
+    ])).await;
+
+    executor.register_collection("departments", make_collection("departments", vec![
+        ("d1", HashMap::from([("dept_name", s("Engineering")), ("dept_id", n(1.0)), ("budget", n(500.0))])),
+        ("d2", HashMap::from([("dept_name", s("Sales")),       ("dept_id", n(2.0)), ("budget", n(300.0))])),
+    ])).await;
+
+    // JOIN + WHERE + ORDER BY
+    let r = executor.execute(
+        "SELECT name, dept_name, budget FROM employees JOIN departments ON dept_id = dept_id WHERE budget > 400 ORDER BY name ASC"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            // Only Engineering has budget > 400
+            assert_eq!(rows.len(), 2, "Alice and Bob in Engineering");
+            assert!(rows.iter().all(|r| r.get("dept_name") == Some(&s("Engineering"))));
+            assert!(rows.iter().all(|r| r.get("budget") == Some(&n(500.0))));
+            assert_eq!(rows[0].get("name"), Some(&s("Alice"))); // ASC
+            assert_eq!(rows[1].get("name"), Some(&s("Bob")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_multiple_aggregates_same_query() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("grades", make_collection("grades", vec![
+        ("g1", HashMap::from([("subject", s("Math")), ("score", n(85.0))])),
+        ("g2", HashMap::from([("subject", s("Math")), ("score", n(95.0))])),
+        ("g3", HashMap::from([("subject", s("Math")), ("score", n(75.0))])),
+        ("g4", HashMap::from([("subject", s("English")), ("score", n(80.0))])),
+        ("g5", HashMap::from([("subject", s("English")), ("score", n(90.0))])),
+    ])).await;
+
+    let r = executor.execute(
+        "SELECT subject, COUNT(*) AS cnt, MIN(score) AS lowest, MAX(score) AS highest, AVG(score) AS average FROM grades GROUP BY subject"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 2);
+
+            let math = rows.iter().find(|r| r.get("subject") == Some(&s("Math"))).unwrap();
+            assert_eq!(math.get("cnt"), Some(&n(3.0)));
+            assert_eq!(math.get("lowest"), Some(&n(75.0)));
+            assert_eq!(math.get("highest"), Some(&n(95.0)));
+            assert_eq!(math.get("average"), Some(&n(85.0))); // (85+95+75)/3
+
+            let eng = rows.iter().find(|r| r.get("subject") == Some(&s("English"))).unwrap();
+            assert_eq!(eng.get("cnt"), Some(&n(2.0)));
+            assert_eq!(eng.get("average"), Some(&n(85.0))); // (80+90)/2
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_where_orderby_limit_combined() {
+    let executor = SQLExecutor::new();
+
+    for i in 1..=10 {
+        let sql = format!("INSERT INTO logs (level, msg) VALUES ('info', 'msg{}')", i);
+        executor.execute(&sql).await.unwrap();
+    }
+    executor.execute("INSERT INTO logs (level, msg) VALUES ('error', 'critical')").await.unwrap();
+    executor.execute("INSERT INTO logs (level, msg) VALUES ('error', 'fatal')").await.unwrap();
+
+    // WHERE + ORDER BY + LIMIT (non-aggregate)
+    let r = executor.execute(
+        "SELECT level, msg FROM logs WHERE level = 'error' ORDER BY msg ASC LIMIT 1"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 1, "LIMIT 1");
+            assert_eq!(rows[0].get("msg"), Some(&s("critical")), "ASC: critical < fatal");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+
+    // Aggregate: count by level
+    let r = executor.execute(
+        "SELECT level, COUNT(*) AS total FROM logs GROUP BY level HAVING COUNT(*) >= 2"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows.len(), 2, "Both info (10) and error (2) have count >= 2");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_empty_result_graceful() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("empty_tbl", make_collection("empty_tbl", vec![])).await;
+
+    // SELECT on empty
+    let r = executor.execute("SELECT * FROM empty_tbl").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => assert_eq!(rows.len(), 0),
+        other => panic!("Expected empty Select, got {:?}", other),
+    }
+
+    // COUNT on empty
+    let r = executor.execute("SELECT COUNT(*) FROM empty_tbl").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("count(*)"), Some(&n(0.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+
+    // No-match WHERE
+    executor.execute("INSERT INTO empty_tbl (x) VALUES ('hello')").await.unwrap();
+    let r = executor.execute("SELECT * FROM empty_tbl WHERE x = 'nope'").await.unwrap();
+    match r {
+        SQLResult::Select(rows) => assert_eq!(rows.len(), 0),
+        other => panic!("Expected empty Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_type_handling() {
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("mixed", make_collection("mixed", vec![
+        ("m1", HashMap::from([
+            ("int_val", n(42.0)),
+            ("float_val", n(3.14)),
+            ("str_val", s("hello")),
+        ])),
+        ("m2", HashMap::from([
+            ("int_val", n(100.0)),
+            ("float_val", n(2.71)),
+            ("str_val", s("world")),
+        ])),
+    ])).await;
+
+    // Sum numeric, min/max string
+    let r = executor.execute(
+        "SELECT SUM(int_val) AS si, AVG(float_val) AS af, MIN(str_val) AS ms, MAX(str_val) AS xs FROM mixed"
+    ).await.unwrap();
+
+    match r {
+        SQLResult::Select(rows) => {
+            assert_eq!(rows[0].get("si"), Some(&n(142.0)));
+            // AVG：3.14+2.71 = 5.85 / 2 = 2.925, but floating point may vary slightly
+            let af_val = rows[0].get("af").unwrap();
+            if let SQLValue::Number(v) = af_val {
+                assert!((v - 2.925).abs() < 0.001, "avg should be ~2.925, got {}", v);
+            } else { panic!("Expected Number, got {:?}", af_val); }
+            assert_eq!(rows[0].get("ms"), Some(&s("hello")));
+            assert_eq!(rows[0].get("xs"), Some(&s("world")));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
 }

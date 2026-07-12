@@ -25,6 +25,7 @@ mod tls {
     use tokio::sync::RwLock;
     use std::path::Path;
     use std::fs;
+    use std::io::Cursor;
     
     #[derive(Debug, Clone)]
     pub struct TlsConfig {
@@ -94,18 +95,36 @@ mod tls {
             Ok(Self { config })
         }
     
+        /// 生成真实的自签名 X.509 证书与对应的 PKCS#8 私钥（PEM 格式）。
+        ///
+        /// 需要 `tls-gen` feature 启用（依赖 rcgen）。
+        /// 未启用该 feature 时返回错误，避免静默使用不安全的占位证书。
+        #[cfg(feature = "tls-gen")]
         pub fn generate_self_signed_cert(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
-            let cert = Self::generate_cert()?;
-            let key = Self::generate_key()?;
-            Ok((cert, key))
+            // 收集 SAN（subject alternative names）：包含 cert_path 不影响，使用 localhost
+            // 便于开发环境的本地数据库客户端连接。
+            let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+    
+            let cert = rcgen::generate_simple_self_signed(subject_alt_names)
+                .map_err(|e| format!("Failed to generate self-signed certificate: {}", e))?;
+    
+            let cert_pem = cert.serialize_pem()
+                .map_err(|e| format!("Failed to serialize certificate to PEM: {}", e))?;
+            let key_pem = cert.serialize_private_key_pem();
+    
+            Ok((cert_pem.into_bytes(), key_pem.into_bytes()))
         }
     
-        fn generate_cert() -> Result<Vec<u8>, String> {
-            Ok(vec![])
-        }
-    
-        fn generate_key() -> Result<Vec<u8>, String> {
-            Ok(vec![])
+        /// 未启用 `tls-gen` feature 时，无法生成自签名证书。
+        ///
+        /// 调用方应启用 `tls-gen` feature 或提供外部证书。
+        #[cfg(not(feature = "tls-gen"))]
+        pub fn generate_self_signed_cert(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
+            Err(
+                "Self-signed certificate generation is disabled. \
+                 Enable the 'tls-gen' feature or provide a certificate via TlsConfig::from_files."
+                    .to_string(),
+            )
         }
     
         pub fn config(&self) -> &TlsConfig {
@@ -121,6 +140,57 @@ mod tls {
             fs::read(&self.config.key_path)
                 .map_err(|e| format!("Failed to read private key: {}", e))
         }
+    
+        /// 从已加载的 PEM 字节构建 `rustls::ServerConfig`。
+        ///
+        /// 使用 `rustls-pemfile` 解析证书链与私钥，确保只接受格式合法的 PEM。
+        /// 返回的 `ServerConfig` 可直接用于 `tokio-rustls` 等 TLS 监听器。
+        pub fn build_server_config(&self) -> Result<Arc<rustls::ServerConfig>, String> {
+            let cert_pem = self.load_cert_chain()?;
+            let key_pem = self.load_private_key()?;
+
+            let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut Cursor::new(&cert_pem))
+                .map(|r| r.map(|c| rustls::Certificate(c.to_vec())))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?;
+
+            if certs.is_empty() {
+                return Err("No valid certificate found in PEM".to_string());
+            }
+
+            let key = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&key_pem))
+                .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
+                .into_iter()
+                .next()
+                .map(|k| rustls::PrivateKey(k.secret_der().to_vec()))
+                .ok_or_else(|| "No valid private key found in PEM".to_string())?;
+
+            let mut server_config = rustls::ServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .map_err(|e| format!("Failed to build rustls ServerConfig: {}", e))?;
+
+            match self.config.min_version {
+                TlsVersion::TLSv1_2 => {
+                    server_config.versions = vec![rustls::ProtocolVersion::TLSv1_2];
+                }
+                TlsVersion::TLSv1_3 => {
+                    server_config.versions = vec![rustls::ProtocolVersion::TLSv1_3];
+                }
+            }
+
+            Ok(Arc::new(server_config))
+        }
+    
+        /// 把生成的自签名证书与私钥写入磁盘，便于复用。
+        #[cfg(feature = "tls-gen")]
+        pub fn write_self_signed_cert(&self, cert_path: &str, key_path: &str) -> Result<(), String> {
+            let (cert, key) = self.generate_self_signed_cert()?;
+            fs::write(cert_path, &cert).map_err(|e| format!("Failed to write cert: {}", e))?;
+            fs::write(key_path, &key).map_err(|e| format!("Failed to write key: {}", e))?;
+            Ok(())
+        }
     }
     
     pub struct TlsClient {
@@ -132,8 +202,64 @@ mod tls {
             Self { config }
         }
     
+        /// 验证服务器证书 PEM：使用 `rustls-pemfile` 解析并确认至少包含一张合法证书。
+        ///
+        /// 替换原仅检查 PEM header 字符串的占位实现。
         pub fn verify_server_cert(&self, cert: &[u8]) -> Result<bool, String> {
+            if cert.is_empty() {
+                return Err("Empty certificate provided".to_string());
+            }
+    
+            let mut cursor = Cursor::new(cert);
+            let certs = rustls_pemfile::certs(&mut cursor)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Invalid certificate PEM: {}", e))?;
+    
+            if certs.is_empty() {
+                return Err("No valid certificate found in PEM".to_string());
+            }
+    
             Ok(true)
+        }
+    
+        pub fn config(&self) -> &TlsConfig {
+            &self.config
+        }
+    
+        /// 构建客户端 `rustls::ClientConfig`，可加载自定义 CA 用于自签名证书校验。
+        ///
+        /// 必须通过 `TlsConfig.ca_path` 提供 CA 证书；未提供时返回错误，
+        /// 避免在不知情的情况下信任未知根证书。
+        pub fn build_client_config(&self) -> Result<Arc<rustls::ClientConfig>, String> {
+            let mut root_store = rustls::RootCertStore::empty();
+    
+            let ca_path = self.config.ca_path.as_ref()
+                .ok_or_else(|| "CA path must be provided to build a client config".to_string())?;
+    
+            let ca_pem = fs::read(ca_path)
+                .map_err(|e| format!("Failed to read CA file: {}", e))?;
+            let mut cursor = Cursor::new(&ca_pem);
+            let ca_certs = rustls_pemfile::certs(&mut cursor)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to parse CA PEM: {}", e))?;
+    
+            if ca_certs.is_empty() {
+                return Err("No valid CA certificate found in PEM".to_string());
+            }
+    
+            for cert in ca_certs {
+                let rustls_cert = rustls::Certificate(cert.to_vec());
+                root_store
+                    .add(&rustls_cert)
+                    .map_err(|e| format!("Failed to add CA to root store: {}", e))?;
+            }
+    
+            let client_config = rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+    
+            Ok(Arc::new(client_config))
         }
     }
 }
@@ -408,6 +534,7 @@ mod audit {
     use std::collections::{HashMap, VecDeque};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
     
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub enum AuditLevel {
@@ -449,6 +576,7 @@ mod audit {
         events: Arc<RwLock<VecDeque<AuditEvent>>>,
         max_events: usize,
         persistent_storage: bool,
+        storage_path: String,
     }
     
     impl AuditLogger {
@@ -457,11 +585,17 @@ mod audit {
                 events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events))),
                 max_events,
                 persistent_storage: false,
+                storage_path: "audit_log.json".to_string(),
             }
         }
     
         pub fn with_persistent_storage(mut self, enabled: bool) -> Self {
             self.persistent_storage = enabled;
+            self
+        }
+
+        pub fn with_storage_path(mut self, path: &str) -> Self {
+            self.storage_path = path.to_string();
             self
         }
     
@@ -479,7 +613,25 @@ mod audit {
             events.push_back(event);
         }
     
-        async fn persist_event(&self, _event: &AuditEvent) {
+        async fn persist_event(&self, event: &AuditEvent) {
+            if let Ok(json) = serde_json::to_string(event) {
+                let path = Path::new(&self.storage_path);
+                let exists = path.exists();
+                let mut file = match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    Ok(f) => f,
+                    Err(_) => return,
+                };
+                use std::io::Write;
+                if !exists {
+                    let _ = writeln!(file, "[{}]", json);
+                } else {
+                    let _ = writeln!(file, ",{}", json);
+                }
+            }
         }
     
         pub async fn log_event(
@@ -582,6 +734,7 @@ mod audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
     
     #[tokio::test]
     async fn test_key_manager() {

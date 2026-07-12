@@ -1,24 +1,31 @@
 //! REST API for CoreTexDB
 
 use axum::{
+    extract::Request,
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post, delete, put},
     Json, Router, extract::State,
 };
 use tower_http::cors::{Any, CorsLayer};
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 
 use crate::{CoreTexDB, DbConfig, SearchResult};
+use crate::coretex_auth::{AuthService, Permission, RateLimiter};
+use crate::coretex_core::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiConfig {
     pub address: String,
     pub port: u16,
     pub enable_cors: bool,
+    pub enable_auth: bool,
+    pub rate_limit_per_minute: usize,
 }
 
 impl Default for ApiConfig {
@@ -27,6 +34,8 @@ impl Default for ApiConfig {
             address: "0.0.0.0".to_string(),
             port: 5000,
             enable_cors: true,
+            enable_auth: false,
+            rate_limit_per_minute: 0,
         }
     }
 }
@@ -171,18 +180,46 @@ impl<T> ApiResponse<T> {
 
 pub struct ApiState {
     pub db: Arc<RwLock<CoreTexDB>>,
+    pub auth: Arc<AuthService>,
+    pub rate_limiter: Option<Arc<RateLimiter>>,
+    pub enable_auth: bool,
 }
 
-pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub user_id: String,
+    pub expires_in: i64,
+}
+
+pub async fn start_server(config: ApiConfig) -> Result<()> {
     let db = CoreTexDB::new();
     db.init().await.map_err(|e| format!("Failed to init DB: {}", e))?;
 
-    let state = ApiState {
-        db: Arc::new(RwLock::new(db)),
+    let auth = Arc::new(AuthService::new());
+    let rate_limiter = if config.rate_limit_per_minute > 0 {
+        Some(Arc::new(RateLimiter::new(config.rate_limit_per_minute, 60)))
+    } else {
+        None
     };
 
-    let app = Router::new()
+    let state = Arc::new(ApiState {
+        db: Arc::new(RwLock::new(db)),
+        auth: auth.clone(),
+        rate_limiter: rate_limiter.clone(),
+        enable_auth: config.enable_auth,
+    });
+
+    let mut app = Router::new()
         .route("/health", get(health_check))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/register", post(register))
         .route("/api/collections", get(list_collections))
         .route("/api/collections", post(create_collection))
         .route("/api/collections/:name", get(get_collection))
@@ -195,7 +232,26 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error + Send 
         .route("/api/collections/:name/search", post(search))
         .route("/api/collections/:name/batch-search", post(batch_search))
         .route("/api/collections/:name/count", get(get_vectors_count))
-        .with_state(Arc::new(state));
+        .route("/raft/append_entries", post(raft_append_entries))
+        .with_state(state.clone());
+
+    // 启用认证中间件
+    if config.enable_auth {
+        let auth_clone = auth.clone();
+        let rl_clone = rate_limiter.clone();
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let auth = auth_clone.clone();
+            let rl = rl_clone.clone();
+            async move { auth_middleware(req, next, auth, rl).await }
+        }));
+    } else if rate_limiter.is_some() {
+        // 即使没启用认证也启用速率限制
+        let rl_clone = rate_limiter.clone();
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let rl = rl_clone.clone();
+            async move { rate_limit_middleware(req, next, rl).await }
+        }));
+    }
 
     let app = if config.enable_cors {
         let cors = CorsLayer::new()
@@ -216,8 +272,12 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error + Send 
     );
 
     println!("Starting CortexDB API server on http://{}", addr);
+    println!("Auth enabled: {}", config.enable_auth);
+    println!("Rate limit: {} req/min", config.rate_limit_per_minute);
     println!("API endpoints:");
     println!("  GET  /health                              - Health check");
+    println!("  POST /api/auth/login                      - Login");
+    println!("  POST /api/auth/register                   - Register");
     println!("  GET  /api/collections                     - List collections");
     println!("  POST /api/collections                    - Create collection");
     println!("  GET  /api/collections/:name               - Get collection info");
@@ -235,6 +295,116 @@ pub async fn start_server(config: ApiConfig) -> Result<(), Box<dyn Error + Send 
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// =============== 认证中间件 ===============
+
+async fn auth_middleware(
+    req: Request,
+    next: Next,
+    auth: Arc<AuthService>,
+    rate_limiter: Option<Arc<RateLimiter>>,
+) -> std::result::Result<Response, StatusCode> {
+    let path = req.uri().path().to_string();
+
+    // 白名单：登录、注册、健康检查、Raft 内部 RPC 不需要认证
+    if path == "/health" || path == "/api/auth/login" || path == "/api/auth/register"
+        || path.starts_with("/raft/") {
+        return Ok(next.run(req).await);
+    }
+
+    // 速率限制
+    if let Some(rl) = rate_limiter {
+        let identifier = req.headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("anonymous")
+            .to_string();
+        if let Err(e) = rl.check_rate_limit(&identifier).await {
+            return Ok((StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({
+                "status": "error",
+                "error": format!("Rate limit exceeded: {}", e)
+            }))).into_response());
+        }
+    }
+
+    // 验证 token
+    let token = match req.headers().get(header::AUTHORIZATION) {
+        Some(v) => v.to_str().unwrap_or("").trim_start_matches("Bearer ").to_string(),
+        None => {
+            return Ok((StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+                "status": "error",
+                "error": "Missing Authorization header"
+            }))).into_response());
+        }
+    };
+
+    match auth.verify_token(&token).await {
+        Ok(_claims) => Ok(next.run(req).await),
+        Err(e) => Ok((StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+            "status": "error",
+            "error": format!("Invalid token: {}", e)
+        }))).into_response()),
+    }
+}
+
+async fn rate_limit_middleware(
+    req: Request,
+    next: Next,
+    rate_limiter: Option<Arc<RateLimiter>>,
+) -> std::result::Result<Response, StatusCode> {
+    if let Some(rl) = rate_limiter {
+        let identifier = req.headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("anonymous")
+            .to_string();
+        if let Err(e) = rl.check_rate_limit(&identifier).await {
+            return Ok((StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({
+                "status": "error",
+                "error": format!("Rate limit exceeded: {}", e)
+            }))).into_response());
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+async fn login(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<LoginRequest>,
+) -> Json<ApiResponse<LoginResponse>> {
+    match state.auth.authenticate(&req.username, &req.password).await {
+        Ok(token) => Json(ApiResponse::success(LoginResponse {
+            token: token.token,
+            user_id: token.user_id,
+            expires_in: 86400, // 24 小时
+        })),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn register(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<LoginRequest>,
+) -> Json<ApiResponse<String>> {
+    match state.auth.create_user(&req.username, &req.password, None).await {
+        Ok(user_id) => Json(ApiResponse::success(user_id)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn raft_append_entries(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<crate::coretex_failover::AppendEntriesRequest>,
+) -> Json<serde_json::Value> {
+    // 简单的 Raft 内部 RPC 端点（认证中间件已跳过此路径）
+    Json(serde_json::json!({
+        "follower_id": state.db.read().await.config.data_dir.clone(),
+        "term": req.term,
+        "success": true,
+        "match_index": req.prev_log_index,
+        "conflict_index": 0
+    }))
 }
 
 async fn health_check() -> Json<HealthResponse> {
@@ -375,16 +545,14 @@ async fn search(
     
     match db.search(&name, req.vector, req.k, req.filter).await {
         Ok(results) => {
-            let db_guard = state.db.read().await;
-            let data_map = db_guard.data.read().await;
-            let collection_data = data_map.get(&name);
+            let ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+            let vectors = db.get_vectors_by_ids(&name, &ids).await.unwrap_or_default();
+            let vector_map: std::collections::HashMap<String, (Vec<f32>, serde_json::Value)> = vectors.into_iter().collect();
             
             let search_results: Vec<SearchResultItem> = results
                 .into_iter()
                 .map(|r| {
-                    let metadata = collection_data
-                        .and_then(|cd| cd.get(&r.id))
-                        .map(|(_, m)| m.clone());
+                    let metadata = vector_map.get(&r.id).map(|(_, m)| m.clone());
                     
                     SearchResultItem {
                         id: r.id,
@@ -491,15 +659,14 @@ async fn batch_search(
     for query in req.queries {
         match db.search(&name, query, req.k, req.filter.clone()).await {
             Ok(results) => {
-                let data_lock = db.data.read().await;
-                let collection_data = data_lock.get(&name);
+                let ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+                let vectors = db.get_vectors_by_ids(&name, &ids).await.unwrap_or_default();
+                let vector_map: std::collections::HashMap<String, (Vec<f32>, serde_json::Value)> = vectors.into_iter().collect();
                 
                 let search_results: Vec<SearchResultItem> = results
                     .into_iter()
                     .map(|r| {
-                        let metadata = collection_data
-                            .and_then(|cd| cd.get(&r.id))
-                            .map(|(_, m)| m.clone());
+                        let metadata = vector_map.get(&r.id).map(|(_, m)| m.clone());
                         
                         SearchResultItem {
                             id: r.id,

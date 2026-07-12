@@ -1,6 +1,6 @@
 //! Image embedding service using CLIP
 
-use std::error::Error;
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct ImageEmbeddingService {
@@ -26,7 +26,7 @@ impl ImageEmbeddingService {
         )
     }
 
-    pub fn embed_image(&self, image_data: &[u8]) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_image(&self, image_data: &[u8]) -> Result<Vec<f32>> {
         let mut embedding = vec![0.0; self.dimension];
         
         let hash = self.simple_hash(image_data);
@@ -39,12 +39,12 @@ impl ImageEmbeddingService {
         Ok(embedding)
     }
 
-    pub fn embed_image_path(&self, path: &str) -> Result<Vec<f32>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_image_path(&self, path: &str) -> Result<Vec<f32>> {
         let image_data = std::fs::read(path)?;
         self.embed_image(&image_data)
     }
 
-    pub fn embed_batch(&self, images: &[Vec<u8>]) -> Result<Vec<Vec<f32>>, Box<dyn Error + Send + Sync>> {
+    pub fn embed_batch(&self, images: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
         images.iter()
             .map(|img| self.embed_image(img))
             .collect()
@@ -75,6 +75,7 @@ impl ImageEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::coretex_core::Result;
 
     #[test]
     fn test_embed_image() {

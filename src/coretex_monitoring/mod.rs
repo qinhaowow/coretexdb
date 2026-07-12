@@ -5,6 +5,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum MetricType {
@@ -190,6 +193,7 @@ impl Default for DatabaseMetrics {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct AlertRule {
     pub name: String,
     pub condition: AlertCondition,
@@ -225,6 +229,108 @@ pub struct Alert {
     pub resolved_at: Option<u64>,
 }
 
+fn current_timestamp() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[derive(Debug, Clone)]
+pub struct SlowQueryConfig {
+    pub enabled: bool,
+    pub slow_threshold_ms: u64,
+    pub log_path: String,
+    pub max_log_entries: usize,
+}
+
+impl Default for SlowQueryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            slow_threshold_ms: 100,
+            log_path: "logs/slow_queries.log".to_string(),
+            max_log_entries: 10000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SlowQueryEntry {
+    pub query_type: String,
+    pub duration_ms: f64,
+    pub collection: String,
+    pub query_params: String,
+    pub timestamp: u64,
+}
+
+pub struct SlowQueryLogger {
+    config: SlowQueryConfig,
+    entries: Arc<RwLock<Vec<SlowQueryEntry>>>,
+}
+
+impl SlowQueryLogger {
+    pub fn new(config: SlowQueryConfig) -> Self {
+        if let Some(parent) = PathBuf::from(&config.log_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        Self {
+            config,
+            entries: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub async fn record_query(&self, query_type: &str, duration_ms: f64, collection: &str, query_params: &str) {
+        if !self.config.enabled || duration_ms < self.config.slow_threshold_ms as f64 {
+            return;
+        }
+
+        let entry = SlowQueryEntry {
+            query_type: query_type.to_string(),
+            duration_ms,
+            collection: collection.to_string(),
+            query_params: query_params.to_string(),
+            timestamp: current_timestamp(),
+        };
+
+        let mut entries = self.entries.write().await;
+        entries.push(entry.clone());
+
+        while entries.len() > self.config.max_log_entries {
+            entries.remove(0);
+        }
+
+        let log_line = format!(
+            "[{}] SLOW QUERY: type={} duration={:.2}ms collection={} params={}\n",
+            entry.timestamp, entry.query_type, entry.duration_ms, entry.collection, entry.query_params
+        );
+
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.config.log_path)
+        {
+            let _ = file.write_all(log_line.as_bytes());
+        }
+    }
+
+    pub async fn get_slow_queries(&self) -> Vec<SlowQueryEntry> {
+        self.entries.read().await.clone()
+    }
+
+    pub async fn get_recent_slow_queries(&self, count: usize) -> Vec<SlowQueryEntry> {
+        let entries = self.entries.read().await;
+        let start = if entries.len() > count { entries.len() - count } else { 0 };
+        entries[start..].to_vec()
+    }
+
+    pub async fn clear(&self) {
+        self.entries.write().await.clear();
+    }
+}
+
 impl AlertManager {
     pub fn new(metrics: Arc<DatabaseMetrics>) -> Self {
         Self {
@@ -239,16 +345,25 @@ impl AlertManager {
         rules.push(rule);
     }
 
+    pub async fn remove_rule(&self, name: &str) {
+        let mut rules = self.rules.write().await;
+        rules.retain(|r| r.name != name);
+    }
+
+    pub async fn get_rules(&self) -> Vec<AlertRule> {
+        self.rules.read().await.clone()
+    }
+
     pub async fn check_alerts(&self) -> Vec<Alert> {
         let mut fired_alerts = Vec::new();
-        
+
         let rules = self.rules.read().await;
-        
+
         for rule in rules.iter() {
             match &rule.condition {
                 AlertCondition::Threshold { metric, operator, value } => {
                     let should_fire = self.check_threshold(metric, operator, *value).await;
-                    
+
                     if should_fire {
                         let alert = Alert {
                             name: rule.name.clone(),
@@ -274,16 +389,42 @@ impl AlertManager {
                 }
             }
         }
-        
+
         fired_alerts
     }
 
     async fn check_threshold(&self, metric: &str, operator: &str, value: f64) -> bool {
-        false
+        let prometheus = &self.metrics.metrics;
+        let gauges = prometheus.gauges.read().await;
+        let counters = prometheus.counters.read().await;
+
+        let metric_value = gauges.get(metric)
+            .copied()
+            .or_else(|| counters.get(metric).copied())
+            .unwrap_or(0.0);
+
+        match operator {
+            ">" => metric_value > value,
+            ">=" => metric_value >= value,
+            "<" => metric_value < value,
+            "<=" => metric_value <= value,
+            "==" => (metric_value - value).abs() < 0.001,
+            "!=" => (metric_value - value).abs() >= 0.001,
+            _ => false,
+        }
     }
 
     async fn check_rate(&self, metric: &str, duration_secs: u64, threshold: f64) -> bool {
-        false
+        let prometheus = &self.metrics.metrics;
+        let counters = prometheus.counters.read().await;
+
+        let current = counters.get(metric).copied().unwrap_or(0.0);
+        if current == 0.0 {
+            return false;
+        }
+
+        let rate = current / duration_secs as f64;
+        rate > threshold
     }
 
     pub async fn get_active_alerts(&self) -> Vec<Alert> {
@@ -293,14 +434,6 @@ impl AlertManager {
             .cloned()
             .collect()
     }
-}
-
-fn current_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 pub struct GrafanaConfig {
@@ -323,11 +456,130 @@ impl GrafanaClient {
     }
 
     pub async fn create_dashboard(&self, name: &str) -> Result<String, String> {
-        Err("Grafana integration requires 'reqwest' feature".to_string())
+        let url = format!("{}/api/dashboards/db", self.config.api_url.trim_end_matches('/'));
+
+        let dashboard = serde_json::json!({
+            "dashboard": {
+                "title": name,
+                "tags": ["coretexdb", "monitoring"],
+                "timezone": "browser",
+                "schemaVersion": 36,
+                "panels": [
+                    {
+                        "title": "Vector Operations",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+                        "targets": [
+                            {
+                                "expr": "rate(coretex_vector_operations_total[1m])",
+                                "legendFormat": "{{operation}}",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Query Latency (p99)",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+                        "targets": [
+                            {
+                                "expr": "histogram_quantile(0.99, rate(coretex_query_duration_seconds_bucket[1m]))",
+                                "legendFormat": "{{query_type}}",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Memory Usage",
+                        "type": "gauge",
+                        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "coretex_memory_usage_bytes",
+                                "legendFormat": "memory",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Active Connections",
+                        "type": "stat",
+                        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "coretex_active_connections",
+                                "legendFormat": "connections",
+                                "refId": "A"
+                            }
+                        ]
+                    },
+                    {
+                        "title": "Error Rate",
+                        "type": "graph",
+                        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+                        "targets": [
+                            {
+                                "expr": "rate(coretex_errors_total[1m])",
+                                "legendFormat": "{{error_type}}",
+                                "refId": "A"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "overwrite": true
+        });
+
+        let auth_header = format!("Bearer {}", self.config.api_key);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .json(&dashboard)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to create Grafana dashboard: {}", e))?;
+
+        let status = response.status();
+        let body = response.text().await
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        if status.is_success() {
+            let parsed: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| format!("Failed to parse response: {}", e))?;
+            let uid = parsed["uid"].as_str()
+                .or_else(|| parsed["dashboard"]["uid"].as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(uid)
+        } else {
+            Err(format!("Grafana API error ({}): {}", status, body))
+        }
     }
 
     pub async fn push_metrics(&self, metrics: &str) -> Result<(), String> {
-        Err("Grafana integration requires 'reqwest' feature".to_string())
+        let url = format!("{}/api/datasources/proxy/1/api/v1/push", self.config.api_url.trim_end_matches('/'));
+
+        let auth_header = format!("Bearer {}", self.config.api_key);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "text/plain")
+            .body(metrics.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Failed to push metrics to Grafana: {}", e))?;
+
+        let status = response.status();
+
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Grafana push metrics error ({}): {}", status, body))
+        }
     }
 }
 
