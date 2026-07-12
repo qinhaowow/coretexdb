@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::coretex_core::Result;
 
 pub struct IncrementalIndex {
     vectors: Arc<RwLock<HashMap<String, Vec<f32>>>>,

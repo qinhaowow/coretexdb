@@ -1,5 +1,6 @@
 //! Utility functions for CortexDB
 
+use crate::coretex_core::Result;
 
 pub mod wal;
 pub mod cluster;

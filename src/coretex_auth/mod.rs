@@ -89,6 +89,7 @@ pub struct AuthToken {
     pub token: String,
     pub token_type: String,
     pub expires_in: u64,
+    pub user_id: String,
 }
 
 pub struct AuthService {
@@ -245,6 +246,7 @@ impl AuthService {
             token,
             token_type: "Bearer".to_string(),
             expires_in: self.config.expiration_minutes * 60,
+            user_id: user.id.clone(),
         })
     }
 

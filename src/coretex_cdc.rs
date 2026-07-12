@@ -1595,7 +1595,7 @@ fn build_mongo_cmd(request_id: i32, db: &str, cmd: &str, body: serde_json::Value
 }
 
 /// 读取 MongoDB 回复（解析 OP_MSG body 中的 BSON 文档列表）
-fn read_mongo_reply(stream: &mut tokio::net::TcpStream) -> Result<Vec<serde_json::Value>, CdcError> {
+async fn read_mongo_reply(stream: &mut tokio::net::TcpStream) -> Result<Vec<serde_json::Value>, CdcError> {
     use tokio::io::AsyncReadExt;
 
     let mut header = [0u8; 16];

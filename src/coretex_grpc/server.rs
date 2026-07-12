@@ -20,6 +20,7 @@ use tonic::service::Interceptor;
 use crate::coretex_grpc::coretex_service::coretex_service_server::CoretexServiceServer;
 use crate::coretex_auth::{AuthService, Permission, RateLimiter, TokenClaims};
 use crate::{CoreTexDB, CoretexService};
+use crate::coretex_core::Result;
 
 /// gRPC 服务配置
 #[derive(Debug, Clone)]
@@ -95,7 +96,7 @@ impl AuthInterceptor {
 }
 
 impl Interceptor for AuthInterceptor {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
         if !self.enable_auth {
             return Ok(request);
         }
@@ -123,7 +124,7 @@ impl Interceptor for AuthInterceptor {
         };
 
         // 这里使用阻塞验证 - 在生产环境应使用 async
-        let claims = futures_executor::block_on(async {
+        let claims = futures::executor::block_on(async {
             self.auth.verify_token(&token).await
         });
 
@@ -156,7 +157,7 @@ impl RateLimitInterceptor {
 }
 
 impl Interceptor for RateLimitInterceptor {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
         if let Some(limiter) = &self.limiter {
             let identifier = request
                 .metadata()
@@ -165,7 +166,7 @@ impl Interceptor for RateLimitInterceptor {
                 .unwrap_or("anonymous")
                 .to_string();
 
-            let result = futures_executor::block_on(async {
+            let result = futures::executor::block_on(async {
                 limiter.check_rate_limit(&identifier).await
             });
 
@@ -189,7 +190,7 @@ impl MetricsInterceptor {
 }
 
 impl Interceptor for MetricsInterceptor {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
         let start = std::time::Instant::now();
         let path = request
             .metadata()
@@ -343,7 +344,7 @@ where
     B: Interceptor,
     C: Interceptor,
 {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
         let req = self.first.call(request)?;
         let req = self.second.call(req)?;
         let req = self.third.call(req)?;
@@ -398,8 +399,8 @@ pub mod client {
 }
 
 // 类型别名
-pub use coretex_service::coretex_service_server::CoretexServiceClient;
-pub use coretex_service::coretex_service_server::CoretexService as CoretexServiceTrait;
+pub use crate::coretex_grpc::coretex_service::coretex_service_client::CoretexServiceClient;
+pub use crate::coretex_grpc::coretex_service::coretex_service_server::CoretexService as CoretexServiceTrait;
 
 #[cfg(test)]
 mod tests {

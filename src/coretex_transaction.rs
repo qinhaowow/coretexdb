@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use crate::coretex_core::Result;
 
 pub struct TransactionManager {
     pub active_transactions: Arc<RwLock<HashMap<TransactionId, Transaction>>>,

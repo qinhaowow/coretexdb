@@ -207,6 +207,8 @@ impl SQLParser {
         
         if self.check(&SQLToken::Keyword("CREATE".to_string())) {
             return self.parse_create();
+        }
+        
         if self.check(&SQLToken::Keyword("SHOW".to_string())) {
             return self.parse_show();
         }
@@ -1991,7 +1993,7 @@ impl SQLExecutor {
                 };
 
                 if matches {
-                    let mut new_meta = if let Some(ref obj) = record.metadata.as_object() {
+                    let mut new_meta = if let Some(obj) = record.metadata.as_object() {
                         obj.clone()
                     } else {
                         serde_json::Map::new()

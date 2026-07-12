@@ -1,5 +1,6 @@
 //! Image embedding service using CLIP
 
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct ImageEmbeddingService {

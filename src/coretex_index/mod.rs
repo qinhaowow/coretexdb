@@ -1077,7 +1077,7 @@ impl PQIndex {
         Ok(index)
     }
 
-    pub async fn train(&self, training_vectors: &[Vec<f32>]) -> Result<(), String> {
+    pub async fn train(&self, training_vectors: &[Vec<f32>]) -> std::result::Result<(), String> {
         if training_vectors.is_empty() {
             return Err("No training vectors provided".to_string());
         }
@@ -1175,7 +1175,7 @@ impl PQIndex {
         centroids
     }
 
-    pub async fn add(&self, id: String, vector: Vec<f32>) -> Result<(), String> {
+    pub async fn add(&self, id: String, vector: Vec<f32>) -> std::result::Result<(), String> {
         if vector.len() != self.dimension {
             return Err(format!("Vector dimension {} does not match index dimension {}", vector.len(), self.dimension));
         }

@@ -1360,7 +1360,10 @@ impl DataManager {
         let mut data = self.data.write().await;
         let collection_data = data.get_mut(collection)
             .ok_or_else(|| {
-                let _ = self.transaction_manager.abort(txn_id).await;
+                // Note: abort is fire-and-forget here; we log the error if it fails
+                let txn_mgr = self.transaction_manager.clone();
+                let txn = txn_id;
+                tokio::spawn(async move { let _ = txn_mgr.abort(txn).await; });
                 CoreTexError::CollectionNotFound(collection.to_string())
             })?;
 

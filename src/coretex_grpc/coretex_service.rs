@@ -7,7 +7,9 @@ use tokio::sync::RwLock;
 use async_trait::async_trait;
 
 use crate::CoreTexDB;
-use crate::coretex_core::Result;
+
+// Include generated tonic/prost code
+include!("../coretex_generated.rs");
 
 pub struct CoretexService {
     db: Arc<RwLock<CoreTexDB>>,
@@ -21,7 +23,7 @@ impl CoretexService {
     }
 }
 
-tonic::include_proto!("coretex");
+// Generated code included via include!("../coretex_generated.rs") above
 
 #[async_trait]
 impl self::coretex_service_server::CoretexService for CoretexService {

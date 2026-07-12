@@ -1,5 +1,6 @@
 //! Text embedding service
 
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct TextEmbeddingService {

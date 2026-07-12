@@ -10,6 +10,13 @@ use async_graphql::{
     Context, EmptySubscription, Object, Schema, ID, Subscription,
     SimpleObject, InputObject, Enum, FieldResult,
 };
+use async_graphql_axum::GraphQL;
+use axum::{
+    extract::State,
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
+    Router,
+};
 use futures_util::stream::Stream;
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -552,14 +559,6 @@ pub async fn start_graphql_server(
     db: Arc<RwLock<CoreTexDB>>,
     addr: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
-    use axum::{
-        extract::State,
-        response::{IntoResponse, Html},
-        routing::{get, post},
-        Router,
-    };
-
     let schema = build_schema(db);
     let app = Router::new()
         .route("/", post(graphql_handler).get(graphql_playground))
@@ -576,19 +575,19 @@ pub async fn start_graphql_server(
 
 async fn graphql_handler(
     State(schema): State<AppSchema>,
-    req: GraphQLRequest,
-) -> GraphQLResponse {
-    schema.execute(req.into_inner()).await.into()
+    req: async_graphql_axum::GraphQL<async_graphql::Request>,
+) -> Response {
+    schema.execute(req.0).await.into()
 }
 
 async fn graphql_ws_handler(
     State(schema): State<AppSchema>,
-    req: async_graphql_axum::GraphQLRequest,
+    req: async_graphql_axum::GraphQL<async_graphql::Request>,
 ) -> impl IntoResponse {
-    schema.execute_stream(req.into_inner())
+    schema.execute_stream(req.0)
 }
 
-async fn graphql_playground() -> Html<String> {
+async fn graphql_playground() -> impl IntoResponse {
     Html(async_graphql::http::playground_source(
         async_graphql::http::GraphQLPlaygroundConfig::new("/"),
     ))

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
+use crate::coretex_core::Result;
 
 pub mod cost_model;
 pub use cost_model::{IndexSelector, CostInput, CostEstimate, IndexKind, JoinType, JoinPlan, JoinPushdownOptimizer, OptimizationStats};

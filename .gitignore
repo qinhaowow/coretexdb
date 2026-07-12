@@ -71,3 +71,10 @@ tmp/
 temp/
 __err.txt
 __sizes.txt
+__check_errors.txt
+build_check.bat
+build_now.bat
+check_now.bat
+
+# Generated code (prost-build)
+src/coretex_generated.rs

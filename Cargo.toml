@@ -67,6 +67,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+log = "0.4"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1.4"
@@ -109,12 +110,13 @@ pyo3 = { version = "0.19", features = ["extension-module", "abi3-py38"], optiona
 pyo3-asyncio = { version = "0.19", features = ["tokio"], optional = true }
 
 # gRPC
-tonic = "0.10"
+tonic = { version = "0.10", features = ["tls", "transport", "gzip"] }
 prost = "0.12"
 
 # GraphQL
 async-graphql = "7.0"
 async-graphql-axum = "7.0"
+async-stream = "0.3"
 
 # 向量索引（使用自定义 HNSWIndex 实现）
 

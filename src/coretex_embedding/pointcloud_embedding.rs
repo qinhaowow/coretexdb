@@ -1,5 +1,6 @@
 //! Point cloud and 3D data embedding service
 
+use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct PointCloudEmbeddingService {

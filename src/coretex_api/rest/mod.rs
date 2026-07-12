@@ -304,7 +304,7 @@ async fn auth_middleware(
     next: Next,
     auth: Arc<AuthService>,
     rate_limiter: Option<Arc<RateLimiter>>,
-) -> Result<Response, StatusCode> {
+) -> std::result::Result<Response, StatusCode> {
     let path = req.uri().path().to_string();
 
     // 白名单：登录、注册、健康检查、Raft 内部 RPC 不需要认证
@@ -352,7 +352,7 @@ async fn rate_limit_middleware(
     req: Request,
     next: Next,
     rate_limiter: Option<Arc<RateLimiter>>,
-) -> Result<Response, StatusCode> {
+) -> std::result::Result<Response, StatusCode> {
     if let Some(rl) = rate_limiter {
         let identifier = req.headers()
             .get(header::AUTHORIZATION)

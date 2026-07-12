@@ -116,24 +116,24 @@ pub use coretex_auth::{AuthService, User, Role, Permission, JWTConfig, TokenClai
 pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, AlertRule, AlertCondition, AlertSeverity, Alert, GrafanaConfig, GrafanaClient, SlowQueryConfig, SlowQueryEntry, SlowQueryLogger};
 pub use coretex_spatial_transaction::{RTreeIndex, RTreeEntry, RTreeNode, MBR, SplitStrategy, SpatialTransaction, SpatialTxState, SpatialOperation, TlsSpatialCoordinator, TlsChannel, TlsHandshakeResult};
 pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser, SQLCreateIndex, SQLCondition, SQLToken, SQLUpdate, SelectColumn, AggregateFunction, VectorSearch};
-pub use coretex_sql::optimizer::{SQLOptimizer, ExecutionPlan, SQLOperator, SQLOperatorKind, SQLIndexKind, VectorPushdownOperator, FilterOperator, FilterOp, FilterValue, ProjectionOperator, LimitOperator, DistanceOp};
+pub use coretex_sql::optimizer::{SQLOptimizer, ExecutionPlan, SQLOperator, SQLOperatorKind, IndexKind, VectorPushdownOperator, FilterOperator, FilterOp, FilterValue, ProjectionOperator, LimitOperator, DistanceOp};
 pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
 pub use coretex_simd::{simd_utils, SimdCapabilities};
 pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats, HeartbeatInfo, ReconnectInfo, AckInfo, HeartbeatManager, WsRateLimiter, ConnectionState, AuthRequest, AuthOkResponse, SearchRequest as WsSearchRequest, SearchResponse as WsSearchResponse, SearchResult as WsSearchResult, VectorEntry as WsVectorEntry, InsertRequest as WsInsertRequest, InsertResponse as WsInsertResponse, DeleteRequest as WsDeleteRequest, DeleteResponse as WsDeleteResponse, SubscribeRequest as WsSubscribeRequest, UnsubscribeRequest as WsUnsubscribeRequest, DataChangeEvent as WsDataChangeEvent, ErrorResponse as WsErrorResponse};
 pub use coretex_api::graphql::{
-    AppSchema, build_schema, start_graphql_server,
+    start_graphql_server,
     QueryRoot, MutationRoot, SubscriptionRoot,
     CollectionSchema as GqlCollectionSchema, SearchResultItem, VectorItem,
     InsertResult, DeleteResult, HealthInfo, DataChangeEvent as GqlDataChangeEvent,
     SearchInput, BatchSearchInput, CreateCollectionInput, VectorInput as GqlVectorInput,
-    MetadataFilterInput, CompositeFilterInput, FilterOp, DistanceMetricEnum,
+    MetadataFilterInput, CompositeFilterInput, DistanceMetricEnum,
 };
 // pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
 pub use coretex_graph::{GraphDatabase, GraphNode, GraphEdge, GraphPath, GraphError};
 pub use coretex_hybrid::{
     MultiModalDocument, VectorData, TextData, ScalarValue, TimeSeriesData, GeoLocation,
-    HybridQuery, VectorQuery, TextQuery, ScalarFilter, FilterOperator, QueryWeights, DistanceMetric,
+    HybridQuery, VectorQuery, TextQuery, ScalarFilter, QueryWeights, DistanceMetric,
     ScoreFusion, ScoreFusionEngine, MultiModalResult, FusedResult,
     HybridRetriever, VectorRetriever, TextRetriever,
 };
@@ -154,7 +154,7 @@ pub use coretex_document::{
 pub use coretex_data::{DataManager, VectorRecord, BulkResult, UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
 pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse, LogEntry, LogCommand, AppendEntriesRequest, AppendEntriesResponse, RaftLog, LogReplicator};
 pub use coretex_domain_index::{DomainIndex, DomainDocument, DomainSearchResult, DomainIndexManager, NewsWeatherIndex, GeoLocationIndex, FinancialIndex, KnowledgeIndex};
-pub use coretex_search_pipeline::{TextTokenizer, StopWords, Stemmer, RRFFusion, Candidate, RerankScorer, BM25RerankScorer, LengthPenaltyScorer, RerankPipeline, Modality, EmbeddingModel, RoutingStrategy, EmbeddingRouter, RoutingWeights, CrossModalResult, CrossModalRetriever};
+pub use coretex_search_pipeline::{TextTokenizer, StopWords, Stemmer, RRFFusion, Candidate, RerankScorer, BM25RerankScorer, LengthPenaltyScorer, RerankPipeline, Modality, EmbeddingModel, RoutingStrategy, RoutingWeights, CrossModalResult, CrossModalRetriever};
 pub use coretex_grpo::{GRPOConfig, PolicyNetwork, GRPOExperience, GRPOStats, GRPOOptimizer, GRPOUpdateResult, GRPOSearchOptimizer, SearchAction};
 pub use coretex_bio::{KmerIndexer, SequenceChunker, SequenceChunk, SequenceChunkWithMeta, BinaryVector, IntegerVector, SpacetimeIndex, SpacetimePoint, UserDefinedFunction, UdfType, UdfParameter, UdfParamType, UdfRegistry};
 pub use coretex_types_extra::{DE9IM, SpatialRelation, Topology3D, WindowType, WindowFunction, WindowResult, TimeSeriesWindow, DocumentChunk, RagResult, RagRetriever, ECommerceIndex, Product, Order, InventoryItem, MedicalIndex, Patient, Diagnosis, Drug, LogisticsIndex, Package, Route, Carrier};

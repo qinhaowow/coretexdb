@@ -20,6 +20,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::{CoreTexDB, DbConfig, ApiConfig, start_server};
+use crate::coretex_core::Result;
 
 /// Run the CLI
 pub fn run_cli() -> Result<()> {

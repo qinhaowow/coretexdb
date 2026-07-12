@@ -7,7 +7,7 @@ use crate::coretex_hybrid::fusion::{ScoreFusionEngine, MultiModalResult, ScoreFu
 use crate::coretex_index::SearchResult;
 use crate::coretex_bm25::BM25Index;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct HybridRetriever {
     vector_index: Arc<Mutex<Option<Box<dyn VectorRetriever>>>>,

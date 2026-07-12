@@ -158,8 +158,10 @@ mod tls {
                 return Err("No valid certificate found in PEM".to_string());
             }
 
-            let key = rustls_pemfile::private_key(&mut Cursor::new(&key_pem))
+            let key = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&key_pem))
                 .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
+                .into_iter()
+                .next()
                 .map(|k| rustls::PrivateKey(k.secret_der().to_vec()))
                 .ok_or_else(|| "No valid private key found in PEM".to_string())?;
 

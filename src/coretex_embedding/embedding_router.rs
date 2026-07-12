@@ -1,6 +1,7 @@
 //! Embedding router -统一多模态嵌入服务
 
 use serde::{Deserialize, Serialize};
+use crate::coretex_core::Result;
 
 use crate::coretex_embedding::{
     TextEmbeddingService,

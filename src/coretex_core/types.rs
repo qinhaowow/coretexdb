@@ -134,7 +134,7 @@ pub enum CoreTexError {
     Serialization(#[from] serde_json::Error), 
 
     #[error("Bincode error: {0}")]
-    Bincode(#[from] Box<bincode::ErrorKind>),
+    Bincode(Box<bincode::ErrorKind>),
 
     #[error("UTF-8 conversion error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
@@ -238,6 +238,12 @@ pub enum CoreTexError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
+    #[error("Transaction error: {0}")]
+    TransactionError(String),
+
+    #[error("{0}")]
+    Other(String),
+
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
@@ -276,6 +282,18 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for CoreTexError {
 impl From<Box<dyn std::error::Error>> for CoreTexError {
     fn from(e: Box<dyn std::error::Error>) -> Self {
         CoreTexError::Internal(e.to_string())
+    }
+}
+
+impl From<String> for CoreTexError {
+    fn from(s: String) -> Self {
+        CoreTexError::Internal(s)
+    }
+}
+
+impl From<&str> for CoreTexError {
+    fn from(s: &str) -> Self {
+        CoreTexError::Internal(s.to_string())
     }
 }
 
