@@ -77,3 +77,11 @@ check_now.bat
 
 # Generated code (prost-build)
 src/coretex_generated.rs
+
+# Vendored cmake source (not part of project code)
+cmake/
+
+# Probe / temp test artifacts
+kill_probe.txt
+lock_probe.txt
+write_spatial.py
