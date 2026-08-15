@@ -2,9 +2,13 @@ name: Build
 
 on:
   push:
-    branches: [ master, release/*, feature/* ]
+    branches:
+      - master
+      - "release/*"
+      - "feature/*"
   pull_request:
-    branches: [ master ]
+    branches:
+      - master
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,8 +17,6 @@ jobs:
   build:
     name: Build (Ubuntu)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
 
     steps:
       - name: Checkout
@@ -43,11 +45,10 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install system dependencies (Ubuntu)
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
-          echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
           echo "protoc path: $(which protoc)"
 
       - name: Build release
