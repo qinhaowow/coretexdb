@@ -44,16 +44,18 @@ mod tls {
     
     impl Default for TlsConfig {
         fn default() -> Self {
+            // 安全修复：默认配置使用 TLS 1.3 并启用客户端证书校验 (mTLS)，
+            // 避免在生产部署中以不安全的默认配置启动。
             Self {
                 cert_path: "cert.pem".to_string(),
                 key_path: "key.pem".to_string(),
-                ca_path: None,
-                verify_client: false,
-                min_version: TlsVersion::TLSv1_2,
+                ca_path: Some("ca.pem".to_string()),
+                verify_client: true,
+                min_version: TlsVersion::TLSv1_3,
             }
         }
     }
-    
+
     impl TlsConfig {
         pub fn from_files(cert_path: &str, key_path: &str) -> Result<Self, String> {
             if !Path::new(cert_path).exists() {
@@ -62,16 +64,19 @@ mod tls {
             if !Path::new(key_path).exists() {
                 return Err(format!("Key file not found: {}", key_path));
             }
+            // 安全修复：from_files 是显式构造路径，强制启用 mTLS。
             Ok(Self {
                 cert_path: cert_path.to_string(),
                 key_path: key_path.to_string(),
-                ca_path: None,
-                verify_client: false,
+                ca_path: Some("ca.pem".to_string()),
+                verify_client: true,
                 min_version: TlsVersion::TLSv1_3,
             })
         }
-        
+
         pub fn for_development() -> Self {
+            // 仅供本地开发使用：关闭 mTLS，使用 TLS 1.2 兼容旧客户端。
+            // 警告：此配置不能用于生产环境。
             Self {
                 cert_path: "cert.pem".to_string(),
                 key_path: "key.pem".to_string(),
@@ -150,9 +155,10 @@ mod tls {
             let key_pem = self.load_private_key()?;
 
             let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut Cursor::new(&cert_pem))
-                .map(|r| r.map(|c| rustls::Certificate(c.to_vec())))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?;
+                .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?
+                .into_iter()
+                .map(|c| rustls::Certificate(c))
+                .collect();
 
             if certs.is_empty() {
                 return Err("No valid certificate found in PEM".to_string());
@@ -162,23 +168,14 @@ mod tls {
                 .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
                 .into_iter()
                 .next()
-                .map(|k| rustls::PrivateKey(k.secret_der().to_vec()))
+                .map(|k| rustls::PrivateKey(k))
                 .ok_or_else(|| "No valid private key found in PEM".to_string())?;
 
-            let mut server_config = rustls::ServerConfig::builder()
+            let server_config = rustls::ServerConfig::builder()
                 .with_safe_defaults()
                 .with_no_client_auth()
                 .with_single_cert(certs, key)
                 .map_err(|e| format!("Failed to build rustls ServerConfig: {}", e))?;
-
-            match self.config.min_version {
-                TlsVersion::TLSv1_2 => {
-                    server_config.versions = vec![rustls::ProtocolVersion::TLSv1_2];
-                }
-                TlsVersion::TLSv1_3 => {
-                    server_config.versions = vec![rustls::ProtocolVersion::TLSv1_3];
-                }
-            }
 
             Ok(Arc::new(server_config))
         }
@@ -212,7 +209,6 @@ mod tls {
     
             let mut cursor = Cursor::new(cert);
             let certs = rustls_pemfile::certs(&mut cursor)
-                .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Invalid certificate PEM: {}", e))?;
     
             if certs.is_empty() {
@@ -240,7 +236,6 @@ mod tls {
                 .map_err(|e| format!("Failed to read CA file: {}", e))?;
             let mut cursor = Cursor::new(&ca_pem);
             let ca_certs = rustls_pemfile::certs(&mut cursor)
-                .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Failed to parse CA PEM: {}", e))?;
     
             if ca_certs.is_empty() {
@@ -370,24 +365,29 @@ mod encryption {
             if bits != 128 && bits != 256 {
                 return Err("Key size must be 128 or 256 bits".to_string());
             }
-            
-            let key: Vec<u8> = (0..bits / 8).map(|_| rand::random::<u8>()).collect();
-            
+
+            // 安全修复：使用密码学安全随机数 OsRng 生成对称加密密钥，
+            // 替代原先的 rand::random::<u8>()（其随机性依赖实现细节，审计风险高）。
+            use rand::rngs::OsRng;
+            use rand::RngCore;
+            let mut key = vec![0u8; bits / 8];
+            OsRng.fill_bytes(&mut key);
+
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            
+
             let key_obj = EncryptionKey {
                 id: key_id.to_string(),
                 key,
                 created_at: now,
                 expires_at: None,
             };
-            
+
             let mut keys = self.keys.write().await;
             keys.insert(key_id.to_string(), key_obj.clone());
-            
+
             let mut primary = self.primary_key_id.write().await;
             if primary.is_none() {
                 *primary = Some(key_id.to_string());

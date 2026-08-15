@@ -247,9 +247,8 @@ impl CdcSource for PostgresCdcSource {
         startup.push(0);
 
         // 回填长度
-        let len = startup.len() as u32 + 4; // +4 includes the length field itself (though it's already counted? No, the 4-byte length includes itself)
-        // Actually the protocol: int32 length includes itself. So len = startup.len()
-        startup[0..4].copy_from_slice(&(startup.len() as u32).to_be_bytes());
+        let startup_len = startup.len() as u32;
+        startup[0..4].copy_from_slice(&startup_len.to_be_bytes());
 
         write_all(&mut stream, &startup).await?;
 
@@ -437,7 +436,7 @@ impl PostgresCdcSource {
             .ok_or_else(|| CdcError::ConnectionError("Invalid PG URL scheme".to_string()))?;
 
         let (creds_host, _) = after.split_once('?').unwrap_or((after, ""));
-        let (_, host_port) = match creds_host.split_once('@') {
+        let host_port = match creds_host.split_once('@') {
             Some((_, hp)) => hp.split_once('/').map(|(h, _)| h).unwrap_or(hp),
             None => creds_host.split_once('/').map(|(h, _)| h).unwrap_or(creds_host),
         };
@@ -613,6 +612,10 @@ impl PostgresCdcSource {
 }
 
 /// PostgreSQL MD5 认证哈希
+///
+/// 安全说明：MD5 在此仅用于兼容 PostgreSQL 协议规定的认证流程（`auth method 5`），
+/// 绝不能用于本地用户密码存储。生产环境应使用 SCRAM-SHA-256（`auth method 10`）
+/// 替代此协议，并且本地密码存储应使用 Argon2/scrypt/bcrypt。
 fn pg_md5_auth(user: &str, password: &str, salt: &[u8]) -> String {
     use md5::{Digest, Md5};
 
@@ -1103,6 +1106,11 @@ struct TableMapEntry {
 }
 
 /// MySQL native_password hash: SHA1(password) XOR SHA1(salt + SHA1(SHA1(password)))
+///
+/// 安全说明：SHA1 在此仅用于兼容 MySQL `mysql_native_password` 协议
+/// （参见 [MySQL :: 6.4.1.1 Native Pluggable Authentication]）。
+/// 该算法已被 MySQL 8.0 标记为不推荐，MySQL 8.4 起默认禁用。
+/// 绝不能将 SHA1 用于本地用户密码存储；本地密码应使用 Argon2/scrypt/bcrypt。
 fn mysql_native_password(password: &str, salt: &[u8]) -> Vec<u8> {
     let mut sha1_pass = Sha1::new();
     sha1_pass.update(password.as_bytes());

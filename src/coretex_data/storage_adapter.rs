@@ -76,8 +76,8 @@ pub struct AdapterStats {
 /// WriteBack 后台任务的待刷数据条目
 struct WriteBackEntry {
     key: String,
-    vector: Vec<u8>,
-    metadata: Vec<u8>,
+    vector: Vec<f32>,
+    metadata: serde_json::Value,
     enqueued_at: Instant,
 }
 
@@ -175,11 +175,10 @@ impl UnifiedStorageAdapter {
     pub async fn upsert(
         &self,
         key: &str,
-        vector: &[u8],
-        metadata: &[u8],
+        vector: &[f32],
+        metadata: &serde_json::Value,
     ) -> Result<(), AdapterError> {
         let start = Instant::now();
-        let mut stats = self.stats.write().await;
 
         match self.consistency {
             ConsistencyLevel::WriteThrough => {
@@ -191,13 +190,17 @@ impl UnifiedStorageAdapter {
                         .await
                         .map_err(|e| AdapterError::SyncStorageError(e.to_string()))?;
                 }
-                stats.write_through_writes += 1;
-                stats.sync_writes += 1;
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.write_through_writes += 1;
+                    stats.sync_writes += 1;
+                }
 
                 // 异步持久化
                 if let Some(pm) = &self.async_persistence {
                     pm.put(key, vector, metadata).await
                         .map_err(|e| AdapterError::AsyncPersistenceError(e.to_string()))?;
+                    let mut stats = self.stats.write().await;
                     stats.async_writes += 1;
                 }
             }
@@ -210,15 +213,17 @@ impl UnifiedStorageAdapter {
                         .await
                         .map_err(|e| AdapterError::SyncStorageError(e.to_string()))?;
                 }
-                stats.sync_writes += 1;
-                stats.write_back_writes += 1;
-                drop(stats);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.sync_writes += 1;
+                    stats.write_back_writes += 1;
+                }
 
                 let mut queue = self.writeback_queue.write().await;
                 queue.push(WriteBackEntry {
                     key: key.to_string(),
                     vector: vector.to_vec(),
-                    metadata: metadata.to_vec(),
+                    metadata: metadata.clone(),
                     enqueued_at: Instant::now(),
                 });
 
@@ -235,18 +240,20 @@ impl UnifiedStorageAdapter {
                         "WriteAround requires async_persistence".to_string()
                     ));
                 }
+                let mut stats = self.stats.write().await;
                 stats.async_writes += 1;
                 stats.write_around_writes += 1;
             }
         }
 
         let elapsed = start.elapsed().as_micros() as u64;
+        let mut stats = self.stats.write().await;
         stats.avg_write_latency_us = update_avg(stats.avg_write_latency_us, elapsed, stats.sync_writes + stats.async_writes);
         Ok(())
     }
 
     /// 统一读取：先查同步存储，再回退到异步持久化
-    pub async fn get(&self, key: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>, AdapterError> {
+    pub async fn get(&self, key: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>, AdapterError> {
         let start = Instant::now();
         // 优先从同步存储读取
         let from_sync = {
@@ -351,7 +358,7 @@ use crate::coretex_core::Result;
             ConsistencyLevel::WriteThrough,
         );
 
-        adapter.upsert("key1", b"vec1", b"meta1").await.unwrap();
+        adapter.upsert("key1", &[1.0, 2.0, 3.0], &serde_json::json!("meta1")).await.unwrap();
         let result = adapter.get("key1").await.unwrap();
         assert!(result.is_some());
     }
@@ -365,7 +372,7 @@ use crate::coretex_core::Result;
             ConsistencyLevel::WriteAround,
         );
 
-        let result = adapter.upsert("key1", b"vec1", b"meta1").await;
+        let result = adapter.upsert("key1", &[1.0, 2.0, 3.0], &serde_json::json!("meta1")).await;
         assert!(result.is_err());
     }
 
@@ -378,7 +385,7 @@ use crate::coretex_core::Result;
             ConsistencyLevel::WriteThrough,
         );
 
-        adapter.upsert("k1", b"v1", b"m1").await.unwrap();
+        adapter.upsert("k1", &[4.0, 5.0], &serde_json::json!("m1")).await.unwrap();
         assert!(adapter.delete("k1").await.unwrap());
         assert!(adapter.get("k1").await.unwrap().is_none());
     }

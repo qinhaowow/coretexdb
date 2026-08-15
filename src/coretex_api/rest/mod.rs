@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post, delete, put},
     Json, Router, extract::State,
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::net::SocketAddr;
@@ -23,18 +23,24 @@ use crate::coretex_core::Result;
 pub struct ApiConfig {
     pub address: String,
     pub port: u16,
+    /// 是否启用 CORS。生产环境应设为 false，仅当需要被浏览器跨域调用时启用。
     pub enable_cors: bool,
+    /// CORS 允许的来源白名单。当 enable_cors=true 时生效，必须显式配置，
+    /// 禁止使用通配符（避免任何来源跨域调用 API）。
+    pub cors_allowed_origins: Vec<String>,
     pub enable_auth: bool,
     pub rate_limit_per_minute: usize,
 }
 
 impl Default for ApiConfig {
     fn default() -> Self {
+        // 安全修复：默认关闭 CORS；默认开启认证（生产导向）。
         Self {
             address: "0.0.0.0".to_string(),
             port: 5000,
-            enable_cors: true,
-            enable_auth: false,
+            enable_cors: false,
+            cors_allowed_origins: Vec::new(),
+            enable_auth: true,
             rate_limit_per_minute: 0,
         }
     }
@@ -254,14 +260,25 @@ pub async fn start_server(config: ApiConfig) -> Result<()> {
     }
 
     let app = if config.enable_cors {
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
-        app.layer(
-            tower::ServiceBuilder::new()
-                .layer(cors)
-        )
+        // 安全修复：仅允许显式配置的 origin 白名单，禁止使用 Any 通配符。
+        if config.cors_allowed_origins.is_empty() {
+            // 没有任何白名单时不启用 CORS 层，避免无意中放行所有来源。
+            app
+        } else {
+            let origins: Vec<_> = config
+                .cors_allowed_origins
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let cors = CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods(Any)
+                .allow_headers(Any);
+            app.layer(
+                tower::ServiceBuilder::new()
+                    .layer(cors)
+            )
+        }
     } else {
         app
     };
@@ -299,6 +316,36 @@ pub async fn start_server(config: ApiConfig) -> Result<()> {
 
 // =============== 认证中间件 ===============
 
+/// 从请求中提取客户端 IP，优先使用 X-Forwarded-For（首个有效 IP），
+/// 再回退 X-Real-IP，最后回退到 Authorization 标识。
+/// 安全修复：使用 IP 而非 Authorization header 作为限流键，
+/// 防止攻击者通过更换 token 绕过单 IP 速率限制。
+fn extract_client_identifier(req: &Request) -> String {
+    if let Some(xff) = req.headers().get("x-forwarded-for") {
+        if let Ok(s) = xff.to_str() {
+            if let Some(first) = s.split(',').next() {
+                let ip = first.trim();
+                if !ip.is_empty() {
+                    return format!("ip:{}", ip);
+                }
+            }
+        }
+    }
+    if let Some(xri) = req.headers().get("x-real-ip") {
+        if let Ok(s) = xri.to_str() {
+            if !s.is_empty() {
+                return format!("ip:{}", s);
+            }
+        }
+    }
+    // 最后回退到 Authorization 标识，但仅作临时兜底。
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| format!("auth:{}", s))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 async fn auth_middleware(
     req: Request,
     next: Next,
@@ -308,18 +355,16 @@ async fn auth_middleware(
     let path = req.uri().path().to_string();
 
     // 白名单：登录、注册、健康检查、Raft 内部 RPC 不需要认证
+    // 注意：/api/auth/register 在 register handler 内部会强制要求 admin token
+    // （或首次启动时无用户时放开），这里仍放行至 handler。
     if path == "/health" || path == "/api/auth/login" || path == "/api/auth/register"
         || path.starts_with("/raft/") {
         return Ok(next.run(req).await);
     }
 
-    // 速率限制
+    // 速率限制（基于客户端 IP）
     if let Some(rl) = rate_limiter {
-        let identifier = req.headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("anonymous")
-            .to_string();
+        let identifier = extract_client_identifier(&req);
         if let Err(e) = rl.check_rate_limit(&identifier).await {
             return Ok((StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({
                 "status": "error",
@@ -354,11 +399,8 @@ async fn rate_limit_middleware(
     rate_limiter: Option<Arc<RateLimiter>>,
 ) -> std::result::Result<Response, StatusCode> {
     if let Some(rl) = rate_limiter {
-        let identifier = req.headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("anonymous")
-            .to_string();
+        // 安全修复：使用客户端 IP 而非 Authorization header 作为限流键。
+        let identifier = extract_client_identifier(&req);
         if let Err(e) = rl.check_rate_limit(&identifier).await {
             return Ok((StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({
                 "status": "error",
@@ -385,8 +427,49 @@ async fn login(
 
 async fn register(
     State(state): State<Arc<ApiState>>,
-    Json(req): Json<LoginRequest>,
+    req: Request,
 ) -> Json<ApiResponse<String>> {
+    // 安全修复：注册端点要求 admin token 鉴权，或在系统无任何用户时
+    // （首次启动）允许无鉴权注册第一个用户。
+    let user_count = state.auth.list_users().await.len();
+    if user_count > 0 {
+        // 已存在用户：要求 Authorization 头包含有效 admin token。
+        let auth_header = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let token = auth_header.trim_start_matches("Bearer ").trim();
+        if token.is_empty() {
+            return Json(ApiResponse::error(
+                "Admin token required to register new users",
+            ));
+        }
+        let claims = match state.auth.verify_token(token).await {
+            Ok(c) => c,
+            Err(e) => return Json(ApiResponse::error(&format!("Invalid token: {}", e))),
+        };
+        // 必须拥有 Admin 权限。
+        let is_admin = state.auth.has_permission(&claims.sub, Permission::Admin).await;
+        if !is_admin {
+            return Json(ApiResponse::error(
+                "Admin role required to register new users",
+            ));
+        }
+    }
+
+    // 解析 body。
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(b) => b,
+        Err(e) => return Json(ApiResponse::error(&format!("Invalid body: {}", e))),
+    };
+    let parsed = serde_json::from_slice::<LoginRequest>(&bytes);
+    let req = match parsed {
+        Ok(r) => r,
+        Err(e) => return Json(ApiResponse::error(&format!("Invalid JSON: {}", e))),
+    };
+    let _ = parts; // 抑制未使用警告
     match state.auth.create_user(&req.username, &req.password, None).await {
         Ok(user_id) => Json(ApiResponse::success(user_id)),
         Err(e) => Json(ApiResponse::error(&e)),

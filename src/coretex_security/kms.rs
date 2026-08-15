@@ -85,9 +85,12 @@ impl VaultKMS {
                 self.fetch_from_aws(key_id).await
             }
             KMSProvider::Local => {
+                // 安全修复：使用密码学安全随机数 OsRng 生成 32 字节（256 bit）密钥，
+                // 禁止使用全零或可预测的占位 key。
+                let key = generate_secure_random_bytes(32)?;
                 Ok(ExternalKey {
                     id: key_id.to_string(),
-                    key: vec![0u8; 32],
+                    key,
                     version: 1,
                     created_at: current_timestamp(),
                     expires_at: None,
@@ -99,9 +102,13 @@ impl VaultKMS {
     }
 
     async fn fetch_from_vault(&self, key_id: &str) -> Result<ExternalKey, String> {
+        // 安全修复：使用密码学安全随机数 OsRng 生成 32 字节密钥。
+        // 真实生产部署应当从 Vault Transit / KV v2 引擎读取加密密钥，
+        // 此处仅作为外部 Vault API 不可用时的内存级 fallback。
+        let key = generate_secure_random_bytes(32)?;
         Ok(ExternalKey {
             id: key_id.to_string(),
-            key: vec![0u8; 32],
+            key,
             version: 1,
             created_at: current_timestamp(),
             expires_at: None,
@@ -110,9 +117,12 @@ impl VaultKMS {
     }
 
     async fn fetch_from_aws(&self, key_id: &str) -> Result<ExternalKey, String> {
+        // 安全修复：使用密码学安全随机数 OsRng 生成 32 字节密钥。
+        // 真实生产部署应通过 AWS SDK 调用 KMS GenerateDataKey/Decrypt。
+        let key = generate_secure_random_bytes(32)?;
         Ok(ExternalKey {
             id: key_id.to_string(),
-            key: vec![0u8; 32],
+            key,
             version: 1,
             created_at: current_timestamp(),
             expires_at: None,
@@ -122,42 +132,100 @@ impl VaultKMS {
 
     pub async fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let key = self.get_key("default").await?;
-        
-        let encrypted = simple_encrypt(plaintext, &key.key);
-        
+
+        // 安全修复：使用 AES-256-GCM 认证加密，替代原 XOR"假加密"。
+        // 每次加密生成 12 字节随机 nonce，输出格式：nonce || ciphertext || tag
+        let encrypted = aes_gcm_encrypt(plaintext, &key.key)?;
+
         Ok(encrypted)
     }
 
     pub async fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
         let key = self.get_key("default").await?;
-        
-        let decrypted = simple_decrypt(ciphertext, &key.key);
-        
+
+        let decrypted = aes_gcm_decrypt(ciphertext, &key.key)?;
+
         Ok(decrypted)
     }
 
     pub async fn rotate_key(&self, key_id: &str) -> Result<ExternalKey, String> {
         let mut cached = self.cached_key.write().await;
-        
+
+        // 安全修复：使用密码学安全随机数 OsRng 生成新密钥。
+        let new_key = generate_secure_random_bytes(32)?;
+
         *cached = Some(ExternalKey {
             id: key_id.to_string(),
-            key: vec![rand::random::<u8>(); 32],
+            key: new_key,
             version: cached.as_ref().map(|k| k.version + 1).unwrap_or(1),
             created_at: current_timestamp(),
             expires_at: None,
             enabled: true,
         });
-        
+
         cached.clone().ok_or("Failed to rotate key".to_string())
     }
 }
 
-fn simple_encrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
-    data.iter().enumerate().map(|(i, b)| b ^ key[i % key.len()]).collect()
+/// 使用密码学安全随机数 OsRng 生成指定长度的字节序列。
+fn generate_secure_random_bytes(len: usize) -> Result<Vec<u8>, String> {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    let mut buf = vec![0u8; len];
+    OsRng.fill_bytes(&mut buf);
+    Ok(buf)
 }
 
-fn simple_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
-    simple_encrypt(data, key)
+/// AES-256-GCM 加密。
+/// 输出格式：nonce(12B) || ciphertext || tag(16B)
+fn aes_gcm_encrypt(plaintext: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    if key.len() != 32 {
+        return Err(format!("AES-256-GCM requires 32-byte key, got {}", key.len()));
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| format!("Failed to init AES-256-GCM: {}", e))?;
+
+    let nonce_bytes = generate_secure_random_bytes(12)?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| format!("AES-GCM encryption failed: {}", e))?;
+
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// AES-256-GCM 解密。
+/// 输入格式：nonce(12B) || ciphertext || tag(16B)
+fn aes_gcm_decrypt(ciphertext: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    if key.len() != 32 {
+        return Err(format!("AES-256-GCM requires 32-byte key, got {}", key.len()));
+    }
+    if ciphertext.len() < 12 + 16 {
+        return Err("Ciphertext too short to contain nonce and tag".to_string());
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| format!("Failed to init AES-256-GCM: {}", e))?;
+
+    let (nonce_bytes, payload) = ciphertext.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = cipher
+        .decrypt(nonce, payload)
+        .map_err(|e| format!("AES-GCM decryption failed: {}", e))?;
+
+    Ok(plaintext)
 }
 
 pub struct KeyRotationManager {

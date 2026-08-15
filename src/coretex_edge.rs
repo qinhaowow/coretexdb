@@ -236,11 +236,97 @@ impl EdgeDB {
     }
 
     pub async fn flush(&self) -> Result<(), EdgeError> {
+        if self.in_memory {
+            return Ok(());
+        }
+
+        let data_dir = std::path::Path::new(&self.data_dir);
+        if !data_dir.exists() {
+            std::fs::create_dir_all(data_dir)
+                .map_err(|e| EdgeError::IoError(format!("Failed to create data dir: {}", e)))?;
+        }
+
+        let collections = self.collections.read().await;
+
+        for (name, coll) in collections.iter() {
+            let coll_dir = data_dir.join(name);
+            let vectors_dir = coll_dir.join("vectors");
+            let metadata_dir = coll_dir.join("metadata");
+
+            std::fs::create_dir_all(&vectors_dir)
+                .map_err(|e| EdgeError::IoError(format!("Failed to create vectors dir: {}", e)))?;
+            std::fs::create_dir_all(&metadata_dir)
+                .map_err(|e| EdgeError::IoError(format!("Failed to create metadata dir: {}", e)))?;
+
+            // Persist each vector as a binary file (f32 little-endian)
+            for (id, vector) in coll.vectors.iter() {
+                let vector_path = vectors_dir.join(format!("{}.vec", id));
+                let bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+                std::fs::write(&vector_path, &bytes)
+                    .map_err(|e| EdgeError::IoError(format!("Failed to write vector {}: {}", id, e)))?;
+            }
+
+            // Persist each metadata entry as JSON
+            for (id, meta) in coll.metadata.iter() {
+                let meta_path = metadata_dir.join(format!("{}.json", id));
+                let json = serde_json::to_vec(meta)
+                    .map_err(|e| EdgeError::IoError(format!("Failed to serialize metadata: {}", e)))?;
+                std::fs::write(&meta_path, json)
+                    .map_err(|e| EdgeError::IoError(format!("Failed to write metadata {}: {}", id, e)))?;
+            }
+
+            // Write collection manifest (name + dimension)
+            let manifest = serde_json::json!({
+                "name": coll.name,
+                "dimension": coll.dimension,
+                "vector_count": coll.vectors.len(),
+            });
+            let manifest_path = coll_dir.join("manifest.json");
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+                .map_err(|e| EdgeError::IoError(format!("Failed to serialize manifest: {}", e)))?;
+            std::fs::write(&manifest_path, manifest_bytes)
+                .map_err(|e| EdgeError::IoError(format!("Failed to write manifest: {}", e)))?;
+        }
+
+        // fsync the data directory to ensure durability
+        Self::sync_dir(data_dir)?;
+
         Ok(())
     }
 
     pub async fn close(&self) -> Result<(), EdgeError> {
         self.flush().await
+    }
+
+    /// Fsync a directory to guarantee durability of writes.
+    fn sync_dir(dir: &std::path::Path) -> Result<(), EdgeError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .open(dir)
+                .map_err(|e| EdgeError::IoError(format!("Failed to open dir for sync: {}", e)))?;
+            file.sync_all()
+                .map_err(|e| EdgeError::IoError(format!("fsync directory failed: {}", e)))?;
+        }
+        #[cfg(not(unix))]
+        {
+            // On Windows, sync each file in the directory
+            for entry in std::fs::read_dir(dir)
+                .map_err(|e| EdgeError::IoError(format!("Failed to read dir for sync: {}", e)))?
+            {
+                let entry = entry.map_err(|e| EdgeError::IoError(e.to_string()))?;
+                let path = entry.path();
+                if path.is_file() {
+                    let f = std::fs::File::open(&path)
+                        .map_err(|e| EdgeError::IoError(format!("Failed to open file for sync: {}", e)))?;
+                    f.sync_all()
+                        .map_err(|e| EdgeError::IoError(format!("fsync file failed: {}", e)))?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

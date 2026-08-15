@@ -10,7 +10,7 @@ use async_graphql::{
     Context, EmptySubscription, Object, Schema, ID, Subscription,
     SimpleObject, InputObject, Enum, FieldResult,
 };
-use async_graphql_axum::GraphQL;
+use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::{
     extract::State,
     response::{Html, IntoResponse, Response},
@@ -575,16 +575,16 @@ pub async fn start_graphql_server(
 
 async fn graphql_handler(
     State(schema): State<AppSchema>,
-    req: async_graphql_axum::GraphQL<async_graphql::Request>,
-) -> Response {
-    schema.execute(req.0).await.into()
+    req: GraphQLRequest,
+) -> GraphQLResponse {
+    schema.execute(req.into_inner()).await.into()
 }
 
 async fn graphql_ws_handler(
     State(schema): State<AppSchema>,
-    req: async_graphql_axum::GraphQL<async_graphql::Request>,
-) -> impl IntoResponse {
-    schema.execute_stream(req.0)
+    req: GraphQLRequest,
+) -> Response {
+    schema.execute_stream(req.into_inner()).into()
 }
 
 async fn graphql_playground() -> impl IntoResponse {

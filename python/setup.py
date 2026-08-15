@@ -1,7 +1,7 @@
 #!/usr/bin/env python
+"""CoreTexDB Python package setup (backward-compat shim)."""
+
 from setuptools import setup
 
-# 这个文件主要用于向后兼容
-# 主要配置在 pyproject.toml 中
 if __name__ == "__main__":
     setup()

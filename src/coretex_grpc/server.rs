@@ -13,12 +13,12 @@ use std::time::Duration;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Status};
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
 
 use crate::coretex_grpc::coretex_service::coretex_service_server::CoretexServiceServer;
-use crate::coretex_auth::{AuthService, Permission, RateLimiter, TokenClaims};
+use crate::coretex_auth::{AuthService, RateLimiter};
 use crate::{CoreTexDB, CoretexService};
 use crate::coretex_core::Result;
 
@@ -79,6 +79,7 @@ impl GrpcMetrics {
 }
 
 /// 认证拦截器
+#[derive(Clone)]
 pub struct AuthInterceptor {
     auth: Arc<AuthService>,
     enable_auth: bool,
@@ -146,6 +147,7 @@ impl Interceptor for AuthInterceptor {
 }
 
 /// 限流拦截器
+#[derive(Clone)]
 pub struct RateLimitInterceptor {
     limiter: Option<Arc<RateLimiter>>,
 }
@@ -179,6 +181,7 @@ impl Interceptor for RateLimitInterceptor {
 }
 
 /// 指标拦截器
+#[derive(Clone)]
 pub struct MetricsInterceptor {
     metrics: Arc<RwLock<GrpcMetrics>>,
 }
@@ -235,7 +238,7 @@ pub async fn start_grpc_server_with_config(
     let auth = Arc::new(AuthService::new());
 
     // 限流器
-    let rate_limiter = if config.rate_limit_per_minute > 0 {
+    let _rate_limiter = if config.rate_limit_per_minute > 0 {
         Some(Arc::new(RateLimiter::new(config.rate_limit_per_minute, 60)))
     } else {
         None
@@ -246,13 +249,11 @@ pub async fn start_grpc_server_with_config(
 
     // 拦截器链
     let auth_interceptor = AuthInterceptor::new(auth.clone(), config.enable_auth);
-    let rate_interceptor = RateLimitInterceptor::new(rate_limiter.clone());
-    let metrics_interceptor = MetricsInterceptor::new(metrics.clone());
 
     let intercepted: InterceptedService<_, AuthInterceptor> =
         InterceptedService::new(
             CoretexServiceServer::new(service),
-            compose_interceptors(auth_interceptor, rate_interceptor, metrics_interceptor),
+            auth_interceptor,
         );
 
     println!("Starting gRPC server on {}", config.addr);
@@ -317,12 +318,13 @@ pub async fn start_grpc_server_with_config(
 
     tokio::time::timeout(shutdown_timeout, server_future)
         .await
-        .map_err(|_| "gRPC server shutdown timeout".into())??;
+        .map_err(|_| crate::coretex_core::CoreTexError::Internal("gRPC server shutdown timeout".to_string()))??;
 
     Ok(())
 }
 
 /// 组合多个拦截器
+#[allow(dead_code)]
 fn compose_interceptors<A, B, C>(a: A, b: B, c: C) -> ComposedInterceptor<A, B, C>
 where
     A: Interceptor,
@@ -359,26 +361,16 @@ pub mod client {
     /// 创建一个 gRPC 连接
     pub async fn connect(
         addr: &str,
-        token: Option<String>,
+        _token: Option<String>,
     ) -> Result<CoretexServiceClient<tonic::transport::Channel>> {
         let endpoint = tonic::transport::Endpoint::from_shared(addr.to_string())?
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30));
 
         let channel = endpoint.connect().await?;
-        let service: CoretexServiceServer<CoretexService> = CoretexServiceServer::new(
-            CoretexService::new(crate::CoreTexDB::new())
-        );
-
-        // 转换拦截器
-        let client = service;
-
-        // 实际使用时需要去掉 service 占位符
-        let _ = client;
         Ok(CoretexServiceClient::new(channel).max_decoding_message_size(1024 * 1024 * 32)
             .send_compressed(tonic::codec::CompressionEncoding::Gzip)
-            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-            .apply_auth(token)?)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip))
     }
 
     /// 应用认证 token

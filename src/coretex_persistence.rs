@@ -81,6 +81,7 @@ impl Default for RocksDBConfig {
 pub struct PersistenceManager {
     config: PersistenceConfig,
     collections: Arc<RwLock<HashMap<String, CollectionStorage>>>,
+    data: Arc<RwLock<HashMap<String, HashMap<String, (Vec<f32>, serde_json::Value)>>>>,
     stats: Arc<RwLock<PersistenceStats>>,
 }
 
@@ -124,6 +125,7 @@ impl PersistenceManager {
         Self {
             config,
             collections: Arc::new(RwLock::new(HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(PersistenceStats::default())),
         }
     }
@@ -451,17 +453,38 @@ impl PersistenceManager {
     }
 
     fn sync_directory(dir: &PathBuf) -> Result<(), PersistenceError> {
+        // Open the directory handle and fsync it to ensure all pending
+        // metadata and data writes are flushed to persistent storage.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::FileTypeExt;
-            let _ = dir;
-            Ok(())
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .open(dir)
+                .map_err(|e| PersistenceError::IoError(format!("Failed to open dir for sync: {}", e)))?;
+            file.sync_all()
+                .map_err(|e| PersistenceError::IoError(format!("fsync directory failed: {}", e)))?;
         }
         #[cfg(not(unix))]
         {
-            let _ = dir;
-            Ok(())
+            // On Windows, opening the directory and calling sync_all ensures
+            // the file system metadata is flushed.  Directory handles are not
+            // fsync-able on all Windows file systems, so we also sync each
+            // file in the directory as a best-effort guarantee.
+            for entry in std::fs::read_dir(dir)
+                .map_err(|e| PersistenceError::IoError(format!("Failed to read dir for sync: {}", e)))?
+            {
+                let entry = entry.map_err(|e| PersistenceError::IoError(e.to_string()))?;
+                let path = entry.path();
+                if path.is_file() {
+                    let file = std::fs::File::open(&path)
+                        .map_err(|e| PersistenceError::IoError(format!("Failed to open file for sync: {}", e)))?;
+                    file.sync_all()
+                        .map_err(|e| PersistenceError::IoError(format!("fsync file {:?} failed: {}", path, e)))?;
+                }
+            }
         }
+        Ok(())
     }
 
     fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), PersistenceError> {
@@ -483,6 +506,79 @@ impl PersistenceManager {
             }
         }
         
+        Ok(())
+    }
+
+    pub async fn put(&self, key: &str, vector: &[f32], metadata: &serde_json::Value) -> Result<(), PersistenceError> {
+        let (collection, actual_key) = match key.find('/') {
+            Some(pos) => (key[..pos].to_string(), key[pos + 1..].to_string()),
+            None => ("default".to_string(), key.to_string()),
+        };
+
+        let bytes = vector.len() * 4 + metadata.to_string().len();
+        let mut data = self.data.write().await;
+        let collection_map = data.entry(collection).or_insert_with(HashMap::new);
+        collection_map.insert(actual_key, (vector.to_vec(), metadata.clone()));
+
+        let mut stats = self.stats.write().await;
+        stats.total_writes += 1;
+        stats.total_bytes_written += bytes as u64;
+        Ok(())
+    }
+
+    pub async fn get(&self, key: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>, PersistenceError> {
+        let (collection, actual_key) = match key.find('/') {
+            Some(pos) => (key[..pos].to_string(), key[pos + 1..].to_string()),
+            None => ("default".to_string(), key.to_string()),
+        };
+
+        let data = self.data.read().await;
+        let result = data.get(&collection)
+            .and_then(|m| m.get(&actual_key))
+            .map(|(v, m)| (v.clone(), m.clone()));
+
+        let mut stats = self.stats.write().await;
+        stats.total_reads += 1;
+        if let Some((ref v, ref m)) = result {
+            stats.total_bytes_read += v.len() as u64 + m.to_string().len() as u64;
+        }
+        Ok(result)
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<bool, PersistenceError> {
+        let (collection, actual_key) = match key.find('/') {
+            Some(pos) => (key[..pos].to_string(), key[pos + 1..].to_string()),
+            None => ("default".to_string(), key.to_string()),
+        };
+
+        let mut data = self.data.write().await;
+        let existed = data.get_mut(&collection)
+            .map(|m| m.remove(&actual_key).is_some())
+            .unwrap_or(false);
+
+        if existed {
+            let mut stats = self.stats.write().await;
+            stats.total_writes += 1;
+        }
+        Ok(existed)
+    }
+
+    pub async fn list_keys(&self) -> Result<Vec<String>, PersistenceError> {
+        let data = self.data.read().await;
+        let mut keys = Vec::new();
+        for (collection, collection_map) in data.iter() {
+            for actual_key in collection_map.keys() {
+                if collection == "default" {
+                    keys.push(actual_key.clone());
+                } else {
+                    keys.push(format!("{}/{}", collection, actual_key));
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    pub async fn flush(&self) -> Result<(), PersistenceError> {
         Ok(())
     }
 }

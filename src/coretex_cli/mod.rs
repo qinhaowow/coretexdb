@@ -572,6 +572,7 @@ async fn run_cli_async() -> Result<()> {
                 address: address.clone(),
                 port: port.parse().unwrap(),
                 enable_cors: true,
+                cors_allowed_origins: Vec::new(),
                 enable_auth,
                 rate_limit_per_minute: rate_limit,
             };

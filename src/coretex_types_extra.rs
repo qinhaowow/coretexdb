@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use ordered_float::OrderedFloat;
 
 // =================== 3D GIS 拓扑关系 ===================
 
@@ -60,7 +61,7 @@ pub enum SpatialRelation {
 }
 
 /// 3D 点
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GeoPoint3D {
     pub x: f64,
     pub y: f64,
@@ -170,6 +171,7 @@ pub enum WindowType {
 }
 
 /// 时序窗口函数
+#[derive(Debug)]
 pub enum WindowFunction {
     Sum,
     Avg,
@@ -214,8 +216,8 @@ impl WindowFunction {
 /// 滑动窗口结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowResult {
-    pub window_start: u64,
-    pub window_end: u64,
+    pub window_start: i64,
+    pub window_end: i64,
     pub values: Vec<f64>,
     pub result: f64,
     pub function: String,
@@ -271,7 +273,7 @@ impl TimeSeriesWindow {
                 let mut i = 0;
                 while i < sorted.len() {
                     let window_start = sorted[i].timestamp;
-                    let window_end = window_start + duration_secs;
+                    let window_end = window_start + duration_secs as i64;
                     let window_pts: Vec<_> = sorted[i..]
                         .iter()
                         .take_while(|p| p.timestamp <= window_end)
@@ -293,7 +295,7 @@ impl TimeSeriesWindow {
                 if let Some(first) = sorted.first() {
                     let mut bucket_start = first.timestamp;
                     while bucket_start <= sorted.last().unwrap().timestamp {
-                        let bucket_end = bucket_start + duration_secs;
+                        let bucket_end = bucket_start + duration_secs as i64;
                         let bucket_pts: Vec<_> = sorted.iter()
                             .filter(|p| p.timestamp >= bucket_start && p.timestamp < bucket_end)
                             .collect();
@@ -317,7 +319,7 @@ impl TimeSeriesWindow {
                 let mut session_pts = vec![&sorted[0]];
                 for w in sorted.windows(2) {
                     let gap = w[1].timestamp - w[0].timestamp;
-                    if gap > idle_secs {
+                    if gap > idle_secs as i64 {
                         // 关闭当前 session
                         let values: Vec<f64> = session_pts.iter().map(|p| p.value).collect();
                         let result = func.apply(&values);
@@ -444,22 +446,22 @@ impl Graph {
         if start == end { return Some((vec![start.to_string()], 0.0)); }
         let mut dist: HashMap<String, f64> = HashMap::new();
         let mut parent: HashMap<String, String> = HashMap::new();
-        let mut heap = BinaryHeap::new();
+        let mut heap: BinaryHeap<Reverse<(OrderedFloat<f64>, String)>> = BinaryHeap::new();
 
         dist.insert(start.to_string(), 0.0);
-        heap.push(Reverse((0.0_f64, start.to_string())));
+        heap.push(Reverse((OrderedFloat(0.0), start.to_string())));
 
         while let Some(Reverse((d, node))) = heap.pop() {
             if node == end { break; }
-            if d > *dist.get(&node).unwrap_or(&f64::INFINITY) { continue; }
+            if d.0 > *dist.get(&node).unwrap_or(&f64::INFINITY) { continue; }
 
             if let Some(neighbors) = self.adj.get(&node) {
                 for (next, weight) in neighbors {
-                    let new_dist = d + weight;
+                    let new_dist = d.0 + weight;
                     if new_dist < *dist.get(next).unwrap_or(&f64::INFINITY) {
                         dist.insert(next.clone(), new_dist);
                         parent.insert(next.clone(), node.clone());
-                        heap.push(Reverse((new_dist, next.clone())));
+                        heap.push(Reverse((OrderedFloat(new_dist), next.clone())));
                     }
                 }
             }

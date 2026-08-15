@@ -432,9 +432,10 @@ impl EmbeddingRouter {
                 // 简单能力匹配：检查查询语言
                 let is_chinese = query.chars().any(|c| (c as u32) >= 0x4E00 && (c as u32) <= 0x9FFF);
                 let target_lang = if is_chinese { "zh" } else { "en" };
-                candidates.into_iter()
+                candidates.iter()
                     .find(|m| m.languages.contains(&target_lang.to_string()))
-                    .or_else(|| candidates.into_iter().next())
+                    .copied()
+                    .or_else(|| candidates.iter().next().copied())
             }
             RoutingStrategy::Weighted => {
                 // 加权评分：score = w_capability * cap_score + w_cost * (1-cost/max) + w_latency * (1-latency/max)

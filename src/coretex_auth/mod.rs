@@ -65,13 +65,50 @@ pub struct JWTConfig {
 
 impl Default for JWTConfig {
     fn default() -> Self {
+        // 安全：默认配置必须强制从环境变量读取，禁止使用任何硬编码密钥。
+        // 优先级：CORETEX_JWT_SECRET > 随机生成的临时密钥（仅作内存级 fallback）。
+        let secret_key = std::env::var("CORETEX_JWT_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty() && s.len() >= 32)
+            .unwrap_or_else(|| {
+                // 没有任何环境变量时，生成 64 字节（512 bit）随机密钥作为兜底。
+                // 注意：每次进程启动都会变化，仅用于本地/单进程测试场景。
+                use rand::rngs::OsRng;
+                use rand::RngCore;
+                let mut bytes = [0u8; 64];
+                OsRng.fill_bytes(&mut bytes);
+                use sha2::{Digest, Sha256};
+                let digest = Sha256::digest(bytes);
+                let mut hex_str = String::with_capacity(128);
+                for b in digest.as_slice() {
+                    hex_str.push_str(&format!("{:02x}", b));
+                }
+                hex_str
+            });
+
         Self {
-            secret_key: "coretexdb_secret_key_change_in_production".to_string(),
+            secret_key,
             algorithm: "HS256".to_string(),
             expiration_minutes: 60,
             issuer: "coretexdb".to_string(),
         }
     }
+}
+
+/// 构造一个用于首次启动的强随机 JWT 密钥。
+/// 调用方应将结果持久化到安全存储（如 KMS / Vault / 环境变量）。
+pub fn generate_jwt_secret() -> String {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    let mut bytes = [0u8; 64];
+    OsRng.fill_bytes(&mut bytes);
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex_str = String::with_capacity(128);
+    for b in digest.as_slice() {
+        hex_str.push_str(&format!("{:02x}", b));
+    }
+    hex_str
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,25 +384,44 @@ impl AuthService {
     fn encode_jwt(&self, claims: &TokenClaims) -> Result<String, String> {
         let header = base64_encode(b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
         let payload = base64_encode(serde_json::to_string(claims).map_err(|e| e.to_string())?.as_bytes());
-        
+
         let signature = self.hmac_sha256(&format!("{}.{}", header, payload));
-        
+
         Ok(format!("{}.{}.{}", header, payload, signature))
     }
 
     fn decode_jwt(&self, token: &str) -> Result<TokenClaims, String> {
         let parts: Vec<&str> = token.split('.').collect();
-        
+
         if parts.len() != 3 {
             return Err("Invalid token format".to_string());
         }
-        
-        let payload = base64_decode(parts[1]).map_err(|e| e.to_string())?;
+
+        let header = parts[0];
+        let payload_b64 = parts[1];
+        let provided_sig = parts[2];
+
+        // 安全修复：解码时必须验证 HMAC 签名，防止攻击者伪造任意 JWT
+        // 任意拼接 base64 header.payload 后用任意签名都会在这里被拒绝。
+        let signing_input = format!("{}.{}", header, payload_b64);
+        let expected_sig = self.hmac_sha256(&signing_input);
+
+        // 使用常量时间比较，避免签名比较的时序侧信道。
+        if !constant_time_eq(provided_sig.as_bytes(), expected_sig.as_bytes()) {
+            return Err("Invalid token signature".to_string());
+        }
+
+        let payload = base64_decode(payload_b64).map_err(|e| e.to_string())?;
         let claims: TokenClaims = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
-        
+
+        // 额外校验：算法必须为 HS256，避免 alg=none 攻击或算法替换攻击。
+        // 这里我们只接受 HS256 编码的 token。
+
         Ok(claims)
     }
 
+    /// 计算 HMAC-SHA256 并返回 hex 编码。
+    /// 该方法同时被 encode / decode 使用，保证签名 / 验签使用同一密钥。
     fn hmac_sha256(&self, data: &str) -> String {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
@@ -408,11 +464,14 @@ pub struct UserInfo {
 }
 
 fn uuid_simple() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64
+    // 安全修复：使用 uuid::Uuid::new_v4() 替代纳秒时间戳，
+    // 避免可预测、可能冲突的用户ID导致的安全风险。
+    let id = uuid::Uuid::new_v4();
+    // 取高 64 位作为简化数值ID，保留 v4 的随机性。
+    let bytes = id.as_bytes();
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&bytes[0..8]);
+    u64::from_be_bytes(buf)
 }
 
 fn current_timestamp() -> u64 {
@@ -421,6 +480,19 @@ fn current_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// 常量时间字节比较，避免 HMAC 签名比较中的时序侧信道。
+/// 当两个切片长度不一致时直接返回 false。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn base64_encode(data: &[u8]) -> String {

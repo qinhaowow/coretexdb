@@ -76,6 +76,32 @@ jobs:
         Write-Output "PROTOC=$extractPath\bin\protoc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         Write-Output "protoc installed successfully"
 
+    - name: Activate MSVC 2026 toolchain (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Verify MSVC 2026 (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: |
+        $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+        if ($cl) {
+          $clPath = (Get-Command cl.exe).Source
+          $clVersion = ((& cl.exe) 2>&1 | Select-String -Pattern 'Microsoft.*Compiler' | Select-Object -First 1)
+          Write-Output "cl.exe: $clPath"
+          Write-Output "Version: $clVersion"
+        } else {
+          Write-Error "MSVC 2026 not found in PATH after activation"
+          exit 1
+        }
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path $vswhere) {
+          $install = & $vswhere -version "[2026.0,2027.0)" -products * -property installationPath
+          Write-Output "VS 2026 install path: $install"
+        }
+
     - name: Install libclang (Windows)
       if: matrix.os == 'windows-latest'
       shell: pwsh

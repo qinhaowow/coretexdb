@@ -669,7 +669,7 @@ impl SQLParser {
     fn parse_vector_literal(&mut self) -> Result<Vec<f32>, String> {
         // Expect opening bracket
         match self.current().clone() {
-            SQLToken::Operator(c) if c == '[' => self.advance(),
+            SQLToken::Operator(c) if c == "[" => self.advance(),
             _ => return Err("Expected '[' for vector literal".to_string()),
         }
 
@@ -680,7 +680,7 @@ impl SQLParser {
                     vals.push(n as f32);
                     self.advance();
                 }
-                SQLToken::Operator(c) if c == ']' => {
+                SQLToken::Operator(c) if c == "]" => {
                     self.advance();
                     break;
                 }
@@ -1291,7 +1291,7 @@ impl SQLExecutor {
             } else if *join_type == JoinType::Left || *join_type == JoinType::Right {
                 // LEFT/RIGHT JOIN: preserve unmatched row with NULLs
                 let mut merged = left_row.clone();
-                for right_row in right.first().map(|r| r.keys()).unwrap_or(&vec![]) {
+                for right_row in right.first().map(|r| r.keys()).into_iter().flatten() {
                     let k: &String = right_row;
                     if !merged.contains_key(k) {
                         merged.insert(k.clone(), SQLValue::Null);

@@ -196,7 +196,7 @@ impl HybridRetriever {
     }
 
     pub async fn get_document(&self, id: &str) -> Option<MultiModalDocument> {
-        let storage = self.scalar_storage.read().await;
+        let storage = self.scalar_storage.lock().unwrap();
         storage.get(id).map(|fields| {
             let mut doc = MultiModalDocument::new(id.to_string());
             for (k, v) in fields {
@@ -229,14 +229,14 @@ impl BruteForceVectorAdapter {
     }
 
     pub async fn add(&self, id: &str, vector: &[f32]) {
-        let mut index = self.index.write().await;
+        let mut index = self.index.write().unwrap();
         index.push((id.to_string(), vector.to_vec()));
     }
 }
 
 impl VectorRetriever for BruteForceVectorAdapter {
     fn search(&self, vector: &[f32], k: usize, _metric: DistanceMetric) -> Vec<SearchResult> {
-        let index = self.index.blocking_read();
+        let index = self.index.read().unwrap();
         let mut results: Vec<SearchResult> = index
             .iter()
             .map(|(id, vec)| {
@@ -253,7 +253,7 @@ impl VectorRetriever for BruteForceVectorAdapter {
     }
 
     fn add_vector(&self, id: &str, vector: &[f32]) {
-        let mut index = self.index.blocking_write();
+        let mut index = self.index.write().unwrap();
         index.push((id.to_string(), vector.to_vec()));
     }
 }

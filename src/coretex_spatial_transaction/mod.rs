@@ -119,22 +119,25 @@ impl RTreeIndex {
             best.unwrap()
         };
         let (split, new_id) = Box::pin(self.insert_rec(child_id, entry)).await;
-        { let mut nodes=self.nodes.write().await;
+        let child_mbr = { let nodes=self.nodes.read().await;
+          nodes.get(&child_id).map(|c| c.entries.iter().fold(MBR::new(self.dim),|m,x|m.union(&x.mbr)))
+        };
+        if let Some(mbr) = child_mbr { let mut nodes=self.nodes.write().await;
           if let Some(p)=nodes.get_mut(&node_id) { for e in &mut p.entries { if e.child_id==Some(child_id) {
-            if let Some(c)=nodes.get(&child_id) { e.mbr=c.entries.iter().fold(MBR::new(self.dim),|m,x|m.union(&x.mbr)); }
+            e.mbr = mbr.clone();
           }}}}
         if let Some(s)=split { self.insert_internal(node_id, s, new_id).await } else { (None,0) }
     }
 
     async fn insert_leaf(&self, node_id: usize, entry: RTreeEntry) -> (Option<RTreeEntry>, usize) {
         let need = { self.nodes.read().await.get(&node_id).unwrap().entries.len() >= RTREE_MAX };
-        if need { self.split_node(node_id, entry).await }
+        if need { let (e, id) = self.split_node(node_id, entry).await; (Some(e), id) }
         else { self.nodes.write().await.get_mut(&node_id).unwrap().entries.push(entry); (None,0) }
     }
 
     async fn insert_internal(&self, node_id: usize, entry: RTreeEntry, _child_id: usize) -> (Option<RTreeEntry>, usize) {
         let need = { self.nodes.read().await.get(&node_id).unwrap().entries.len() >= RTREE_MAX };
-        if need { self.split_node(node_id, entry).await }
+        if need { let (e, id) = self.split_node(node_id, entry).await; (Some(e), id) }
         else { self.nodes.write().await.get_mut(&node_id).unwrap().entries.push(entry); (None,0) }
     }
 

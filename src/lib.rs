@@ -45,7 +45,8 @@ pub mod coretex_permissions;
 pub mod coretex_tracing;
 pub mod coretex_persistence;
 pub mod coretex_backup;
-// pub mod coretex_tantivy;
+#[cfg(feature = "tantivy")]
+pub mod coretex_tantivy;
 pub mod coretex_graph;
 pub mod coretex_hybrid;
 pub mod coretex_rerank;
@@ -129,7 +130,8 @@ pub use coretex_api::graphql::{
     SearchInput, BatchSearchInput, CreateCollectionInput, VectorInput as GqlVectorInput,
     MetadataFilterInput, CompositeFilterInput, DistanceMetricEnum,
 };
-// pub use coretex_tantivy::{TantivySearcher, TantivyDocumentResult};
+#[cfg(feature = "tantivy")]
+pub use coretex_tantivy::{TantivySearcher, TantivyIndexConfig, TantivyDocumentEntry, TantivySearchResult, TantivyError};
 pub use coretex_graph::{GraphDatabase, GraphNode, GraphEdge, GraphPath, GraphError};
 pub use coretex_hybrid::{
     MultiModalDocument, VectorData, TextData, ScalarValue, TimeSeriesData, GeoLocation,
@@ -293,7 +295,7 @@ impl CoreTexDB {
                     .with_max_segment_size(self.config.wal_max_segment_size)
             );
             wal.init().await
-                .map_err(|e| CoreTexError::Io(e.to_string()))?;
+                .map_err(|e| CoreTexError::Io(e))?;
 
             // Wire WAL into DataManager (OnceLock ensures this happens exactly once)
             self.data_manager.set_wal(Arc::clone(&wal))

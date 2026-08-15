@@ -266,7 +266,8 @@ impl RTreeNode {
     fn recompute_bounds(&mut self) {
         if self.is_leaf {
             self.bounds = GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-            for (_, p) in &self.entries {
+            let points: Vec<_> = self.entries.iter().map(|(_, p)| p.clone()).collect();
+            for p in &points {
                 self.update_bounds_for_point(p);
             }
         } else {

@@ -679,8 +679,8 @@ impl ConnectionPool {
 
 /// 持久化 Raft 日志（基于 WAL 的日志存储）
 pub struct RaftLog {
-    entries: Vec<LogEntry>,
-    storage_path: Option<PathBuf>,
+    pub(crate) entries: Vec<LogEntry>,
+    pub(crate) storage_path: Option<PathBuf>,
 }
 
 impl RaftLog {

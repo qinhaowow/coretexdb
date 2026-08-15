@@ -1233,20 +1233,20 @@ impl PQIndex {
         code
     }
 
-    pub async fn search(&self, query: &[f32], k: usize) -> Result<Vec<super::SearchResult>, String> {
+    pub async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
         let codebook = self.codebooks.read().await;
         if codebook.is_empty() {
-            return Err("Index not trained. Call train() first.".to_string());
+            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
         }
 
         let query_code = self.encode_vector(query, &codebook);
         let original = self.original_vectors.read().await;
 
-        let mut results: Vec<super::SearchResult> = original
+        let mut results: Vec<SearchResult> = original
             .iter()
             .map(|(id, orig)| {
                 let dist = self.calculate_distance(query, orig);
-                super::SearchResult {
+                SearchResult {
                     id: id.clone(),
                     distance: dist,
                 }
@@ -1292,6 +1292,87 @@ impl PQIndex {
         let original_size = self.dimension * 4;
         let compressed_size = self.n_subquantizers;
         original_size as f32 / compressed_size as f32
+    }
+}
+
+#[async_trait]
+impl VectorIndex for PQIndex {
+    async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
+        let codebook = self.codebooks.read().await;
+        if codebook.is_empty() {
+            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
+        }
+
+        let code = self.encode_vector(vector, &codebook);
+
+        let mut vectors = self.vectors.write().await;
+        vectors.insert(id.to_string(), code);
+
+        let mut original = self.original_vectors.write().await;
+        original.insert(id.to_string(), vector.to_vec());
+
+        Ok(())
+    }
+
+    async fn remove(&self, id: &str) -> Result<bool> {
+        let mut vectors = self.vectors.write().await;
+        let removed_vectors = vectors.remove(id).is_some();
+
+        let mut original = self.original_vectors.write().await;
+        let removed_original = original.remove(id).is_some();
+
+        Ok(removed_vectors || removed_original)
+    }
+
+    async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
+        let codebook = self.codebooks.read().await;
+        if codebook.is_empty() {
+            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
+        }
+
+        let original = self.original_vectors.read().await;
+
+        let mut results: Vec<SearchResult> = original
+            .iter()
+            .map(|(id, orig)| {
+                let dist = self.calculate_distance(query, orig);
+                SearchResult {
+                    id: id.clone(),
+                    distance: dist,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        results.truncate(k);
+
+        Ok(results)
+    }
+
+    async fn build(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear(&self) -> Result<()> {
+        let mut vectors = self.vectors.write().await;
+        vectors.clear();
+
+        let mut original = self.original_vectors.write().await;
+        original.clear();
+
+        Ok(())
+    }
+
+    fn clone_box(&self) -> Box<dyn VectorIndex> {
+        Box::new(Self {
+            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            metric: self.metric.clone(),
+            dimension: self.dimension,
+            n_subquantizers: self.n_subquantizers,
+            n_bits: self.n_bits,
+            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        })
     }
 }
 

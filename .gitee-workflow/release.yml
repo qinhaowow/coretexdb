@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
+
+      - name: Build release
+        run: cargo build --release --features full --target x86_64-unknown-linux-gnu
+
+      - name: Create archive
+        run: |
+          tar -czvf coretex-x86_64-unknown-linux-gnu.tar.gz -C target/x86_64-unknown-linux-gnu/release coretex
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coretex-x86_64-unknown-linux-gnu
+          path: coretex-x86_64-unknown-linux-gnu.tar.gz

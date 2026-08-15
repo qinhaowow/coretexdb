@@ -30,6 +30,7 @@ pub struct DomainSearchResult {
     pub score: f32,
     pub distance: f32,
     pub metadata: HashMap<String, String>,
+    pub timestamp: i64,
 }
 
 #[async_trait]
@@ -42,6 +43,7 @@ pub trait DomainIndex: Send + Sync {
     fn domain_name(&self) -> &str;
 }
 
+#[derive(Clone)]
 pub enum DomainIndexEnum {
     NewsWeather(NewsWeatherIndex),
     GeoLocation(GeoLocationIndex),
@@ -133,6 +135,7 @@ impl DomainIndexEnum {
     }
 }
 
+#[derive(Clone)]
 pub struct NewsWeatherIndex {
     domain: String,
     vector_index: Arc<RwLock<Box<dyn VectorIndex>>>,
@@ -168,6 +171,7 @@ impl NewsWeatherIndex {
                     score: 1.0,
                     distance: 0.0,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
                 .collect();
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -190,6 +194,7 @@ impl NewsWeatherIndex {
                 score: 1.0,
                 distance: 0.0,
                 metadata: doc.metadata.clone(),
+                timestamp: doc.timestamp,
             })
             .collect();
         results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -229,6 +234,7 @@ impl DomainIndex for NewsWeatherIndex {
                 score: 1.0 - r.distance,
                 distance: r.distance,
                 metadata: doc.metadata.clone(),
+                timestamp: doc.timestamp,
             })
         }).collect())
     }
@@ -248,6 +254,7 @@ impl DomainIndex for NewsWeatherIndex {
                     score: 1.0 - r.distance,
                     distance: r.distance,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
             })
             .take(top_k)
@@ -282,6 +289,7 @@ impl DomainIndex for NewsWeatherIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct GeoLocationIndex {
     domain: String,
     vector_index: Arc<RwLock<Box<dyn VectorIndex>>>,
@@ -325,6 +333,7 @@ impl GeoLocationIndex {
                             score,
                             distance: dist as f32,
                             metadata: doc.metadata.clone(),
+                            timestamp: doc.timestamp,
                         })
                     })
                 } else {
@@ -355,6 +364,7 @@ impl GeoLocationIndex {
                     score: 1.0,
                     distance: 0.0,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
             })
             .take(top_k)
@@ -389,6 +399,7 @@ impl GeoLocationIndex {
                         score,
                         distance: dist as f32,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     }))
                 } else {
                     None
@@ -419,6 +430,7 @@ impl GeoLocationIndex {
                         score: 1.0,
                         distance: 0.0,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     })
                 } else {
                     None
@@ -450,6 +462,7 @@ impl GeoLocationIndex {
                     score,
                     distance: dist as f32,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 }))
             })
             .collect();
@@ -478,6 +491,7 @@ impl GeoLocationIndex {
                     score,
                     distance: dist as f32,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 }))
             })
             .collect();
@@ -519,6 +533,7 @@ impl DomainIndex for GeoLocationIndex {
                 score: 1.0 - r.distance,
                 distance: r.distance,
                 metadata: doc.metadata.clone(),
+                timestamp: doc.timestamp,
             })
         }).collect())
     }
@@ -538,6 +553,7 @@ impl DomainIndex for GeoLocationIndex {
                     score: 1.0 - r.distance,
                     distance: r.distance,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
             })
             .take(top_k)
@@ -574,6 +590,7 @@ impl DomainIndex for GeoLocationIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct FinancialIndex {
     domain: String,
     vector_index: Arc<RwLock<Box<dyn VectorIndex>>>,
@@ -610,6 +627,7 @@ impl FinancialIndex {
                         score: 1.0,
                         distance: 0.0,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     })
                     .collect();
                 results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -635,6 +653,7 @@ impl FinancialIndex {
                         score: 1.0,
                         distance: 0.0,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     })
                     .collect()
             })
@@ -673,6 +692,7 @@ impl DomainIndex for FinancialIndex {
                 score: 1.0 - r.distance,
                 distance: r.distance,
                 metadata: doc.metadata.clone(),
+                timestamp: doc.timestamp,
             })
         }).collect())
     }
@@ -692,6 +712,7 @@ impl DomainIndex for FinancialIndex {
                     score: 1.0 - r.distance,
                     distance: r.distance,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
             })
             .take(top_k)
@@ -738,6 +759,7 @@ impl DomainIndex for FinancialIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct KnowledgeIndex {
     domain: String,
     vector_index: Arc<RwLock<Box<dyn VectorIndex>>>,
@@ -776,6 +798,7 @@ impl KnowledgeIndex {
                         score: 1.0,
                         distance: 0.0,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     })
                     .collect()
             })
@@ -799,6 +822,7 @@ impl KnowledgeIndex {
                         score: 1.0,
                         distance: 0.0,
                         metadata: doc.metadata.clone(),
+                        timestamp: doc.timestamp,
                     })
                     .collect()
             })
@@ -841,6 +865,7 @@ impl DomainIndex for KnowledgeIndex {
                 score: 1.0 - r.distance,
                 distance: r.distance,
                 metadata: doc.metadata.clone(),
+                timestamp: doc.timestamp,
             })
         }).collect())
     }
@@ -867,6 +892,7 @@ impl DomainIndex for KnowledgeIndex {
                     score: 1.0 - r.distance,
                     distance: r.distance,
                     metadata: doc.metadata.clone(),
+                    timestamp: doc.timestamp,
                 })
             })
             .take(top_k)

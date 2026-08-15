@@ -118,7 +118,7 @@ pub struct WalStats {
 /// The Write-Ahead Log. Thread-safe, async.
 pub struct WriteAheadLog {
     log_dir: PathBuf,
-    current_file: PathBuf,
+    current_file: Arc<RwLock<PathBuf>>,
     sequence_counter: Arc<RwLock<u64>>,
     max_segment_size: u64,
     current_size: Arc<RwLock<u64>>,
@@ -131,7 +131,7 @@ impl WriteAheadLog {
     /// Create a new WAL. Does not initialize — call `init()`.
     pub fn new(log_dir: &str) -> Self {
         let log_path = PathBuf::from(log_dir);
-        let current_file = log_path.join("wal_000000.log");
+        let current_file = Arc::new(RwLock::new(log_path.join("wal_000000.log")));
 
         Self {
             log_dir: log_path,
@@ -180,15 +180,15 @@ impl WriteAheadLog {
 
         if discovered.is_empty() {
             // Fresh WAL — create first segment
-            File::create(&self.current_file).await?.sync_all().await?;
-            self.segments.write().await.push(self.current_file.clone());
+            File::create(&*self.current_file.read().await).await?.sync_all().await?;
+            self.segments.write().await.push(self.current_file.read().await.clone());
         } else {
             // Restore from existing segments
-            self.current_file = discovered.last().unwrap().clone();
+            *self.current_file.write().await = discovered.last().unwrap().clone();
             self.segments.write().await.clone_from(&discovered);
 
             // Compute current size of the last segment
-            if let Ok(meta) = fs::metadata(&self.current_file).await {
+            if let Ok(meta) = fs::metadata(&*self.current_file.read().await).await {
                 *self.current_size.write().await = meta.len();
             }
 
@@ -239,7 +239,7 @@ impl WriteAheadLog {
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(&self.current_file)
+            .open(&*self.current_file.read().await)
             .await?;
 
         file.write_all(&line).await?;
@@ -292,7 +292,7 @@ impl WriteAheadLog {
             segments.push(new_file.clone());
         }
 
-        self.current_file = new_file;
+        *self.current_file.write().await = new_file;
         *self.current_size.write().await = 0;
 
         Ok(())
@@ -461,7 +461,7 @@ impl WriteAheadLog {
         let mut removed = 0;
 
         for segment in segments.iter().take(to_remove) {
-            if segment != &self.current_file {
+            if segment != &*self.current_file.read().await {
                 fs::remove_file(segment).await?;
                 removed += 1;
             }
@@ -652,7 +652,7 @@ mod tests {
         // Manually write a corrupted line
         let mut file = OpenOptions::new()
             .append(true)
-            .open(wal.current_file.clone())
+            .open(wal.current_file.read().await.clone())
             .await
             .unwrap();
         file.write_all(b"deadbeef|{\"corrupt\": true}\n").await.unwrap();

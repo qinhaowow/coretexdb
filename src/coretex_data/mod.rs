@@ -121,8 +121,8 @@ impl DataManager {
 
     /// Set the WAL after construction (for late binding in CoreTexDB::init).
     /// Uses OnceLock — can only be called once.
-    pub fn set_wal(&self, wal: Arc<WriteAheadLog>) -> Result<(), Arc<WriteAheadLog>> {
-        self.wal.set(wal)
+    pub fn set_wal(&self, wal: Arc<WriteAheadLog>) -> Result<()> {
+        self.wal.set(wal).map_err(|_| CoreTexError::Other("WAL already set".to_string()))
     }
 
     /// Check if WAL is enabled.
@@ -147,7 +147,7 @@ impl DataManager {
             });
             wal.log_operation(entry_type, collection, key, data)
                 .await
-                .map_err(|e| CoreTexError::Io(e.to_string()))
+                .map_err(|e| CoreTexError::Io(e))
         } else {
             Ok(0)
         }
@@ -175,7 +175,7 @@ impl DataManager {
         let entries = recovery
             .recover_storage_entries()
             .await
-            .map_err(|e| CoreTexError::Io(e.to_string()))?;
+            .map_err(|e| CoreTexError::Io(e))?;
 
         let mut replayed = 0u64;
         let mut skipped = 0u64;
@@ -1293,9 +1293,7 @@ impl DataManager {
             // 优先用统一适配器，否则回退到原始 storage
             if let Some(adapter) = &self.unified_adapter {
                 let key = format!("{}:{}", collection, id);
-                let vec_bytes = bincode::serialize(&vector).unwrap_or_default();
-                let meta_bytes = bincode::serialize(&metadata).unwrap_or_default();
-                if let Err(e) = adapter.upsert(&key, &vec_bytes, &meta_bytes).await {
+                if let Err(e) = adapter.upsert(&key, &vector, &metadata).await {
                     // 回滚：清理已写入
                     let _ = self.transaction_manager.abort(txn_id).await;
                     return Err(CoreTexError::StorageError(e.to_string()));

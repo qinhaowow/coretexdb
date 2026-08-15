@@ -297,5 +297,17 @@ impl From<&str> for CoreTexError {
     }
 }
 
+impl From<std::num::ParseFloatError> for CoreTexError {
+    fn from(e: std::num::ParseFloatError) -> Self {
+        CoreTexError::Parse(e.to_string())
+    }
+}
+
+impl From<tonic::transport::Error> for CoreTexError {
+    fn from(e: tonic::transport::Error) -> Self {
+        CoreTexError::ConnectionError(e.to_string())
+    }
+}
+
 /// Standard result type for CoreTexDB
 pub type Result<T> = std::result::Result<T, CoreTexError>; 

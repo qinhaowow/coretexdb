@@ -333,6 +333,7 @@ impl WebSocketServer {
             Duration::from_secs(config.ping_timeout_secs),
             config.max_missed_pongs,
         );
+        let rate_limit = config.rate_limit_per_minute as u32;
         Self {
             config,
             connections: Arc::new(RwLock::new(HashMap::new())),
@@ -341,7 +342,7 @@ impl WebSocketServer {
             resume_tokens: Arc::new(RwLock::new(HashMap::new())),
             heartbeat,
             rate_limiter: WsRateLimiter {
-                max_requests: config.rate_limit_per_minute as u32,
+                max_requests: rate_limit,
                 ..Default::default()
             },
             stats: Arc::new(RwLock::new(WebSocketStats::default())),
@@ -621,7 +622,7 @@ impl WebSocketServer {
             }
             drop(conn_guard);
 
-            if let Some(token) = &conn.resume_token.clone().lock().await.resume_token {
+            if let Some(token) = &conn.lock().await.resume_token {
                 self.resume_tokens.write().await.remove(token);
             }
         }
@@ -637,7 +638,7 @@ impl WebSocketServer {
 
         for (id, conn) in connections.iter() {
             let conn_guard = conn.lock().await;
-            if now.duration_since(conn_guard.last_pong_at) > self.config.ping_timeout_secs * 2 {
+            if now.duration_since(conn_guard.last_pong_at) > Duration::from_secs(self.config.ping_timeout_secs * 2) {
                 if self.heartbeat.should_disconnect(&conn_guard) {
                     to_disconnect.push(id.clone());
                 }

@@ -124,7 +124,7 @@ impl IndexSelector {
         let k = input.k.max(1) as f64;
 
         // nlist 默认 sqrt(N)
-        let nlist = input.nlist.unwrap_else(|| (n.sqrt() as usize).max(1)) as f64;
+        let nlist = input.nlist.unwrap_or_else(|| (n.sqrt() as usize).max(1)) as f64;
         let nprobe = input.nprobe.unwrap_or(8).max(1) as f64;
         let per_cluster = n / nlist;
 
