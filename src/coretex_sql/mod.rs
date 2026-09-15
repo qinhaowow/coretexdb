@@ -1059,20 +1059,22 @@ impl SQLExecutor {
             return self.execute_vector_search_local(select).await;
         }
 
+        // JOIN path — must be chosen BEFORE the aggregate path. Aggregating first
+        // only looked at `select.table`, so `... FROM a JOIN b ... GROUP BY x`
+        // silently dropped the JOIN and aggregated the wrong table.
+        if !select.joins.is_empty() {
+            if let Some(ref dm) = self.data_manager {
+                return self.execute_join_select_dm(dm, select).await;
+            }
+            return self.execute_join_select_local(select).await;
+        }
+
         // Aggregate / GROUP BY path
         if Self::has_aggregates(&select.columns) || !select.group_by.is_empty() {
             if let Some(ref dm) = self.data_manager {
                 return self.execute_aggregate_select_dm(dm, select).await;
             }
             return self.execute_aggregate_select_local(select).await;
-        }
-
-        // JOIN path
-        if !select.joins.is_empty() {
-            if let Some(ref dm) = self.data_manager {
-                return self.execute_join_select_dm(dm, select).await;
-            }
-            return self.execute_join_select_local(select).await;
         }
 
         // Plain SELECT
@@ -1261,9 +1263,6 @@ impl SQLExecutor {
         let collection_data = data_map.get(&select.table)
             .ok_or_else(|| format!("Collection '{}' not found in data", select.table))?;
 
-        let cols_all = Self::is_star(&select.columns);
-        let plain_cols = Self::plain_columns(&select.columns);
-
         for (id, record) in collection_data.iter() {
             // Build the FULL row first: WHERE and ORDER BY may reference columns
             // that are not part of the SELECT list.
@@ -1285,21 +1284,7 @@ impl SQLExecutor {
             rows.push(row);
         }
 
-        // ORDER BY (non-aggregate) — before projection and LIMIT
-        sort_rows_by(&mut rows, &select.order_by);
-
-        // LIMIT
-        let limit = select.limit.unwrap_or(rows.len());
-        rows.truncate(limit);
-
-        // Project last so WHERE and ORDER BY could see every column.
-        let rows = if cols_all {
-            rows
-        } else {
-            self.project_columns(&rows, &plain_cols)
-        };
-
-        Ok(SQLResult::Select(rows))
+        self.finish_rows(rows, &select)
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1311,6 +1296,25 @@ impl SQLExecutor {
         dm: &DataManager,
         select: SQLSelect,
     ) -> Result<SQLResult, String> {
+        let rows = self.build_join_rows_dm(dm, &select).await?;
+
+        // A JOIN may feed GROUP BY / aggregates: the joined rows are the input.
+        if Self::has_aggregates(&select.columns) || !select.group_by.is_empty() {
+            return self.execute_aggregate(rows, &select);
+        }
+
+        self.finish_rows(rows, &select)
+    }
+
+    /// Load the left table, apply every JOIN, then filter with WHERE.
+    ///
+    /// Ordering, projection and LIMIT are deliberately left to the caller so the
+    /// joined rows can also serve as the input of a GROUP BY / aggregate query.
+    async fn build_join_rows_dm(
+        &self,
+        dm: &DataManager,
+        select: &SQLSelect,
+    ) -> Result<Vec<HashMap<String, SQLValue>>, String> {
         // Load left table rows
         let mut left_rows = self.load_all_rows_dm(dm, &select.table).await?;
 
@@ -1332,19 +1336,7 @@ impl SQLExecutor {
             left_rows.retain(|row| evaluate_condition(row, cond));
         }
 
-        // Project columns (with table prefix handling: "users.name" → "name")
-        if !Self::is_star(&select.columns) {
-            let col_names: Vec<String> = select.columns.iter()
-                .map(|c| c.output_name())
-                .collect();
-            left_rows = self.project_columns(&left_rows, &col_names);
-        }
-
-        // LIMIT
-        let limit = select.limit.unwrap_or(left_rows.len());
-        left_rows.truncate(limit);
-
-        Ok(SQLResult::Select(left_rows))
+        Ok(left_rows)
     }
 
     /// Hash join: builds a map on the right side, probes with the left side.
@@ -1424,6 +1416,29 @@ impl SQLExecutor {
         Ok(rows)
     }
 
+    /// Shared tail of every row-producing SELECT path: `ORDER BY` → `LIMIT` →
+    /// projection.
+    ///
+    /// Sorting happens **before** projection because `ORDER BY` may name a column
+    /// that is not in the SELECT list.
+    fn finish_rows(
+        &self,
+        mut rows: Vec<HashMap<String, SQLValue>>,
+        select: &SQLSelect,
+    ) -> Result<SQLResult, String> {
+        sort_rows_by(&mut rows, &select.order_by);
+
+        let limit = select.limit.unwrap_or(rows.len());
+        rows.truncate(limit);
+
+        if Self::is_star(&select.columns) {
+            return Ok(SQLResult::Select(rows));
+        }
+
+        let plain_cols = Self::plain_columns(&select.columns);
+        Ok(SQLResult::Select(self.project_columns(&rows, &plain_cols)))
+    }
+
     /// Project columns: keep only the specified columns from each row
     fn project_columns(
         &self,
@@ -1457,6 +1472,21 @@ impl SQLExecutor {
         &self,
         select: SQLSelect,
     ) -> Result<SQLResult, String> {
+        let rows = self.build_join_rows_local(&select).await?;
+
+        // A JOIN may feed GROUP BY / aggregates: the joined rows are the input.
+        if Self::has_aggregates(&select.columns) || !select.group_by.is_empty() {
+            return self.execute_aggregate(rows, &select);
+        }
+
+        self.finish_rows(rows, &select)
+    }
+
+    /// Local-collection counterpart of [`Self::build_join_rows_dm`].
+    async fn build_join_rows_local(
+        &self,
+        select: &SQLSelect,
+    ) -> Result<Vec<HashMap<String, SQLValue>>, String> {
         let collections = self.collections.read().await;
 
         // Load left table
@@ -1495,17 +1525,7 @@ impl SQLExecutor {
             left_rows.retain(|row| evaluate_condition(row, cond));
         }
 
-        if !Self::is_star(&select.columns) {
-            let col_names: Vec<String> = select.columns.iter()
-                .map(|c| c.output_name())
-                .collect();
-            left_rows = self.project_columns(&left_rows, &col_names);
-        }
-
-        let limit = select.limit.unwrap_or(left_rows.len());
-        left_rows.truncate(limit);
-
-        Ok(SQLResult::Select(left_rows))
+        Ok(left_rows)
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1693,8 +1713,6 @@ impl SQLExecutor {
             .ok_or_else(|| format!("Collection '{}' not found", select.table))?;
 
         let mut rows: Vec<HashMap<String, SQLValue>> = Vec::new();
-        let cols_all = Self::is_star(&select.columns);
-        let plain_cols = Self::plain_columns(&select.columns);
 
         for (id, (_vec, meta)) in &collection.vectors {
             // Build the FULL row first. WHERE (and ORDER BY) must be able to
@@ -1715,33 +1733,7 @@ impl SQLExecutor {
             rows.push(row);
         }
 
-        // ORDER BY
-        if !select.order_by.is_empty() {
-            rows.sort_by(|a, b| {
-                for (col, asc) in &select.order_by {
-                    let va = a.get(col);
-                    let vb = b.get(col);
-                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
-                        .unwrap_or(std::cmp::Ordering::Equal);
-                    if ord != std::cmp::Ordering::Equal {
-                        return if *asc { ord } else { ord.reverse() };
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
-        }
-
-        let limit = select.limit.unwrap_or(rows.len());
-        rows.truncate(limit);
-
-        // Project last so WHERE and ORDER BY could see every column.
-        let rows = if cols_all {
-            rows
-        } else {
-            self.project_columns(&rows, &plain_cols)
-        };
-
-        Ok(SQLResult::Select(rows))
+        self.finish_rows(rows, &select)
     }
 
     async fn execute_insert(&self, insert: SQLInsert) -> Result<SQLResult, String> {

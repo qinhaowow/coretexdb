@@ -1067,6 +1067,107 @@ async fn test_sql_join_with_where() {
 }
 
 #[tokio::test]
+async fn test_sql_join_order_by_desc_on_unselected_column() {
+    // Regression: the JOIN paths used to ignore ORDER BY entirely, and to project
+    // before sorting. Both facts together meant a JOIN could only ever return rows
+    // in hashing order, and a sort key outside the SELECT list was invisible.
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("users", make_collection("users", vec![
+        ("u1", HashMap::from([("name", s("Alice")), ("dept_id", n(1.0))])),
+        ("u2", HashMap::from([("name", s("Bob")),   ("dept_id", n(2.0))])),
+        ("u3", HashMap::from([("name", s("Carol")), ("dept_id", n(1.0))])),
+    ])).await;
+
+    executor.register_collection("depts", make_collection("depts", vec![
+        ("d1", HashMap::from([("dept_name", s("Engineering")), ("dept_id", n(1.0))])),
+        ("d2", HashMap::from([("dept_name", s("Marketing")),   ("dept_id", n(2.0))])),
+    ])).await;
+
+    // dept_name is deliberately absent from the SELECT list.
+    let result = executor.execute(
+        "SELECT name FROM users JOIN depts ON dept_id = dept_id ORDER BY dept_name DESC, name ASC"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            let names: Vec<Option<&SQLValue>> = rows.iter().map(|r| r.get("name")).collect();
+            assert_eq!(names, vec![Some(&s("Bob")), Some(&s("Alice")), Some(&s("Carol"))],
+                       "Marketing first (DESC), then Engineering sorted by name");
+            assert!(rows.iter().all(|r| r.get("dept_name").is_none()),
+                    "dept_name must not leak into the projection");
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_sql_join_with_group_by_having_and_order_by() {
+    // Regression: `execute_select` dispatched to the aggregate path *before* the
+    // JOIN path, so this query silently aggregated `orders` alone — `name` was not
+    // a column of `orders`, so the result came back without it.
+    let executor = SQLExecutor::new();
+
+    executor.register_collection("orders", make_collection("orders", vec![
+        ("o1", HashMap::from([("product_id", n(1.0)), ("qty", n(3.0))])),
+        ("o2", HashMap::from([("product_id", n(1.0)), ("qty", n(2.0))])),
+        ("o3", HashMap::from([("product_id", n(2.0)), ("qty", n(5.0))])),
+        ("o4", HashMap::from([("product_id", n(2.0)), ("qty", n(1.0))])),
+    ])).await;
+
+    executor.register_collection("products", make_collection("products", vec![
+        ("p1", HashMap::from([("product_id", n(1.0)), ("name", s("Widget"))])),
+        ("p2", HashMap::from([("product_id", n(2.0)), ("name", s("Gadget"))])),
+    ])).await;
+
+    let result = executor.execute(
+        "SELECT name, SUM(qty) AS total_qty, COUNT(*) AS order_count \
+         FROM orders JOIN products ON product_id = product_id \
+         GROUP BY name HAVING SUM(qty) > 4 ORDER BY total_qty DESC LIMIT 1"
+    ).await.unwrap();
+
+    match result {
+        SQLResult::Select(rows) => {
+            // Gadget = 5+1 = 6, Widget = 3+2 = 5; both pass HAVING, LIMIT 1 keeps Gadget.
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("name"), Some(&s("Gadget")));
+            assert_eq!(rows[0].get("total_qty"), Some(&n(6.0)));
+            assert_eq!(rows[0].get("order_count"), Some(&n(2.0)));
+        }
+        other => panic!("Expected Select, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_aggregate_order_by_tie_break_is_deterministic() {
+    // `ORDER BY total DESC` leaves the 300/300 tie in `test_e2e_aggregate_after_inserts`
+    // unspecified. Groups are emitted in group-key order before sorting, so the tie
+    // must resolve to East before North — the same answer on every process, unlike
+    // the HashMap iteration order this used to depend on.
+    let executor = SQLExecutor::new();
+
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('East', 100)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('East', 200)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('North', 300)").await.unwrap();
+    executor.execute("INSERT INTO sales (region, amount) VALUES ('West', 50)").await.unwrap();
+
+    let mut seen: Option<Vec<Option<SQLValue>>> = None;
+    for _ in 0..5 {
+        let r = executor.execute(
+            "SELECT region FROM sales GROUP BY region ORDER BY SUM(amount) DESC"
+        ).await.unwrap();
+        let SQLResult::Select(rows) = r else { panic!("Expected Select") };
+        let regions: Vec<Option<SQLValue>> = rows.iter().map(|row| row.get("region").cloned()).collect();
+        assert_eq!(regions, vec![Some(s("East")), Some(s("North")), Some(s("West"))],
+                   "East/North tie broken by group key, then West");
+        match &seen {
+            Some(first) => assert_eq!(&regions, first, "ORDER BY must be stable across calls"),
+            None => seen = Some(regions),
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_sql_inner_join_explicit_keyword() {
     let executor = SQLExecutor::new();
 
@@ -1423,12 +1524,29 @@ async fn test_e2e_aggregate_after_inserts() {
     match r {
         SQLResult::Select(rows) => {
             assert_eq!(rows.len(), 3, "Three regions");
-            // North=300, East=300, West=200 — DESC
-            assert_eq!(rows[0].get("total"), Some(&n(300.0))); // North
-            assert_eq!(rows[0].get("cnt"), Some(&n(1.0)));
-            assert_eq!(rows[1].get("total"), Some(&n(300.0))); // East
-            assert_eq!(rows[1].get("cnt"), Some(&n(2.0)));
-            assert_eq!(rows[2].get("total"), Some(&n(200.0))); // West
+            // Totals: East 100+200=300 over 2 rows, West 50+150=200 over 2 rows,
+            // North 300 over 1 row. `ORDER BY total DESC` leaves the 300/300 tie
+            // unspecified, so assert the whole per-region aggregate set rather than
+            // a particular tie order (the old assertions depended on HashMap order).
+            let region_total: Vec<(Option<&SQLValue>, Option<&SQLValue>)> = rows.iter()
+                .map(|row| (row.get("region"), row.get("total")))
+                .collect();
+            assert!(region_total.contains(&(Some(&s("East")), Some(&n(300.0)))), "East must total 300: {:?}", rows);
+            assert!(region_total.contains(&(Some(&s("North")), Some(&n(300.0)))), "North must total 300: {:?}", rows);
+            assert!(region_total.contains(&(Some(&s("West")), Some(&n(200.0)))), "West must total 200: {:?}", rows);
+
+            let cnt_of = |region: &str| -> Option<SQLValue> {
+                rows.iter()
+                    .find(|r| r.get("region") == Some(&s(region)))
+                    .and_then(|r| r.get("cnt"))
+                    .cloned()
+            };
+            assert_eq!(cnt_of("East"), Some(n(2.0)));
+            assert_eq!(cnt_of("North"), Some(n(1.0)));
+            assert_eq!(cnt_of("West"), Some(n(2.0)));
+
+            // DESC is only observable at the bottom: the smallest total comes last.
+            assert_eq!(rows[2].get("total"), Some(&n(200.0)));
         }
         other => panic!("Expected Select, got {:?}", other),
     }
