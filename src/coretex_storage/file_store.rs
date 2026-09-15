@@ -637,6 +637,13 @@ impl FileStorage {
     }
 }
 
+/// File length without holding the file open, so `Inner` can be built in one
+/// expression. `File::metadata` would need the handle first, which is exactly
+/// the ordering that forced the old `/dev/null` placeholder.
+fn file_len(path: &Path) -> std::io::Result<u64> {
+    Ok(fs::metadata(path)?.len())
+}
+
 #[async_trait]
 impl StorageEngine for FileStorage {
     async fn init(&mut self) -> Result<()> {
@@ -646,19 +653,28 @@ impl StorageEngine for FileStorage {
         fs::create_dir_all(&self.root)?;
 
         let recovered = self.recover()?;
-        let mut inner = Inner {
+
+        // Open the active segment before building the state around it, so no
+        // placeholder is ever needed. The previous version used `/dev/null` as
+        // a stand-in writer, which does not exist on Windows (`NUL` is the
+        // equivalent) and made every Windows `init` fail with
+        // "system cannot find the path specified".
+        let path = self.segment_path(recovered.seg_id);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&path)?;
+
+        let inner = Inner {
             seg_id: recovered.seg_id,
-            // Placeholder, immediately replaced by `open_writer`.
-            writer: BufWriter::new(
-                OpenOptions::new().write(true).open("/dev/null")?,
-            ),
-            offset: 0,
+            writer: BufWriter::new(file),
+            offset: file_len(&path)?,
             index: recovered.index,
             ttl: recovered.ttl,
             live_bytes: recovered.live_bytes,
             dead_bytes: recovered.dead_bytes,
         };
-        self.open_writer(&mut inner)?;
         *self.inner.lock() = Some(inner);
 
         // A log that is mostly dead bytes is worth reclaiming at startup.

@@ -5,14 +5,13 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 
 [env]
-PROTOC = "g:\\cerebros\\CoretexDB\\protoc\\bin\\protoc.exe"
-LIBCLANG_PATH = "C:\\Users\\QH\\AppData\\Roaming\\Python\\Python311\\site-packages\\clang\\native\\libclang.dll"
 RUSTFLAGS = "--cap-lints warn"
 
-# MSVC 2026 toolchain configuration
-[target.x86_64-pc-windows-msvc]
-linker = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.32.31326\\bin\\Hostx64\\x64\\link.exe"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[build]
-target = "x86_64-pc-windows-msvc"
+# ── Windows 交叉编译（GNU ABI）────────────────────────────────
+# Linux 上无法构建 x86_64-pc-windows-msvc：那需要微软的 link.exe，
+# 只在 Windows 的 Visual Studio 里存在。GNU ABI 用 mingw-w64 即可。
+# 依赖：sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+# 构建：cargo build --release --target x86_64-pc-windows-gnu
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

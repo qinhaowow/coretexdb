@@ -168,3 +168,60 @@ hybrid/BM25、rerank、embedding、分布式/HA、事务、SQL 优化器、gRPC�
 HNSW 已修复三处构造缺陷（取最近 m 个邻居 / 入口点取最高层 / 层级分布 `mL = 1/ln(M)`），
 在小数据集上与精确结果一致（已加回归测试），但**仍是近似索引**，大规模下不保证召回率。
 IVF 按 §6.2 不可用。
+
+---
+
+## 9. 平台支持（已验证）
+
+v0.1 在 **Linux 与 Windows 两个平台**上均通过完整端到端验证。
+
+| 平台 | 产物 | 格式 | 状态 |
+| --- | --- | --- | --- |
+| Linux (WSL2 Ubuntu 24.04) | `target/release/coretex` | ELF 64-bit PIE | ✓ 已验证 |
+| Windows (cross, GNU ABI) | `target/x86_64-pc-windows-gnu/release/coretex.exe` | PE32+ x86-64 | ✓ 已验证 |
+
+### 构建
+
+```bash
+# Linux（原生产物）
+cargo build --release
+
+# Windows 交叉编译（从 Linux）
+# 依赖：sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+#       rustup target add x86_64-pc-windows-gnu
+# 链接器已配在 .cargo/config.toml 的 [target.x86_64-pc-windows-gnu]
+cargo build --release --target x86_64-pc-windows-gnu
+```
+
+### `x86_64-pc-windows-msvc` 不可用
+
+该目标需要微软的 `link.exe`，只存在于 Windows 的 Visual Studio 中，
+在 Linux/WSL 下无法构建。这是硬性前提缺失，不是配置问题。
+GNU ABI（`-gnu`）用 mingw-w64 即可，无需 Windows 工具链。
+
+### Windows 验证记录
+
+```text
+coretex.exe collection create docs -d 4 -m euclidean   ✓（默认 index=brute_force）
+coretex.exe vector insert docs a/b/c                     ✓
+coretex.exe vector count docs        → 3                 ✓
+coretex.exe search '0,0,0,0' -k 3    → a c b（euclidean 正确序） ✓
+coretex.exe search --filter          → c                 ✓
+coretex.exe vector get docs c        → [0,0,1,0]         ✓
+node: 落盘到 Windows 目录 coretex_data\data\{metadata.json, store\store-000000.log} ✓
+coretex.exe server -p 5300 + Windows 自带 curl.exe
+  health / collections / count / search / filter          ✓
+  杀掉进程重启后 collections / count / search 仍正确       ✓
+```
+
+### 本次暴露并修掉的一个跨平台缺陷
+
+`FileStorage::init` 曾用一个 `/dev/null` 占位文件构造内部状态。
+`/dev/null` 是 Linux 专有路径，**Windows 上不存在**（等价物是 `NUL`），
+所以每一个 Windows 库初始化都会失败：`IO error: 系统找不到指定的路径 (os error 3)`。
+
+之所以在 Linux 上一直没被发现，是因为占位符随后立即被真实分片文件替换 ——
+在 Linux 上它只多打开一个 fd，副作用不可见。
+
+现已改为**先打开真实分片文件、再构造内部状态**，占位符彻底移除。
+教训：跨平台交付必须真在两边的产物上跑过，不能只靠 Linux 测试。
