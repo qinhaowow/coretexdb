@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use crate::coretex_index::{VectorIndex, SearchResult, IndexManager};
+use crate::coretex_index::{VectorIndex, IndexManager};
 use crate::coretex_core::Result;
 
 pub mod cost_model;
@@ -155,8 +155,8 @@ impl DefaultQueryProcessor {
     }
 
     async fn process_range_search(&self, params: QueryParams) -> Result<QueryResult> {
-        let min_val = params.scalar_min.unwrap_or(f32::MIN);
-        let max_val = params.scalar_max.unwrap_or(f32::MAX);
+        let _min_val = params.scalar_min.unwrap_or(f32::MIN);
+        let _max_val = params.scalar_max.unwrap_or(f32::MAX);
         
         // Use ScalarIndex for range filtering: treat the query value as the target
         // and search for all results, then filter by scalar range
@@ -241,7 +241,6 @@ impl QueryPlanner {
         k: usize,
     ) -> cost_model::CostEstimate {
         use crate::coretex_query::cost_model::{IndexSelector, CostInput, IndexKind};
-use crate::coretex_core::Result;
         let input = CostInput {
             index_kind: IndexKind::Hnsw,
             data_size,

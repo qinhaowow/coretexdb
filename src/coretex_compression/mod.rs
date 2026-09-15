@@ -119,7 +119,7 @@ impl VectorCompressor {
                 let decompressed = self.algorithm.decompress(&cv.data)?;
                 
                 let floats: Vec<f32> = decompressed
-                    .chunks_exact(4)
+                    .as_chunks::<4>().0.iter()
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 
@@ -360,7 +360,7 @@ impl RunLengthEncoding {
             if chunk.len() == 2 {
                 let value = chunk[0];
                 let count = chunk[1] as usize;
-                result.extend(std::iter::repeat(value).take(count));
+                result.extend(std::iter::repeat_n(value, count));
             }
         }
         
@@ -391,7 +391,7 @@ impl DeltaCoding {
     }
     
     pub fn decode(data: &[u8]) -> Vec<f32> {
-        if data.len() < 4 || data.len() % 4 != 0 {
+        if data.len() < 4 || !data.len().is_multiple_of(4) {
             return vec![];
         }
         
@@ -447,8 +447,8 @@ impl QuantizationCompressor {
         let bits = self.precision as usize;
         let max_val = (1u64 << bits) - 1;
         
-        let mut min_val = f32::MAX;
-        let mut max_val_f = f32::MIN;
+        let _min_val = f32::MAX;
+        let _max_val_f = f32::MIN;
         
         let reconstructed: Vec<f32> = data
             .iter()

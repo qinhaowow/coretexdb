@@ -7,7 +7,6 @@
 //! 2. 统一错误类型：`AdapterError` 包装同步/异步两边的错误
 //! 3. 统一接口：upsert/get/delete/list_keys 四个核心操作，async 接口签名
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -18,8 +17,10 @@ use crate::coretex_persistence::PersistenceManager;
 
 /// 一致性级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ConsistencyLevel {
     /// 同时写入同步存储（StorageEngine）和异步持久化层（PersistenceManager）
+    #[default]
     WriteThrough,
     /// 只写同步存储，后台异步刷到持久化层
     WriteBack,
@@ -27,11 +28,6 @@ pub enum ConsistencyLevel {
     WriteAround,
 }
 
-impl Default for ConsistencyLevel {
-    fn default() -> Self {
-        Self::WriteThrough
-    }
-}
 
 /// 统一存储错误
 #[derive(Debug, Clone)]

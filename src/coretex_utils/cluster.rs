@@ -107,11 +107,7 @@ impl ClusterManager {
     pub async fn get_shard_nodes(&self, shard_id: u32) -> Option<(String, Vec<String>)> {
         let shards = self.shards.read().await;
         
-        if let Some(shard) = shards.get(&shard_id) {
-            Some((shard.primary_node.clone(), shard.replica_nodes.clone()))
-        } else {
-            None
-        }
+        shards.get(&shard_id).map(|shard| (shard.primary_node.clone(), shard.replica_nodes.clone()))
     }
 
     pub async fn rebalance_shards(&self) {

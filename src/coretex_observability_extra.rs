@@ -575,11 +575,10 @@ impl PITRManager {
         let store = self.backup_store.read().await;
         let mut best: Option<&BackupRecord> = None;
         for rec in store.values() {
-            if rec.backup_type == "full" && rec.timestamp <= target_timestamp {
-                if best.is_none() || rec.timestamp > best.unwrap().timestamp {
+            if rec.backup_type == "full" && rec.timestamp <= target_timestamp
+                && (best.is_none() || rec.timestamp > best.unwrap().timestamp) {
                     best = Some(rec);
                 }
-            }
         }
         best.cloned()
     }

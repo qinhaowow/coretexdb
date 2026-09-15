@@ -33,6 +33,12 @@ pub trait DocumentParser: Send + Sync {
 
 pub struct PdfParser;
 
+impl Default for PdfParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PdfParser {
     pub fn new() -> Self {
         Self
@@ -169,6 +175,12 @@ fn extract_text_from_content_stream(content: &str, text: &mut String) {
 }
 
 pub struct ImageParser;
+
+impl Default for ImageParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ImageParser {
     pub fn new() -> Self {
@@ -312,6 +324,12 @@ impl DocumentParser for ImageParser {
 
 pub struct AudioParser;
 
+impl Default for AudioParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioParser {
     pub fn new() -> Self {
         Self
@@ -361,7 +379,7 @@ impl DocumentParser for AudioParser {
             metadata.insert("format".to_string(), serde_json::Value::String("FLAC".to_string()));
             text = format!("FLAC audio ({} bytes)", data.len());
         } else {
-            metadata.insert("format".to_string(), serde_json::Value::String(format!("unknown")));
+            metadata.insert("format".to_string(), serde_json::Value::String("unknown".to_string()));
             text = format!("Audio file ({} bytes)", data.len());
         }
         

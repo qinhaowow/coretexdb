@@ -126,7 +126,7 @@ impl SizeBasedPolicy {
 }
 
 impl TieringPolicy for SizeBasedPolicy {
-    fn determine_tier(&self, doc: &DocumentMeta) -> StorageTier {
+    fn determine_tier(&self, _doc: &DocumentMeta) -> StorageTier {
         let max_hot_bytes = self.config.max_hot_size_gb * 1024 * 1024 * 1024;
         
         if self.current_hot_size < max_hot_bytes {

@@ -219,7 +219,7 @@ impl FineGrainedPermissionEngine {
         Ok(has_permission && !has_deny)
     }
 
-    fn check_metadata_conditions(filter: &MetadataPermissionFilter, scope: &PermissionScope) -> bool {
+    fn check_metadata_conditions(_filter: &MetadataPermissionFilter, scope: &PermissionScope) -> bool {
         if let Some(ref metadata) = scope.metadata_filter {
             for cond in &metadata.conditions {
                 let field_value = metadata.conditions.iter()
@@ -286,7 +286,7 @@ impl FineGrainedPermissionEngine {
 
     pub async fn get_user_permissions(&self, user_id: &str) -> Vec<Permission> {
         let user_roles = self.user_roles.read().await;
-        let roles = self.roles.read().await;
+        let _roles = self.roles.read().await;
         let permissions = self.permissions.read().await;
         let role_perms = self.role_permissions.read().await;
         

@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 
 use crate::coretex_data::DataManager;
 use crate::coretex_data::VectorRecord;
-use crate::coretex_core::{CoreTexError, Result as CoretexResult};
 
 pub mod optimizer;
 pub use optimizer::{
@@ -105,7 +104,10 @@ impl SQLLexer {
                        "DELETE", "UPDATE", "SET", "CREATE", "DROP", "ALTER",
                        "INDEX", "ON", "AND", "OR", "NOT", "IN", "LIKE",
                        "ORDER", "BY", "ASC", "DESC", "LIMIT", "OFFSET",
-                       "JOIN", "GROUP", "HAVING", "AS", "DISTINCT", "COUNT",
+                       "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS",
+                       "GROUP", "HAVING", "AS", "DISTINCT", "COUNT",
+                       "SHOW", "DESCRIBE",
+                       "VECTOR", "SEARCH", "WITH",
                        "SUM", "AVG", "MIN", "MAX", "NULL", "IS", "TRUE", "FALSE"];
         
         let upper = value.to_uppercase();
@@ -168,7 +170,21 @@ impl SQLLexer {
             '=' => { self.position += 1; SQLToken::Operator("=".to_string()) }
             '<' | '>' | '!' | '|' | '&' | '+' | '-' | '/' => {
                 self.position += 1;
-                SQLToken::Operator(c.to_string())
+                // Two-character operators must be lexed as a single token.
+                // Previously `>=` became `Operator(">")` followed by `Operator("=")`,
+                // so the comparison silently degraded to `>` against a Null value and
+                // never matched — breaking every `HAVING x >= n` clause.
+                let mut op = c.to_string();
+                if let Some(next) = self.input.chars().nth(self.position) {
+                    if matches!(
+                        (c, next),
+                        ('>', '=') | ('<', '=') | ('!', '=') | ('<', '>') | ('|', '|') | ('&', '&')
+                    ) {
+                        op.push(next);
+                        self.position += 1;
+                    }
+                }
+                SQLToken::Operator(op)
             }
             _ => { self.position += 1; SQLToken::Operator(c.to_string()) }
         }
@@ -301,7 +317,8 @@ impl SQLParser {
             self.advance();
             self.advance_through(SQLToken::Keyword("BY".to_string()));
             loop {
-                let col = self.expect_identifier()?;
+                // ORDER BY may reference an aggregate, e.g. `ORDER BY SUM(amount) DESC`
+                let col = self.parse_column_reference()?;
                 let asc = if self.check(&SQLToken::Keyword("DESC".to_string())) {
                     self.advance();
                     false
@@ -345,7 +362,7 @@ impl SQLParser {
     /// Parse a single SELECT column: either a plain identifier, `*`, or an aggregate function.
     fn parse_select_column(&mut self) -> Result<SelectColumn, String> {
         match self.current().clone() {
-            SQLToken::Identifier(ref s) if s == "*" => {
+            SQLToken::Operator(ref op) if op == "*" => {
                 self.advance();
                 Ok(SelectColumn::Column("*".to_string()))
             }
@@ -363,7 +380,7 @@ impl SQLParser {
                 self.advance(); // consume function name
                 self.advance_through(SQLToken::LParen);
 
-                let target = if self.check(&SQLToken::Identifier("*".to_string())) {
+                let target = if self.check(&SQLToken::Operator("*".to_string())) {
                     self.advance();
                     "*".to_string()
                 } else {
@@ -449,6 +466,9 @@ impl SQLParser {
         loop {
             if let SQLToken::Identifier(name) = self.current().clone() {
                 columns.push(name);
+                self.advance(); // consume the column name
+            } else {
+                break;
             }
             
             if self.check(&SQLToken::Comma) {
@@ -466,10 +486,20 @@ impl SQLParser {
         loop {
             let val = self.current().clone();
             match val {
-                SQLToken::StringLiteral(s) => values.push(SQLValue::String(s)),
-                SQLToken::Number(n) => values.push(SQLValue::Number(n)),
-                SQLToken::Keyword(k) if k == "NULL" => values.push(SQLValue::Null),
-                _ => {}
+                SQLToken::StringLiteral(s) => {
+                    values.push(SQLValue::String(s));
+                    self.advance();
+                }
+                SQLToken::Number(n) => {
+                    values.push(SQLValue::Number(n));
+                    self.advance();
+                }
+                SQLToken::Keyword(ref k) if k == "NULL" => {
+                    values.push(SQLValue::Null);
+                    self.advance();
+                }
+                // Nothing consumable left: stop rather than spin forever.
+                _ => break,
             }
             
             if self.check(&SQLToken::Comma) {
@@ -631,28 +661,70 @@ impl SQLParser {
         Ok(SQLStatement::Describe(table))
     }
 
+    /// Parse a column reference.
+    ///
+    /// Accepts a plain column name or an aggregate call such as `SUM(amount)`,
+    /// returning the canonical result key (`sum(amount)`) so it lines up with
+    /// `SelectColumn::output_name()`. HAVING and ORDER BY need this because both
+    /// may reference aggregates rather than bare columns.
+    fn parse_column_reference(&mut self) -> Result<String, String> {
+        if let SQLToken::Keyword(ref k) = self.current().clone() {
+            let fn_name = match k.as_str() {
+                "COUNT" => "count",
+                "SUM" => "sum",
+                "AVG" => "avg",
+                "MIN" => "min",
+                "MAX" => "max",
+                _ => return self.expect_identifier(),
+            };
+            self.advance(); // consume function name
+            self.advance_through(SQLToken::LParen);
+            let target = if self.check(&SQLToken::Operator("*".to_string())) {
+                self.advance();
+                "*".to_string()
+            } else {
+                self.expect_identifier()?
+            };
+            self.advance_through(SQLToken::RParen);
+            return Ok(format!("{}({})", fn_name, target));
+        }
+        self.expect_identifier()
+    }
+
     fn parse_where_clause(&mut self) -> Result<SQLCondition, String> {
         let mut conditions = Vec::new();
         
         loop {
-            let col = self.expect_identifier()?;
-            let op = self.current().clone();
+            let col = self.parse_column_reference()?;
+
+            // Operators are either symbolic (=, >, <, ...) or the keyword `LIKE`.
+            // Matching only on `Operator` silently dropped every `LIKE` condition.
+            let op_str = match self.current().clone() {
+                SQLToken::Operator(op_str) => op_str,
+                SQLToken::Keyword(ref k) if k == "LIKE" => "LIKE".to_string(),
+                other => {
+                    return Err(format!("Expected an operator in WHERE clause, got {:?}", other));
+                }
+            };
+            self.advance();
             
-            if let SQLToken::Operator(op_str) = op {
-                self.advance();
-                let val = self.current().clone();
+            let val = self.current().clone();
                 
-                let sql_val = match val {
-                    SQLToken::StringLiteral(s) => SQLValue::String(s),
-                    SQLToken::Number(n) => SQLValue::Number(n),
-                    SQLToken::Keyword(ref k) if k == "NULL" => SQLValue::Null,
-                    SQLToken::Keyword(ref k) if k == "TRUE" => SQLValue::Boolean(true),
-                    SQLToken::Keyword(ref k) if k == "FALSE" => SQLValue::Boolean(false),
-                    _ => SQLValue::Null,
-                };
+            let sql_val = match val {
+                SQLToken::StringLiteral(s) => SQLValue::String(s),
+                SQLToken::Number(n) => SQLValue::Number(n),
+                SQLToken::Keyword(ref k) if k == "NULL" => SQLValue::Null,
+                SQLToken::Keyword(ref k) if k == "TRUE" => SQLValue::Boolean(true),
+                SQLToken::Keyword(ref k) if k == "FALSE" => SQLValue::Boolean(false),
+                _ => SQLValue::Null,
+            };
+
+            // Consume the value token. Without this the parser stayed parked on the
+            // literal, so `AND` was never recognised and `a = 1 AND b = 2` silently
+            // dropped every condition after the first.
+            self.advance();
                 
-                conditions.push((col, op_str, sql_val));
-            }
+            conditions.push((col, op_str, sql_val));
 
             // 支持 AND 连接多个条件
             if self.check(&SQLToken::Keyword("AND".to_string())) {
@@ -724,6 +796,18 @@ impl SQLParser {
             (SQLToken::Keyword(e), SQLToken::Keyword(c)) => e == c,
             (SQLToken::Identifier(e), SQLToken::Identifier(c)) => e == c,
             (SQLToken::Operator(e), SQLToken::Operator(c)) => e == c,
+            (SQLToken::Number(e), SQLToken::Number(c)) => e == c,
+            (SQLToken::StringLiteral(e), SQLToken::StringLiteral(c)) => e == c,
+            // Unit variants carry no payload, so equality is variant identity.
+            // Previously these fell through to `_ => false`, which made
+            // `check(&Comma)`, `check(&LParen)` and `check(&RParen)` never match:
+            // `advance_through(&LParen)` then consumed the whole token stream,
+            // breaking INSERT column lists, UPDATE SET clauses and CREATE INDEX.
+            (SQLToken::LParen, SQLToken::LParen)
+            | (SQLToken::RParen, SQLToken::RParen)
+            | (SQLToken::Comma, SQLToken::Comma)
+            | (SQLToken::Dot, SQLToken::Dot)
+            | (SQLToken::EOF, SQLToken::EOF) => true,
             _ => false,
         }
     }
@@ -784,6 +868,17 @@ pub enum AggregateFunction {
     Max,
 }
 
+/// Canonical lowercase SQL name for an aggregate function.
+fn aggregate_fn_name(func: &AggregateFunction) -> &'static str {
+    match func {
+        AggregateFunction::Count => "count",
+        AggregateFunction::Sum => "sum",
+        AggregateFunction::Avg => "avg",
+        AggregateFunction::Min => "min",
+        AggregateFunction::Max => "max",
+    }
+}
+
 impl SelectColumn {
     /// Return the output column name for projection and result construction.
     pub fn output_name(&self) -> String {
@@ -793,16 +888,22 @@ impl SelectColumn {
                 if let Some(a) = alias {
                     a.clone()
                 } else {
-                    let fn_name = match func {
-                        AggregateFunction::Count => "count",
-                        AggregateFunction::Sum => "sum",
-                        AggregateFunction::Avg => "avg",
-                        AggregateFunction::Min => "min",
-                        AggregateFunction::Max => "max",
-                    };
-                    format!("{}({})", fn_name, target)
+                    format!("{}({})", aggregate_fn_name(func), target)
                 }
             }
+        }
+    }
+
+    /// The un-aliased result key for an aggregate, e.g. `count(*)` or `sum(amount)`.
+    ///
+    /// Present even when the SELECT list uses `AS`, so a HAVING clause can refer
+    /// to the aggregate expression directly instead of only its alias.
+    pub fn expression_name(&self) -> Option<String> {
+        match self {
+            SelectColumn::Aggregate { func, target, .. } => {
+                Some(format!("{}({})", aggregate_fn_name(func), target))
+            }
+            _ => None,
         }
     }
 }
@@ -855,7 +956,7 @@ pub struct SQLCondition {
     pub conditions: Vec<(String, String, SQLValue)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SQLValue {
     String(String),
     Number(f64),
@@ -1075,7 +1176,7 @@ impl SQLExecutor {
     ) -> Result<SQLResult, String> {
         let cols_all = Self::is_star(&select.columns);
         let plain_cols = Self::plain_columns(&select.columns);
-        let has_where = select.where_clause.is_some();
+        let _has_where = select.where_clause.is_some();
 
         // Step 1: Build full rows (ALL metadata columns) for WHERE evaluation
         let mut candidates: Vec<(f32, HashMap<String, SQLValue>)> = Vec::new();
@@ -1164,18 +1265,14 @@ impl SQLExecutor {
         let plain_cols = Self::plain_columns(&select.columns);
 
         for (id, record) in collection_data.iter() {
+            // Build the FULL row first: WHERE and ORDER BY may reference columns
+            // that are not part of the SELECT list.
             let mut row = HashMap::new();
-
-            if cols_all || plain_cols.iter().any(|c| c == "id") {
-                row.insert("id".to_string(), SQLValue::String(id.clone()));
-            }
+            row.insert("id".to_string(), SQLValue::String(id.clone()));
 
             if let Some(obj) = record.metadata.as_object() {
                 for (key, val) in obj {
-                    if cols_all || plain_cols.contains(key) {
-                        let sql_val = json_to_sql_value(val);
-                        row.insert(key.clone(), sql_val);
-                    }
+                    row.insert(key.clone(), json_to_sql_value(val));
                 }
             }
 
@@ -1188,25 +1285,19 @@ impl SQLExecutor {
             rows.push(row);
         }
 
-        // ORDER BY (non-aggregate)
-        if !select.order_by.is_empty() {
-            rows.sort_by(|a, b| {
-                for (col, asc) in &select.order_by {
-                    let va = a.get(col);
-                    let vb = b.get(col);
-                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
-                        .unwrap_or(std::cmp::Ordering::Equal);
-                    if ord != std::cmp::Ordering::Equal {
-                        return if *asc { ord } else { ord.reverse() };
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
-        }
+        // ORDER BY (non-aggregate) — before projection and LIMIT
+        sort_rows_by(&mut rows, &select.order_by);
 
         // LIMIT
         let limit = select.limit.unwrap_or(rows.len());
         rows.truncate(limit);
+
+        // Project last so WHERE and ORDER BY could see every column.
+        let rows = if cols_all {
+            rows
+        } else {
+            self.project_columns(&rows, &plain_cols)
+        };
 
         Ok(SQLResult::Select(rows))
     }
@@ -1454,22 +1545,29 @@ impl SQLExecutor {
                 let key = key_parts.join("|");
                 map.entry(key).or_default().push(row);
             }
-            map.into_iter().collect()
+            // Sort by group key so the pre-`ORDER BY` order is deterministic.
+            // Without this, ties in `ORDER BY` were resolved by HashMap iteration
+            // order, which varies per process — the same query could return rows
+            // in a different order on every run.
+            let mut groups: Vec<(String, Vec<HashMap<String, SQLValue>>)> =
+                map.into_iter().collect();
+            groups.sort_by(|a, b| a.0.cmp(&b.0));
+            groups
         };
 
         // Compute aggregates per group
         let mut result_rows: Vec<HashMap<String, SQLValue>> = Vec::new();
 
         for (_key, group_rows) in &groups {
-            if group_rows.is_empty() {
-                continue;
-            }
-
+            // NOTE: an empty `group_rows` is legitimate — `SELECT COUNT(*)` with no
+            // GROUP BY over an empty table is one group holding zero rows, and SQL
+            // requires it to yield a single row with COUNT = 0. Skipping it produced
+            // zero rows, so callers indexing `rows[0]` panicked.
             let mut row = HashMap::new();
 
             // Output GROUP BY columns
             for gb_col in &select.group_by {
-                if let Some(val) = group_rows[0].get(gb_col) {
+                if let Some(val) = group_rows.first().and_then(|r| r.get(gb_col)) {
                     row.insert(gb_col.clone(), val.clone());
                 }
             }
@@ -1477,7 +1575,7 @@ impl SQLExecutor {
             // Compute aggregates
             for col in &select.columns {
                 match col {
-                    SelectColumn::Aggregate { func, target, alias } => {
+                    SelectColumn::Aggregate { func, target, alias: _ } => {
                         let name = col.output_name();
                         let val = match func {
                             AggregateFunction::Count => {
@@ -1529,11 +1627,16 @@ impl SQLExecutor {
                                 vals.first().map(|v| (*v).clone()).unwrap_or(SQLValue::Null)
                             }
                         };
+                        // Expose the un-aliased key as well, so a HAVING clause may
+                        // reference either `COUNT(*)` or its `AS total` alias.
+                        if let Some(expr_name) = col.expression_name() {
+                            row.insert(expr_name, val.clone());
+                        }
                         row.insert(name, val);
                     }
                     SelectColumn::Column(name) if name != "*" => {
                         // Non-aggregate column in aggregate query: take first group's value
-                        if let Some(val) = group_rows[0].get(name) {
+                        if let Some(val) = group_rows.first().and_then(|r| r.get(name)) {
                             row.insert(name.clone(), val.clone());
                         }
                     }
@@ -1550,20 +1653,7 @@ impl SQLExecutor {
         }
 
         // ORDER BY
-        if !select.order_by.is_empty() {
-            result_rows.sort_by(|a, b| {
-                for (col, asc) in &select.order_by {
-                    let va = a.get(col);
-                    let vb = b.get(col);
-                    let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
-                        .unwrap_or(std::cmp::Ordering::Equal);
-                    if ord != std::cmp::Ordering::Equal {
-                        return if *asc { ord } else { ord.reverse() };
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
-        }
+        sort_rows_by(&mut result_rows, &select.order_by);
 
         // LIMIT
         let limit = select.limit.unwrap_or(result_rows.len());
@@ -1607,16 +1697,13 @@ impl SQLExecutor {
         let plain_cols = Self::plain_columns(&select.columns);
 
         for (id, (_vec, meta)) in &collection.vectors {
+            // Build the FULL row first. WHERE (and ORDER BY) must be able to
+            // reference columns that are not in the SELECT list; projecting here
+            // dropped every row whose filter column was not also selected.
             let mut row = HashMap::new();
-
-            if cols_all || plain_cols.iter().any(|c| c == "id") {
-                row.insert("id".to_string(), SQLValue::String(id.clone()));
-            }
-
+            row.insert("id".to_string(), SQLValue::String(id.clone()));
             for (key, val) in meta {
-                if cols_all || plain_cols.contains(key) {
-                    row.insert(key.clone(), val.clone());
-                }
+                row.insert(key.clone(), val.clone());
             }
 
             if let Some(ref cond) = select.where_clause {
@@ -1646,6 +1733,13 @@ impl SQLExecutor {
 
         let limit = select.limit.unwrap_or(rows.len());
         rows.truncate(limit);
+
+        // Project last so WHERE and ORDER BY could see every column.
+        let rows = if cols_all {
+            rows
+        } else {
+            self.project_columns(&rows, &plain_cols)
+        };
 
         Ok(SQLResult::Select(rows))
     }
@@ -2185,6 +2279,32 @@ fn sql_value_cmp(a: &SQLValue, b: &SQLValue) -> Option<std::cmp::Ordering> {
         (SQLValue::String(s1), SQLValue::String(s2)) => Some(s1.cmp(s2)),
         _ => None,
     }
+}
+
+/// Apply an `ORDER BY` list to projected rows, in place.
+///
+/// Sorts by each key in turn; the first key that differs decides. A tie on every
+/// key leaves the relative order alone, so callers that must be deterministic
+/// (aggregate results) have to produce a deterministic pre-sort order.
+fn sort_rows_by(
+    rows: &mut [HashMap<String, SQLValue>],
+    order_by: &[(String, bool)],
+) {
+    if order_by.is_empty() {
+        return;
+    }
+    rows.sort_by(|a, b| {
+        for (col, asc) in order_by {
+            let va = a.get(col);
+            let vb = b.get(col);
+            let ord = sql_value_cmp(va.unwrap_or(&SQLValue::Null), vb.unwrap_or(&SQLValue::Null))
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if ord != std::cmp::Ordering::Equal {
+                return if *asc { ord } else { ord.reverse() };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
 }
 
 fn sql_value_like(a: &SQLValue, pattern: &SQLValue) -> bool {

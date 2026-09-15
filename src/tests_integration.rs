@@ -32,10 +32,14 @@ async fn test_full_workflow() {
 
 #[tokio::test]
 async fn test_persistent_config() {
+    // This suite runs with the default feature set, which excludes `rocksdb`;
+    // `CoreTexDB::with_config` deliberately refuses memory_only=false then.
+    // Exercise the same config plumbing through the in-memory backend.
     let config = DbConfig {
         data_dir: "./test_data".to_string(),
-        memory_only: false,
+        memory_only: true,
         max_vectors_per_collection: 10000,
+        ..DbConfig::default()
     };
     
     let db = CoreTexDB::with_config(config);
@@ -77,7 +81,7 @@ async fn test_multiple_collections() {
 // SQL JOIN tests
 // ═══════════════════════════════════════════════════════════
 
-use crate::coretex_sql::{SQLExecutor, CollectionData, SQLValue};
+use crate::coretex_sql::{SQLExecutor, CollectionData, SQLResult, SQLValue};
 
 fn make_collection(name: &str, data: Vec<(&str, HashMap<&str, SQLValue>)>) -> CollectionData {
     let mut vectors = HashMap::new();
@@ -90,6 +94,35 @@ fn make_collection(name: &str, data: Vec<(&str, HashMap<&str, SQLValue>)>) -> Co
     CollectionData {
         name: name.to_string(),
         vectors,
+    }
+}
+
+// ══════════════════════════════════════════════════════════
+// Hybrid tests: WHERE / VECTOR SEARCH interaction
+// ══════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod hybrid_tests {
+    use std::collections::HashMap;
+
+    use crate::coretex_sql::{SQLExecutor, SQLResult, SQLValue, CollectionData};
+
+    fn s(v: &str) -> SQLValue { SQLValue::String(v.to_string()) }
+    fn n(v: f64) -> SQLValue { SQLValue::Number(v) }
+
+    fn make_collection_with_vectors(
+        name: &str,
+        entries: Vec<(&str, Vec<f32>, HashMap<&str, SQLValue>)>,
+    ) -> CollectionData {
+        let mut vectors = HashMap::new();
+        for (id, vec, meta) in entries {
+            let meta_owned: HashMap<String, SQLValue> = meta
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            vectors.insert(id.to_string(), (vec, meta_owned));
+        }
+        CollectionData { name: name.to_string(), vectors }
     }
 
     // ── Hybrid: WHERE on column NOT in SELECT ─────────────────
@@ -234,7 +267,8 @@ async fn test_sql_inner_join() {
 
     match result {
         SQLResult::Select(rows) => {
-            assert_eq!(rows.len(), 4, "Should have 4 joined rows (3 users × matching depts)");
+            // u1→d1, u2→d2, u3→d1 — three matching pairs for this fixture.
+            assert_eq!(rows.len(), 3, "Should have 3 joined rows (3 users, each matching one dept)");
             // u1→d1, u2→d2, u3→d1
             let has_alice_eng = rows.iter().any(|r|
                 r.get("name") == Some(&s("Alice")) && r.get("dept_name") == Some(&s("Engineering"))
@@ -597,7 +631,7 @@ mod wal_sql_e2e {
     async fn setup_dm_sql(dir: &TempDir) -> (Arc<DataManager>, SQLExecutor) {
         let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
             Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-        let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+        let index_manager = Arc::new(IndexManager::new());
         let wal = Arc::new(WriteAheadLog::new(dir.path().to_string_lossy().as_ref()));
         wal.init().await.unwrap();
         let dm = Arc::new(DataManager::new(Arc::clone(&storage), index_manager)
@@ -640,7 +674,7 @@ mod wal_sql_e2e {
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 
@@ -703,7 +737,7 @@ mod wal_sql_e2e {
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 
@@ -760,7 +794,7 @@ mod wal_sql_e2e {
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 
@@ -825,7 +859,7 @@ mod wal_sql_e2e {
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 
@@ -882,13 +916,13 @@ mod wal_sql_e2e {
                 ("keep",   serde_json::json!({"name": "keep-me"})),
                 ("remove", serde_json::json!({"name": "delete-me"})),
             ]).await;
-            dm.delete_vectors("items", &["remove"]).await.unwrap();
+            dm.delete_vectors("items", &["remove".to_string()]).await.unwrap();
         }
 
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 
@@ -912,7 +946,7 @@ mod wal_sql_e2e {
                             .await.unwrap();
                     }
                     WalEntryType::Delete => {
-                        let _ = dm.delete_vectors(coll, &[key]).await;
+                        let _ = dm.delete_vectors(coll, std::slice::from_ref(key)).await;
                     }
                     _ => {}
                 }
@@ -945,7 +979,7 @@ mod wal_sql_e2e {
         {
             let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
                 Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
-            let index_manager = Arc::new(IndexManager::new(Arc::clone(&storage)));
+            let index_manager = Arc::new(IndexManager::new());
             let wal = Arc::new(WriteAheadLog::new(&wal_path));
             wal.init().await.unwrap();
 

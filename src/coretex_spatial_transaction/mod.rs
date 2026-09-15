@@ -253,7 +253,7 @@ fn rstar_split(e: &[RTreeEntry], _dim: usize) -> (Vec<RTreeEntry>, Vec<RTreeEntr
             if ov<bo||(ov==bo&&as_<bs){bo=ov;bs=as_;ba=d;bp=sp;}
         }
     }
-    let mut ls:Vec<usize>={let mut v:Vec<(usize,f64)>=e.iter().enumerate().map(|(i,x)|(i,x.mbr.min[ba])).collect();
+    let ls:Vec<usize>={let mut v:Vec<(usize,f64)>=e.iter().enumerate().map(|(i,x)|(i,x.mbr.min[ba])).collect();
         v.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)); v.into_iter().map(|(i,_)|i).collect()};
     let ga:Vec<RTreeEntry>=ls[..bp].iter().map(|&i|e[i].clone()).collect();
     let gb:Vec<RTreeEntry>=ls[bp..].iter().map(|&i|e[i].clone()).collect();

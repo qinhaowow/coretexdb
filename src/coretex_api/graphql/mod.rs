@@ -7,7 +7,7 @@
 //! - Filter: MetadataFilter 支持多条件组合
 
 use async_graphql::{
-    Context, EmptySubscription, Object, Schema, ID, Subscription,
+    Context, Object, Schema, Subscription,
     SimpleObject, InputObject, Enum, FieldResult,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
@@ -19,7 +19,6 @@ use axum::{
 };
 use futures_util::stream::Stream;
 use std::sync::Arc;
-use std::collections::HashMap;
 use tokio::sync::{RwLock, broadcast};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -413,8 +412,8 @@ impl MutationRoot {
 
         let data: Vec<(String, Vec<f32>, serde_json::Value)> = vectors
             .into_iter()
-            .enumerate()
-            .map(|(i, v)| {
+            
+            .map(|v| {
                 let id = v.id.unwrap_or_else(|| format!("vec_{}", Uuid::new_v4()));
                 let vf: Vec<f32> = v.vector.iter().map(|x| *x as f32).collect();
                 (id, vf, v.metadata.unwrap_or(serde_json::json!({})))
@@ -580,11 +579,31 @@ async fn graphql_handler(
     schema.execute(req.into_inner()).await.into()
 }
 
+/// 订阅端点：GraphQL over HTTP 的 multipart/mixed 流式响应。
+///
+/// `execute_stream` 返回的 `Stream<Item = Response>` 本身不实现
+/// `IntoResponse`，需要经 `create_multipart_mixed_stream` 包装成
+/// multipart 分块流，并显式声明与内部 `--graphql` 分隔符一致的 content-type。
+/// 流元素先包成 `Result` 以满足 axum `Body::from_stream` 的 `TryStream` 约束。
 async fn graphql_ws_handler(
     State(schema): State<AppSchema>,
     req: GraphQLRequest,
 ) -> Response {
-    schema.execute_stream(req.into_inner()).into()
+    use futures_util::StreamExt;
+
+    let stream = async_graphql::http::create_multipart_mixed_stream(
+        schema.execute_stream(req.into_inner()),
+        std::time::Duration::from_secs(15),
+    )
+    .map(Ok::<_, std::convert::Infallible>);
+
+    Response::builder()
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"",
+        )
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
 }
 
 async fn graphql_playground() -> impl IntoResponse {

@@ -289,14 +289,12 @@ fn calculate_distance(a: &[f32], b: &[f32], metric: &str) -> f32 {
 
 pub struct BM25TextAdapter {
     index: BM25Index,
-    runtime: tokio::runtime::Runtime,
 }
 
 impl BM25TextAdapter {
     pub fn new(k1: f32, b: f32) -> Self {
         Self {
             index: BM25Index::new(k1, b),
-            runtime: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
@@ -308,21 +306,26 @@ impl BM25TextAdapter {
 
 impl TextRetriever for BM25TextAdapter {
     fn search(&self, query: &str, k: usize) -> Vec<TextSearchResult> {
-        self.runtime.block_on(async {
-            self.index.search(query, k)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| TextSearchResult { id: r.id, score: r.score })
-                .collect()
-        })
+        // `BM25Index` is internally synchronous: it only ever contends on
+        // `tokio::sync::RwLock` and never touches timers or I/O. Its futures are
+        // therefore drivable by any executor, so `futures::executor::block_on`
+        // is safe from both sync and async callers.
+        //
+        // The previous implementation owned a private `tokio::Runtime` and used
+        // `Runtime::block_on`, which panics with "Cannot block the current thread
+        // from within a runtime" whenever this sync trait method is reached from
+        // async code -- and its `Runtime` field also panicked on drop for the
+        // same reason.
+        futures::executor::block_on(self.index.search(query, k))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| TextSearchResult { id: r.id, score: r.score })
+            .collect()
     }
 
     fn add_text(&self, id: &str, text: &str) {
         let doc = crate::coretex_bm25::Document::new(id.to_string(), text.to_string());
-        self.runtime.block_on(async {
-            let _ = self.index.add_document(doc).await;
-        });
+        let _ = futures::executor::block_on(self.index.add_document(doc));
     }
 }
 

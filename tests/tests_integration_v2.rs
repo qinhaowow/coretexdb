@@ -8,10 +8,10 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::coretex_data::DataManager;
-    use crate::coretex_index::IndexManager;
-    use crate::coretex_storage::MemoryStorage;
-    use crate::coretex_transaction::{TransactionManager, WriteAheadLog, IsolationLevel, WalEntry, WalOperation};
+    use coretexdb::coretex_data::DataManager;
+    use coretexdb::coretex_index::IndexManager;
+    use coretexdb::coretex_storage::MemoryStorage;
+    use coretexdb::coretex_transaction::{TransactionManager, WriteAheadLog, IsolationLevel, WalEntry, WalOperation};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::RwLock;
@@ -27,7 +27,7 @@ mod tests {
     #[tokio::test]
     async fn test_data_wal_consistency() {
         // 1. 创建 DataManager
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let index_manager = Arc::new(IndexManager::new());
         let data_manager = DataManager::new(Arc::new(RwLock::new(storage)), index_manager.clone());
 
@@ -68,10 +68,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_adapter_write_through() {
-        use crate::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
-        use crate::coretex_storage::MemoryStorage;
+        use coretexdb::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
+        use coretexdb::coretex_storage::MemoryStorage;
 
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let adapter = UnifiedStorageAdapter::new(
             Arc::new(RwLock::new(storage)),
             None,
@@ -79,15 +79,15 @@ mod tests {
         );
 
         // 写入数据
-        adapter.upsert("key1", b"vector_data", b"meta_data").await.unwrap();
-        adapter.upsert("key2", b"vector_data2", b"meta_data2").await.unwrap();
+        adapter.upsert("key1", &[1.0, 2.0, 3.0], &serde_json::json!({"name": "meta_data"})).await.unwrap();
+        adapter.upsert("key2", &[4.0, 5.0, 6.0], &serde_json::json!({"name": "meta_data2"})).await.unwrap();
 
         // 读回
         let v1 = adapter.get("key1").await.unwrap();
         assert!(v1.is_some());
         let (vec, meta) = v1.unwrap();
-        assert_eq!(vec, b"vector_data");
-        assert_eq!(meta, b"meta_data");
+        assert_eq!(vec, vec![1.0, 2.0, 3.0]);
+        assert_eq!(meta, serde_json::json!({"name": "meta_data"}));
 
         // 列出
         let keys = adapter.list_keys().await.unwrap();
@@ -97,17 +97,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_adapter_write_back() {
-        use crate::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
-        use crate::coretex_storage::MemoryStorage;
+        use coretexdb::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
+        use coretexdb::coretex_storage::MemoryStorage;
 
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let adapter = UnifiedStorageAdapter::new(
             Arc::new(RwLock::new(storage)),
             None,
             ConsistencyLevel::WriteBack,
         );
 
-        adapter.upsert("k", b"v", b"m").await.unwrap();
+        adapter.upsert("k", &[1.0], &serde_json::json!({"m": 1})).await.unwrap();
         let stats = adapter.stats().await;
         assert_eq!(stats.write_back_writes, 1);
         assert_eq!(stats.sync_writes, 1);
@@ -116,23 +116,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_adapter_write_around_requires_persistence() {
-        use crate::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
-        use crate::coretex_storage::MemoryStorage;
+        use coretexdb::coretex_data::storage_adapter::{UnifiedStorageAdapter, ConsistencyLevel};
+        use coretexdb::coretex_storage::MemoryStorage;
 
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let adapter = UnifiedStorageAdapter::new(
             Arc::new(RwLock::new(storage)),
             None,
             ConsistencyLevel::WriteAround,
         );
 
-        let result = adapter.upsert("k", b"v", b"m").await;
+        let result = adapter.upsert("k", &[1.0], &serde_json::json!({"m": 1})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_data_manager_tx_aware_insert() {
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let index_manager = Arc::new(IndexManager::new());
         let data_manager = DataManager::new(Arc::new(RwLock::new(storage)), index_manager);
 
@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_data_manager_tx_aware_delete() {
-        let storage: Box<dyn crate::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
+        let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let index_manager = Arc::new(IndexManager::new());
         let data_manager = DataManager::new(Arc::new(RwLock::new(storage)), index_manager);
 
@@ -290,18 +290,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_optimizer_vector_pushdown() {
-        use crate::coretex_query::cost_model::*;
-        use crate::coretex_query::SQLOptimizer;
+        use coretexdb::coretex_query::cost_model::*;
+        use coretexdb::coretex_sql::SQLOptimizer;
 
         let optimizer = SQLOptimizer::new();
         let mut vec = vec![0.0; 768];
         for i in 0..vec.len() {
             vec[i] = (i as f64) * 0.01;
         }
-        let filters = vec![crate::coretex_sql::FilterOperator {
+        let filters = vec![coretexdb::coretex_sql::FilterOperator {
             column: "embedding".to_string(),
-            op: crate::coretex_sql::FilterOp::Lt,
-            value: crate::coretex_sql::FilterValue::NumberList(vec),
+            op: coretexdb::coretex_sql::FilterOp::Lt,
+            value: coretexdb::coretex_sql::FilterValue::NumberList(vec),
         }];
 
         let plan = optimizer.optimize(filters, vec!["id".to_string()], Some((10, 0)), 50_000);
@@ -311,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_index_selector_end_to_end() {
-        use crate::coretex_query::cost_model::*;
+        use coretexdb::coretex_query::cost_model::*;
 
         // 小数据集：BruteForce 胜出
         let small = CostInput {

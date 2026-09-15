@@ -4,7 +4,6 @@
 //! - `SELECT ... WHERE vector <-> '[1,2,3]' < 0.5` → 直接走 HNSW 索引，返回候选后再过滤
 //! - `ORDER BY vector <-> '[1,2,3]' LIMIT 10` → 用 HNSW k-NN 代替全表扫描 + 排序
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// 算子类型
@@ -210,7 +209,7 @@ impl SQLOptimizer {
         let mut uses_vector_index = false;
 
         // 1. 检测向量谓词 → 下推到 HNSW/IVF
-        if let Some((query_vector, dist_op, k, index_kind)) =
+        if let Some((query_vector, dist_op, k, _index_kind)) =
             self.extract_vector_predicates(&filters)
         {
             // 决策索引类型：基于数据规模

@@ -202,12 +202,12 @@ pub struct SpanBuilder {
 }
 
 impl SpanBuilder {
-    pub async fn with_attribute(mut self, key: &str, value: &str) -> Self {
+    pub async fn with_attribute(self, key: &str, value: &str) -> Self {
         self.tracer.add_attribute(&self.span_id, key, value).await;
         self
     }
 
-    pub async fn with_kind(mut self, kind: SpanKind) -> Self {
+    pub async fn with_kind(self, kind: SpanKind) -> Self {
         {
             let mut spans = self.tracer.active_spans.write().await;
             if let Some(span) = spans.get_mut(&self.span_id) {

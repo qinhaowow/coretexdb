@@ -68,7 +68,6 @@ pub fn parse_vector(vector_str: &str) -> Result<Vec<f32>> {
 /// Generate a random vector of the specified dimension
 pub fn random_vector(dimension: usize) -> Vec<f32> {
     use rand::Rng;
-use crate::coretex_core::Result;
     
     let mut rng = rand::thread_rng();
     (0..dimension).map(|_| rng.gen::<f32>()).collect()

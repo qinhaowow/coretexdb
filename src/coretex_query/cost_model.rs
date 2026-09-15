@@ -5,7 +5,6 @@
 //! 2. **索引选择**：自动选择 HNSW / IVF / BruteForce 中的最优方案
 //! 3. **JOIN 下推**：对于多集合 JOIN，把过滤条件下推到子查询
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// 可用的索引类型

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct TimeSeriesPoint {

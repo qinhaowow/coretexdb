@@ -414,8 +414,8 @@ impl WebSocketServer {
         }
 
         // 状态机
-        if conn_guard.state == ConnectionState::Connecting {
-            if !matches!(message, WebSocketMessage::Auth(_)) {
+        if conn_guard.state == ConnectionState::Connecting
+            && !matches!(message, WebSocketMessage::Auth(_)) {
                 if self.config.enable_auth {
                     return Some(WebSocketMessage::Error(ErrorResponse {
                         code: "AUTH_REQUIRED".to_string(),
@@ -428,7 +428,6 @@ impl WebSocketServer {
                     conn_guard.state = ConnectionState::Connected;
                 }
             }
-        }
 
         let response = match message.clone() {
             WebSocketMessage::Auth(auth_req) => {
@@ -638,11 +637,10 @@ impl WebSocketServer {
 
         for (id, conn) in connections.iter() {
             let conn_guard = conn.lock().await;
-            if now.duration_since(conn_guard.last_pong_at) > Duration::from_secs(self.config.ping_timeout_secs * 2) {
-                if self.heartbeat.should_disconnect(&conn_guard) {
+            if now.duration_since(conn_guard.last_pong_at) > Duration::from_secs(self.config.ping_timeout_secs * 2)
+                && self.heartbeat.should_disconnect(&conn_guard) {
                     to_disconnect.push(id.clone());
                 }
-            }
         }
         to_disconnect
     }

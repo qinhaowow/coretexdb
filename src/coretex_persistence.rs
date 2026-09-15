@@ -96,6 +96,7 @@ pub struct CollectionStorage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct PersistenceStats {
     pub total_writes: u64,
     pub total_reads: u64,
@@ -106,19 +107,6 @@ pub struct PersistenceStats {
     pub error_count: u64,
 }
 
-impl Default for PersistenceStats {
-    fn default() -> Self {
-        Self {
-            total_writes: 0,
-            total_reads: 0,
-            total_bytes_written: 0,
-            total_bytes_read: 0,
-            last_checkpoint: 0,
-            checkpoint_count: 0,
-            error_count: 0,
-        }
-    }
-}
 
 impl PersistenceManager {
     pub fn new(config: PersistenceConfig) -> Self {
@@ -214,11 +202,11 @@ impl PersistenceManager {
             .join("collections")
             .join(collection);
         
-        std::fs::create_dir_all(&collection_dir.join("vectors"))
+        std::fs::create_dir_all(collection_dir.join("vectors"))
             .map_err(|e| PersistenceError::IoError(e.to_string()))?;
         
         if metadata.is_some() {
-            std::fs::create_dir_all(&collection_dir.join("metadata"))
+            std::fs::create_dir_all(collection_dir.join("metadata"))
                 .map_err(|e| PersistenceError::IoError(e.to_string()))?;
         }
 
@@ -291,7 +279,7 @@ impl PersistenceManager {
         }
 
         let vector: Vec<f32> = vector_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
 
@@ -349,7 +337,7 @@ impl PersistenceManager {
 
         let collections = self.collections.read().await;
         
-        for (name, _) in collections.iter() {
+        for name in collections.keys() {
             let src = data_dir.join("collections").join(name);
             let dst = checkpoint_dir.join(name);
             
@@ -457,7 +445,7 @@ impl PersistenceManager {
         // metadata and data writes are flushed to persistent storage.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
+            
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .open(dir)

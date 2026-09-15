@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -99,6 +99,12 @@ pub struct Snapshot {
     pub data: HashMap<String, Vec<u8>>,
 }
 
+impl Default for TransactionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransactionManager {
     /// 公开方法：直接向 WAL 追加条目（供 DataManager 的事务感知写入使用）
     pub async fn append_wal(&self, entry: WalEntry) -> Result<u64, TransactionError> {
@@ -137,7 +143,7 @@ impl TransactionManager {
             start_timestamp: timestamp,
             write_set: Vec::new(),
             read_set: Vec::new(),
-            isolation_level: isolation_level.clone(),
+            isolation_level,
         };
 
         {
@@ -225,7 +231,7 @@ impl TransactionManager {
     pub async fn create_snapshot(&self, txn_id: TransactionId) -> Result<SnapshotId, TransactionError> {
         let active = self.active_transactions.read().await;
 
-        let transaction = active.get(&txn_id)
+        let _transaction = active.get(&txn_id)
             .ok_or(TransactionError::TransactionNotFound(txn_id))?;
 
         let timestamp = SystemTime::now()
@@ -502,7 +508,7 @@ impl WriteAheadLog {
         };
 
         wal.replay_from_disk().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("replay failed: {}", e))
+            std::io::Error::other(format!("replay failed: {}", e))
         })?;
 
         Ok(wal)
@@ -927,6 +933,12 @@ fn deserialize_wal_entry(data: &[u8]) -> Result<WalEntry, String> {
         operation,
         lsn,
     })
+}
+
+impl Default for SnapshotManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SnapshotManager {

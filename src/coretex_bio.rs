@@ -1,7 +1,7 @@
 //! Bioinformatics Module for CortexDB
 //! DNA/Protein k-mer embedding and biological sequence processing
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct KmerIndexer {
     k: usize,
@@ -235,7 +235,7 @@ pub struct BinaryVector {
 
 impl BinaryVector {
     pub fn new(dimension: usize) -> Self {
-        let byte_size = (dimension + 7) / 8;
+        let byte_size = dimension.div_ceil(8);
         Self {
             data: vec![0u8; byte_size],
             dimension,
@@ -586,6 +586,12 @@ impl UserDefinedFunction {
 
 pub struct UdfRegistry {
     functions: HashMap<String, UserDefinedFunction>,
+}
+
+impl Default for UdfRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UdfRegistry {

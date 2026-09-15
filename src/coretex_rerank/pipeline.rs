@@ -67,7 +67,7 @@ impl TwoStageSearchPipeline {
             .collect()
     }
 
-    pub fn search_with_callback<F>(&mut self, query: &HybridQuery, mut fetch_docs: F) -> Vec<FusedResult>
+    pub fn search_with_callback<F>(&mut self, query: &HybridQuery, _fetch_docs: F) -> Vec<FusedResult>
     where
         F: FnMut(&str) -> Option<RerankDocument>,
     {

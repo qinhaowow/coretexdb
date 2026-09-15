@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct User {
@@ -138,30 +138,29 @@ pub struct AuthService {
 
 impl AuthService {
     pub fn new() -> Self {
-        let mut service = Self {
-            users: Arc::new(RwLock::new(HashMap::new())),
-            roles: Arc::new(RwLock::new(HashMap::new())),
-            tokens: Arc::new(RwLock::new(HashMap::new())),
-            config: JWTConfig::default(),
-        };
-        
-        service.init_default_roles();
-        service
+        Self::with_config(JWTConfig::default())
     }
 
     pub fn with_config(config: JWTConfig) -> Self {
-        let mut service = Self {
+        Self {
             users: Arc::new(RwLock::new(HashMap::new())),
-            roles: Arc::new(RwLock::new(HashMap::new())),
+            roles: Arc::new(RwLock::new(Self::default_roles())),
             tokens: Arc::new(RwLock::new(HashMap::new())),
             config,
-        };
-        
-        service.init_default_roles();
-        service
+        }
     }
 
-    fn init_default_roles(&mut self) {
+    /// Build the built-in role table.
+    ///
+    /// Intentionally a pure function: the map is fully constructed *before* it
+    /// is wrapped in the async `RwLock`. Populating the lock after construction
+    /// would require `blocking_write()`, which panics with
+    /// "Cannot block the current thread from within a runtime", because
+    /// `AuthService::new()` is reached from async entry points such as
+    /// `coretex_api::rest::start_server` and `coretex_grpc::server`.
+    fn default_roles() -> HashMap<String, Role> {
+        let mut roles = HashMap::new();
+
         let admin_role = Role {
             name: "admin".to_string(),
             permissions: vec![
@@ -197,11 +196,11 @@ impl AuthService {
             description: "Read-only access".to_string(),
         };
         
-        let roles_map = self.roles.clone();
-        let mut roles = roles_map.blocking_write();
         roles.insert("admin".to_string(), admin_role);
         roles.insert("user".to_string(), user_role);
         roles.insert("reader".to_string(), reader_role);
+
+        roles
     }
 
     pub async fn create_user(&self, username: &str, password: &str, email: Option<&str>) -> Result<String, String> {

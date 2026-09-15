@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast};
 use tokio::time::{self, Duration};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -278,8 +278,8 @@ impl CdcSource for PostgresCdcSource {
             write_all(&mut stream, &pwd_msg).await?;
 
             let auth2 = read_message(&mut stream).await?;
-            if auth2.get(0) == Some(&b'E') {
-                let err = String::from_utf8_lossy(&auth2.get(5..).unwrap_or(&[])).to_string();
+            if auth2.first() == Some(&b'E') {
+                let err = String::from_utf8_lossy(auth2.get(5..).unwrap_or(&[])).to_string();
                 return Err(CdcError::ConnectionError(format!("Auth failed: {}", err)));
             }
         }
@@ -289,7 +289,7 @@ impl CdcSource for PostgresCdcSource {
         write_all(&mut stream, &ident_msg).await?;
 
         let sys_resp = read_message(&mut stream).await?;
-        if sys_resp.get(0) == Some(&b'E') {
+        if sys_resp.first() == Some(&b'E') {
             return Err(CdcError::ConnectionError("IDENTIFY_SYSTEM failed".to_string()));
         }
 
@@ -304,7 +304,7 @@ impl CdcSource for PostgresCdcSource {
             write_all(&mut stream, &slot_msg).await?;
 
             let slot_resp = read_message(&mut stream).await?;
-            if slot_resp.get(0) == Some(&b'E') {
+            if slot_resp.first() == Some(&b'E') {
                 // Slot may already exist — try to proceed
             }
 
@@ -352,7 +352,7 @@ impl CdcSource for PostgresCdcSource {
                     }
                 }
                 b'E' => {
-                    let err = String::from_utf8_lossy(&msg[5..]).to_string();
+                    let _err = String::from_utf8_lossy(&msg[5..]).to_string();
                     // Non-fatal: just stop reading this batch
                     break;
                 }
@@ -952,10 +952,10 @@ impl CdcSource for MysqlCdcSource {
 
             let timestamp = u32::from_le_bytes([pkt[0], pkt[1], pkt[2], pkt[3]]);
             let event_type = pkt[4];
-            let server_id = u32::from_le_bytes([pkt[5], pkt[6], pkt[7], pkt[8]]);
-            let event_size = u32::from_le_bytes([pkt[9], pkt[10], pkt[11], pkt[12]]);
+            let _server_id = u32::from_le_bytes([pkt[5], pkt[6], pkt[7], pkt[8]]);
+            let _event_size = u32::from_le_bytes([pkt[9], pkt[10], pkt[11], pkt[12]]);
             let next_pos = u32::from_le_bytes([pkt[13], pkt[14], pkt[15], pkt[16]]);
-            let flags = u16::from_le_bytes([pkt[17], pkt[18]]);
+            let _flags = u16::from_le_bytes([pkt[17], pkt[18]]);
 
             let body = &pkt[19..];
 
@@ -1008,7 +1008,7 @@ impl CdcSource for MysqlCdcSource {
                 }
                 0x1E => {
                     // WRITE_ROWS_EVENT (v2)
-                    if let Some(table_info) = table_map.get(&(body.get(0).copied().unwrap_or(0) as u64)) {
+                    if let Some(table_info) = table_map.get(&(body.first().copied().unwrap_or(0) as u64)) {
                         // 简化解析：body[6..] 是 row data
                         let ts = timestamp as u64 * 1000;
                         events.push(CdcEvent::Insert {
@@ -1021,7 +1021,7 @@ impl CdcSource for MysqlCdcSource {
                 }
                 0x1F => {
                     // UPDATE_ROWS_EVENT (v2)
-                    if let Some(_table_info) = table_map.get(&(body.get(0).copied().unwrap_or(0) as u64)) {
+                    if let Some(_table_info) = table_map.get(&(body.first().copied().unwrap_or(0) as u64)) {
                         let ts = timestamp as u64 * 1000;
                         events.push(CdcEvent::Update {
                             table: String::new(),
@@ -1034,7 +1034,7 @@ impl CdcSource for MysqlCdcSource {
                 }
                 0x20 => {
                     // DELETE_ROWS_EVENT (v2)
-                    if let Some(table_info) = table_map.get(&(body.get(0).copied().unwrap_or(0) as u64)) {
+                    if let Some(table_info) = table_map.get(&(body.first().copied().unwrap_or(0) as u64)) {
                         let ts = timestamp as u64 * 1000;
                         events.push(CdcEvent::Delete {
                             table: table_info.table.clone(),
@@ -1117,12 +1117,12 @@ fn mysql_native_password(password: &str, salt: &[u8]) -> Vec<u8> {
     let stage1 = sha1_pass.finalize_reset();
 
     let mut sha1_stage2 = Sha1::new();
-    sha1_stage2.update(&stage1);
+    sha1_stage2.update(stage1);
     let stage2 = sha1_stage2.finalize();
 
     let mut sha1_salt = Sha1::new();
     sha1_salt.update(salt);
-    sha1_salt.update(&stage2);
+    sha1_salt.update(stage2);
     let stage3 = sha1_salt.finalize();
 
     let mut result = Vec::with_capacity(20);
@@ -1289,7 +1289,7 @@ impl CdcSource for MongodbCdcSource {
         let mut stream = tokio::net::TcpStream::connect(&addr).await
             .map_err(|e| CdcError::ConnectionError(format!("MongoDB TCP: {}", e)))?;
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         // === 1. MongoDB Wire Protocol: 发送 isMaster ===
         let ismaster = build_mongo_cmd(
@@ -1681,7 +1681,7 @@ fn compute_scram_proof(
     server_nonce: &str,
 ) -> String {
     let salt = base64::decode(salt_b64).unwrap_or_default();
-    let combined_nonce = format!("{},{}", client_nonce, server_nonce);
+    let _combined_nonce = format!("{},{}", client_nonce, server_nonce);
 
     // SaltedPassword = Hi(Normalize(password), salt, i)
     let mut salted = vec![0u8; 32];
@@ -1694,7 +1694,7 @@ fn compute_scram_proof(
 
     // StoredKey = SHA256(ClientKey)
     let mut stored_key_hasher = Sha256::new();
-    stored_key_hasher.update(&client_key);
+    stored_key_hasher.update(client_key);
     let stored_key = stored_key_hasher.finalize();
 
     // ClientSignature = HMAC(StoredKey, AuthMessage)
@@ -1712,7 +1712,7 @@ fn compute_scram_proof(
         proof[i] = client_key[i] ^ client_sig[i];
     }
 
-    base64::encode(&proof)
+    base64::encode(proof)
 }
 
 /// 简化的 PBKDF2-HMAC-SHA256
@@ -1724,7 +1724,7 @@ fn pbkdf2_hi<D: Digest>(password: &[u8], salt: &[u8], iterations: u32, out: &mut
     mac.update(salt);
     mac.update(&1u32.to_be_bytes());
     let mut u = mac.finalize().into_bytes();
-    let mut result = u.clone();
+    let mut result = u;
 
     for _ in 1..iterations {
         let mut mac = HmacSha256::new_from_slice(password).unwrap();
@@ -1741,7 +1741,6 @@ fn pbkdf2_hi<D: Digest>(password: &[u8], salt: &[u8], iterations: u32, out: &mut
 
 fn uuid_simple_mongo() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-use crate::coretex_core::Result;
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1895,7 +1894,7 @@ impl VectorSyncHandler {
 
     pub fn transform_to_vector_event(&self, event: &CdcEvent) -> Option<VectorSyncEvent> {
         match event {
-            CdcEvent::Insert { table, key, data, timestamp } => {
+            CdcEvent::Insert { table: _, key, data, timestamp } => {
                 Some(VectorSyncEvent::Upsert {
                     id: key.clone(),
                     vector: self.extract_vector_fields(data),
@@ -1903,7 +1902,7 @@ impl VectorSyncHandler {
                     timestamp: *timestamp,
                 })
             },
-            CdcEvent::Update { table, key, new_data, timestamp, .. } => {
+            CdcEvent::Update { table: _, key, new_data, timestamp, .. } => {
                 Some(VectorSyncEvent::Upsert {
                     id: key.clone(),
                     vector: self.extract_vector_fields(new_data),
@@ -1911,7 +1910,7 @@ impl VectorSyncHandler {
                     timestamp: *timestamp,
                 })
             },
-            CdcEvent::Delete { table, key, timestamp, .. } => {
+            CdcEvent::Delete { table: _, key, timestamp, .. } => {
                 Some(VectorSyncEvent::Delete {
                     id: key.clone(),
                     timestamp: *timestamp,
@@ -1924,8 +1923,8 @@ impl VectorSyncHandler {
     fn extract_vector_fields(&self, data: &HashMap<String, String>) -> Vec<f32> {
         let mut vector = Vec::new();
         
-        for (target_field, source_value) in self.field_mapping.iter() {
-            if let Some(value) = data.get(source_value) {
+        for source_value in self.field_mapping.values() {
+            if let Some(_value) = data.get(source_value) {
                 if let Ok(float_val) = source_value.parse::<f32>() {
                     vector.push(float_val);
                 }

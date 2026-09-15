@@ -4,7 +4,7 @@
 #[cfg(target_arch = "x86_64")]
 pub mod simd_utils {
     use std::arch::x86_64::*;
-    use std::cmp::Ordering;
+    
 
     #[inline]
     pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

@@ -97,7 +97,7 @@ impl VectorExporter {
         let file = File::create(filename).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
         
-        let mut items: Vec<serde_json::Value> = vectors
+        let items: Vec<serde_json::Value> = vectors
             .iter()
             .map(|(id, (vec, meta))| {
                 serde_json::json!({
@@ -108,7 +108,7 @@ impl VectorExporter {
             })
             .collect();
         
-        let json = serde_json::to_string_pretty(&mut items).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
         writer.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
         
         Ok(filename.to_string())
@@ -290,9 +290,9 @@ impl CollectionExporter {
         let mut results = Vec::new();
         
         for format in &[ExportFormat::Json, ExportFormat::Csv] {
-            match self.export_collection(collection_name, data, format.clone()) {
-                Ok(result) => results.push(result),
-                Err(e) => return Err(e),
+            {
+                let result = self.export_collection(collection_name, data, format.clone())?;
+                results.push(result)
             }
         }
         

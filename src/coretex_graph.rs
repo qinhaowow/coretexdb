@@ -2,7 +2,6 @@
 //! Provides graph storage and query capabilities for knowledge graphs and social networks
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::Hash;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use std::sync::Arc;
@@ -315,14 +314,13 @@ impl GraphDatabase {
         let edges = self.edges.read().await;
 
         adj.get(source)
-            .map(|edge_ids| {
+            .and_then(|edge_ids| {
                 edge_ids
                     .iter()
                     .filter_map(|eid| edges.get(eid))
                     .find(|e| e.target == target)
                     .cloned()
             })
-            .flatten()
     }
 
     pub async fn shortest_path(&self, start: &str, end: &str) -> Option<GraphPath> {
@@ -409,15 +407,12 @@ impl GraphDatabase {
         let rev = self.reverse_adjacency.read().await;
 
         let edges_to_remove: Vec<String> = adj
-            .get(id)
-            .map(|e| e.clone())
+            .get(id).cloned()
             .unwrap_or_default()
             .into_iter()
             .chain(
-                rev.get(id)
-                    .map(|e| e.clone())
-                    .unwrap_or_default()
-                    .into_iter(),
+                rev.get(id).cloned()
+                    .unwrap_or_default(),
             )
             .collect();
 

@@ -175,7 +175,7 @@ impl<K: Hash + Clone + Eq, V: Clone> TimedLRUCache<K, V> {
     }
 
     pub fn cleanup_expired(&mut self) {
-        let now = Instant::now();
+        let _now = Instant::now();
         let expired_keys: Vec<K> = self.cache
             .iter()
             .filter(|(_, (_, instant))| instant.elapsed() > self.ttl)

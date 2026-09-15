@@ -5,7 +5,7 @@
 //! 4. Embedding 路由器（按数据/查询选择模型）
 //! 5. 跨模态检索（文本→向量、图像→向量互查）
 
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -435,7 +435,7 @@ impl EmbeddingRouter {
                 candidates.iter()
                     .find(|m| m.languages.contains(&target_lang.to_string()))
                     .copied()
-                    .or_else(|| candidates.iter().next().copied())
+                    .or_else(|| candidates.first().copied())
             }
             RoutingStrategy::Weighted => {
                 // 加权评分：score = w_capability * cap_score + w_cost * (1-cost/max) + w_latency * (1-latency/max)

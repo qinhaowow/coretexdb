@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::coretex_core::{CoreTexError, Result};
+use crate::coretex_core::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::coretex_index::{VectorIndex, HNSWIndex, SearchResult};
+use crate::coretex_index::{VectorIndex, HNSWIndex};
 use crate::coretex_gis::{GeoPoint, GeoBoundingBox, GeoPoint3D, GeoLineString3D, GeoPolygon3D, GeoBoundingBox3D};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +144,12 @@ pub struct NewsWeatherIndex {
     tag_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
+impl Default for NewsWeatherIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NewsWeatherIndex {
     pub fn new() -> Self {
         Self {
@@ -216,7 +222,7 @@ impl DomainIndex for NewsWeatherIndex {
             tag_idx.entry(tag.clone()).or_default().push(doc.id.clone());
         }
 
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.add(&doc.id, &doc.vector).await
     }
 
@@ -267,7 +273,7 @@ impl DomainIndex for NewsWeatherIndex {
     async fn remove(&self, id: &str) -> Result<bool> {
         let mut docs = self.documents.write().await;
         if docs.remove(id).is_some() {
-            let mut index = self.vector_index.write().await;
+            let index = self.vector_index.write().await;
             index.remove(id).await?;
             Ok(true)
         } else {
@@ -276,7 +282,7 @@ impl DomainIndex for NewsWeatherIndex {
     }
 
     async fn clear(&self) -> Result<()> {
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.clear().await?;
         self.documents.write().await.clear();
         self.category_index.write().await.clear();
@@ -296,6 +302,12 @@ pub struct GeoLocationIndex {
     documents: Arc<RwLock<HashMap<String, DomainDocument>>>,
     spatial_index: Arc<RwLock<HashMap<String, GeoPoint>>>,
     rtree: Arc<RwLock<Vec<(GeoPoint, String)>>>,
+}
+
+impl Default for GeoLocationIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GeoLocationIndex {
@@ -350,7 +362,7 @@ impl GeoLocationIndex {
         let docs = self.documents.read().await;
         let spatial = self.spatial_index.read().await;
 
-        let mut results: Vec<DomainSearchResult> = spatial.iter()
+        let results: Vec<DomainSearchResult> = spatial.iter()
             .filter(|(_, gp)| {
                 gp.latitude >= bounds.min_lat && gp.latitude <= bounds.max_lat &&
                 gp.longitude >= bounds.min_lon && gp.longitude <= bounds.max_lon
@@ -414,7 +426,7 @@ impl GeoLocationIndex {
     pub async fn search_in_bounds_3d(&self, bounds: &GeoBoundingBox3D, top_k: usize) -> Vec<DomainSearchResult> {
         let docs = self.documents.read().await;
 
-        let mut results: Vec<DomainSearchResult> = docs.iter()
+        let results: Vec<DomainSearchResult> = docs.iter()
             .filter_map(|(id, doc)| {
                 let x = doc.metadata.get("x").and_then(|v| v.parse::<f64>().ok())?;
                 let y = doc.metadata.get("y").and_then(|v| v.parse::<f64>().ok())?;
@@ -515,7 +527,7 @@ impl DomainIndex for GeoLocationIndex {
             }
         }
 
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.add(&doc.id, &doc.vector).await
     }
 
@@ -566,7 +578,7 @@ impl DomainIndex for GeoLocationIndex {
     async fn remove(&self, id: &str) -> Result<bool> {
         let mut docs = self.documents.write().await;
         if docs.remove(id).is_some() {
-            let mut index = self.vector_index.write().await;
+            let index = self.vector_index.write().await;
             index.remove(id).await?;
             self.spatial_index.write().await.remove(id);
             self.rtree.write().await.retain(|(_, i)| i != id);
@@ -577,7 +589,7 @@ impl DomainIndex for GeoLocationIndex {
     }
 
     async fn clear(&self) -> Result<()> {
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.clear().await?;
         self.documents.write().await.clear();
         self.spatial_index.write().await.clear();
@@ -597,6 +609,12 @@ pub struct FinancialIndex {
     documents: Arc<RwLock<HashMap<String, DomainDocument>>>,
     symbol_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
     date_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+impl Default for FinancialIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FinancialIndex {
@@ -674,7 +692,7 @@ impl DomainIndex for FinancialIndex {
             self.date_index.write().await.entry(date.clone()).or_default().push(doc.id.clone());
         }
 
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.add(&doc.id, &doc.vector).await
     }
 
@@ -725,7 +743,7 @@ impl DomainIndex for FinancialIndex {
     async fn remove(&self, id: &str) -> Result<bool> {
         let mut docs = self.documents.write().await;
         if let Some(doc) = docs.remove(id) {
-            let mut index = self.vector_index.write().await;
+            let index = self.vector_index.write().await;
             index.remove(id).await?;
 
             if let Some(symbol) = doc.metadata.get("symbol") {
@@ -746,7 +764,7 @@ impl DomainIndex for FinancialIndex {
     }
 
     async fn clear(&self) -> Result<()> {
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.clear().await?;
         self.documents.write().await.clear();
         self.symbol_index.write().await.clear();
@@ -767,6 +785,12 @@ pub struct KnowledgeIndex {
     category_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
     sub_category_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
     tag_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+impl Default for KnowledgeIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KnowledgeIndex {
@@ -847,7 +871,7 @@ impl DomainIndex for KnowledgeIndex {
             tag_idx.entry(tag.clone()).or_default().push(doc.id.clone());
         }
 
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.add(&doc.id, &doc.vector).await
     }
 
@@ -874,8 +898,7 @@ impl DomainIndex for KnowledgeIndex {
         let cat_idx = self.category_index.read().await;
         let docs = self.documents.read().await;
 
-        let candidate_ids: Vec<String> = cat_idx.get(category)
-            .map(|ids| ids.clone())
+        let candidate_ids: Vec<String> = cat_idx.get(category).cloned()
             .unwrap_or_default();
 
         let index = self.vector_index.read().await;
@@ -905,7 +928,7 @@ impl DomainIndex for KnowledgeIndex {
     async fn remove(&self, id: &str) -> Result<bool> {
         let mut docs = self.documents.write().await;
         if let Some(doc) = docs.remove(id) {
-            let mut index = self.vector_index.write().await;
+            let index = self.vector_index.write().await;
             index.remove(id).await?;
 
             if let Some(ids) = self.category_index.write().await.get_mut(&doc.category) {
@@ -927,7 +950,7 @@ impl DomainIndex for KnowledgeIndex {
     }
 
     async fn clear(&self) -> Result<()> {
-        let mut index = self.vector_index.write().await;
+        let index = self.vector_index.write().await;
         index.clear().await?;
         self.documents.write().await.clear();
         self.category_index.write().await.clear();
@@ -943,6 +966,12 @@ impl DomainIndex for KnowledgeIndex {
 
 pub struct DomainIndexManager {
     indexes: Arc<RwLock<HashMap<String, DomainIndexEnum>>>,
+}
+
+impl Default for DomainIndexManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DomainIndexManager {

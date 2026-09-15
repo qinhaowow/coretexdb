@@ -7,8 +7,8 @@ cd "$(dirname "$0")" || exit 1
 
 EXE="${EXE:-target/release/coretex}"
 if [ ! -x "$EXE" ]; then
-  echo "[ERR] 未找到 $EXE，请先执行: cargo build --release" >&2
-  exit 1
+   echo "[ERR] 未找到 $EXE，请先执行: cargo build --release" >&2
+   exit 1
 fi
 
 ADDR="${ADDR:-0.0.0.0}"
@@ -19,5 +19,5 @@ DATA_DIR="${DATA_DIR:-./coretex_data}"
 
 echo "[RUN] $EXE server -a $ADDR -p $PORT --data-dir $DATA_DIR"
 exec "$EXE" server -a "$ADDR" -p "$PORT" \
-     --grpc-port "$GRPC_PORT" --ws-port "$WS_PORT" \
-     --data-dir "$DATA_DIR"
+   --grpc-port "$GRPC_PORT" --ws-port "$WS_PORT" \
+   --data-dir "$DATA_DIR"

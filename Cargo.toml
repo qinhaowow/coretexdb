@@ -119,6 +119,12 @@ prost = "0.12"
 # 钉到 7.0.13：该版本仍依赖 axum 0.7（7.0.14 起改用 axum 0.8，与项目 axum="0.7" 冲突）
 async-graphql = "=7.0.13"
 async-graphql-axum = "=7.0.13"
+# 同上：derive/parser/value 必须与核心同版。不钉的话会解析到 7.2.1，
+# 其宏会生成引用 requires_scopes 字段的代码，
+# 而 7.0.13 核心类型无此字段 → 55 个编译错误。
+async-graphql-derive = "=7.0.13"
+async-graphql-parser = "=7.0.13"
+async-graphql-value = "=7.0.13"
 async-stream = "0.3"
 
 # 向量索引（使用自定义 HNSWIndex 实现）

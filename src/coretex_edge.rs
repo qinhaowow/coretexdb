@@ -72,6 +72,12 @@ pub struct EdgeCollection {
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
 }
 
+impl Default for EdgeDB {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EdgeDB {
     pub fn new() -> Self {
         Self {
@@ -302,7 +308,7 @@ impl EdgeDB {
     fn sync_dir(dir: &std::path::Path) -> Result<(), EdgeError> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
+            
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .open(dir)

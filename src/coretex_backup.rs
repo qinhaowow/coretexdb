@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -308,7 +307,7 @@ impl BackupManager {
 
             if src_path.is_dir() {
                 let parent_sub = parent_dir.as_ref().map(|p| p.join(&file_name));
-                let parent_exists = parent_sub.as_ref().map_or(false, |p| p.exists());
+                let parent_exists = parent_sub.as_ref().is_some_and(|p| p.exists());
 
                 if !parent_exists {
                     Box::pin(Self::copy_dir(&src_path, &dst_path)).await?;

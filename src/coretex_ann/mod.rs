@@ -31,6 +31,7 @@ impl Default for ANNConfig {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ANNParameters {
     pub hnsw: HNSWParameters,
     pub ivf: IVFParameters,
@@ -39,17 +40,6 @@ pub struct ANNParameters {
     pub search_params: SearchParameters,
 }
 
-impl Default for ANNParameters {
-    fn default() -> Self {
-        Self {
-            hnsw: HNSWParameters::default(),
-            ivf: IVFParameters::default(),
-            pq: PQParameters::default(),
-            nsg: NSGParameters::default(),
-            search_params: SearchParameters::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct HNSWParameters {
@@ -262,7 +252,7 @@ impl ANNTuner {
     }
 
     pub async fn auto_tune(&mut self, target_recall: f64) {
-        let mut params = &mut self.config.parameters;
+        let params = &mut self.config.parameters;
         
         params.hnsw.tune_for_recall(target_recall);
         params.ivf.tune_recall_vs_speed(target_recall);
@@ -310,7 +300,7 @@ impl IndexOptimizer {
         }
     }
 
-    pub fn recommend_parameters(&self, num_vectors: usize, dimension: usize) -> ANNParameters {
+    pub fn recommend_parameters(&self, num_vectors: usize, _dimension: usize) -> ANNParameters {
         let mut params = ANNParameters::default();
         
         if num_vectors < 10_000 {

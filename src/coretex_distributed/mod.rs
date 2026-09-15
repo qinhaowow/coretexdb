@@ -419,7 +419,7 @@ impl DistributedLockManager {
 
         // 本地先尝试获取
         {
-            let mut locks = self.locks.write().await;
+            let locks = self.locks.write().await;
             if let Some(lock) = locks.get(key) {
                 if lock.owner != self.node_id {
                     if let Some(expires) = lock.expires_at {
@@ -438,7 +438,7 @@ impl DistributedLockManager {
             let mut ack_count = 0;
             let quorum = (self.peers.len() / 2) + 1;
 
-            for peer in &self.peers {
+            for _peer in &self.peers {
                 let success = self.peer_rpc.try_lock(&self.node_id, key, fence_token, ttl_secs).await;
                 if success {
                     ack_count += 1;
@@ -447,7 +447,7 @@ impl DistributedLockManager {
 
             if ack_count < quorum {
                 // 未达 Quorum，回滚已获取的锁
-                for peer in &self.peers {
+                for _peer in &self.peers {
                     let _ = self.peer_rpc.unlock(&self.node_id, key, fence_token).await;
                 }
                 return Err(format!(
@@ -487,7 +487,7 @@ impl DistributedLockManager {
         };
 
         // 通知对等节点释放
-        for peer in &self.peers {
+        for _peer in &self.peers {
             let _ = self.peer_rpc.unlock(&self.node_id, key, fence_token).await;
         }
 

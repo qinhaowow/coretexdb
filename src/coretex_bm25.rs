@@ -80,7 +80,7 @@ impl BM25Index {
 
     pub async fn add_document(&self, doc: Document) -> Result<(), String> {
         let doc_id = doc.id.clone();
-        let doc_len = doc.tokens.len() as f32;
+        let _doc_len = doc.tokens.len() as f32;
         
         let mut docs = self.documents.write().await;
         docs.insert(doc_id.clone(), doc);
@@ -89,7 +89,7 @@ impl BM25Index {
         let mut doc_freqs: HashMap<String, usize> = HashMap::new();
 
         for doc in docs.values() {
-            let mut unique_terms: HashSet<String> = doc.tokens.iter().cloned().collect();
+            let unique_terms: HashSet<String> = doc.tokens.iter().cloned().collect();
             for term in unique_terms {
                 *doc_freqs.entry(term).or_insert(0) += 1;
             }
@@ -319,6 +319,12 @@ pub struct HybridSearchResult {
 #[derive(Debug, Clone)]
 pub struct MetadataFilter {
     conditions: Vec<FilterCondition>,
+}
+
+impl Default for MetadataFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MetadataFilter {

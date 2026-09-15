@@ -12,9 +12,8 @@
 //! On startup, all WAL segment files are scanned in order and valid
 //! entries are replayed. Corrupted entries are skipped and logged.
 
-use std::collections::VecDeque;
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -156,6 +155,19 @@ impl WriteAheadLog {
         self
     }
 
+    /// Path of the segment file currently being appended to.
+    ///
+    /// Exposed so external tooling and tests can inspect or rotate the active
+    /// segment without gaining write access to the WAL's private state.
+    pub async fn current_path(&self) -> PathBuf {
+        self.current_file.read().await.clone()
+    }
+
+    /// Number of segment files currently tracked.
+    pub async fn segment_count(&self) -> usize {
+        self.segments.read().await.len()
+    }
+
     /// Initialize the WAL: create directory, discover existing segments,
     /// restore sequence counter.
     pub async fn init(&self) -> std::io::Result<()> {
@@ -274,7 +286,7 @@ impl WriteAheadLog {
 
     /// Rotate to a new segment file.
     async fn rotate(&self) -> std::io::Result<()> {
-        let timestamp = SystemTime::now()
+        let _timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros();
@@ -515,7 +527,7 @@ impl RecoveryManager {
         storage: &(dyn StorageEngine + Send + Sync),
     ) -> CoreResult<ReplayResult> {
         let entries = self.recover_storage_entries().await
-            .map_err(|e| crate::coretex_core::CoreTexError::Io(e))?;
+            .map_err(crate::coretex_core::CoreTexError::Io)?;
 
         let mut replayed = 0u64;
         for (entry_type, _collection, key, vector, metadata) in &entries {
@@ -559,7 +571,7 @@ impl RecoveryManager {
                 }
                 WalEntryType::CommitTransaction => {
                     if in_txn {
-                        result.extend(txn_entries.drain(..));
+                        result.append(&mut txn_entries);
                         in_txn = false;
                     }
                 }

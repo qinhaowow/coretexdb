@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::future::Future;
 use std::collections::VecDeque;
 
-use crate::coretex_embedding::{EmbeddingConfig, DataType, EmbeddingResponse};
+use crate::coretex_embedding::{EmbeddingConfig, DataType};
 
 pub struct StreamingEmbedder {
     config: EmbeddingConfig,

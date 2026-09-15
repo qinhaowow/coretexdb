@@ -1,6 +1,5 @@
 //! Key Management - External Vault/KMS Integration for CoreTexDB
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
@@ -49,7 +48,7 @@ impl VaultKMS {
     pub async fn connect(&self) -> Result<(), String> {
         match self.config.provider {
             KMSProvider::Vault => {
-                if let Some(_) = &self.config.vault_token {
+                if self.config.vault_token.is_some() {
                     Ok(())
                 } else {
                     Err("Vault token required".to_string())

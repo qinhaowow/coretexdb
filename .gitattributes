@@ -1,0 +1,26 @@
+# 统一以 LF 作为仓库内的规范行尾。
+#
+# 背景：2026-09-14 排查发现工作区有 47 个 .rs/.toml/.md/.py 文件被 Windows 端
+# 编辑器整体改成了 CRLF，而 HEAD 里是 LF。结果是 git diff 出现「整文件删除 +
+# 整文件新增」的红绿噪音，真实改动被彻底淹没（忽略空白后其实只有 3 个文件有
+# 真实变化）。设置 eol=lf 后，即使检出到 Windows 也是 LF，从根上杜绝复发。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换，避免 git 破坏文件内容
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.so   binary
+*.dll  binary
+*.dylib binary
+*.a    binary
+*.bin  binary
+*.gguf binary
+
+# Windows 批处理脚本必须保持 CRLF，否则 cmd.exe 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf

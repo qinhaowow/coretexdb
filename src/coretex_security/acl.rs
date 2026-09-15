@@ -143,7 +143,7 @@ impl ACLEngine {
     fn matches_resource(&self, resources: &[Resource], resource: &Resource) -> bool {
         resources.iter().any(|r| {
             r.resource_type == resource.resource_type
-                && (r.id.as_ref().map_or(true, |id| id == "*" || id == resource.id.as_ref().unwrap_or(&String::new())))
+                && (r.id.as_ref().is_none_or(|id| id == "*" || id == resource.id.as_ref().unwrap_or(&String::new())))
         })
     }
 

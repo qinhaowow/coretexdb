@@ -1,11 +1,6 @@
 //! Security module for CoreTexDB
 //! Provides TLS/SSL encryption, data encryption at rest, and audit logging
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod acl;
 pub mod kms;
@@ -22,7 +17,7 @@ pub use network::{NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRang
 
 mod tls {
     use std::sync::Arc;
-    use tokio::sync::RwLock;
+    
     use std::path::Path;
     use std::fs;
     use std::io::Cursor;
@@ -157,7 +152,7 @@ mod tls {
             let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut Cursor::new(&cert_pem))
                 .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?
                 .into_iter()
-                .map(|c| rustls::Certificate(c))
+                .map(rustls::Certificate)
                 .collect();
 
             if certs.is_empty() {
@@ -168,7 +163,7 @@ mod tls {
                 .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
                 .into_iter()
                 .next()
-                .map(|k| rustls::PrivateKey(k))
+                .map(rustls::PrivateKey)
                 .ok_or_else(|| "No valid private key found in PEM".to_string())?;
 
             let server_config = rustls::ServerConfig::builder()
@@ -503,7 +498,7 @@ mod encryption {
             let bytes = self.decrypt(encrypted).await?;
             
             let floats: Vec<f32> = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                 .collect();
             
@@ -675,8 +670,8 @@ mod audit {
             events
                 .iter()
                 .filter(|e| {
-                    let user_match = user_id.map_or(true, |u| e.user_id.as_deref() == Some(u));
-                    let action_match = action.map_or(true, |a| e.action == a);
+                    let user_match = user_id.is_none_or(|u| e.user_id.as_deref() == Some(u));
+                    let action_match = action.is_none_or(|a| e.action == a);
                     user_match && action_match
                 })
                 .rev()
@@ -734,8 +729,9 @@ mod audit {
 #[cfg(test)]
 mod tests {
     use super::*;
-use crate::coretex_core::Result;
-    
+    use std::sync::Arc;
+    use crate::coretex_core::Result;
+
     #[tokio::test]
     async fn test_key_manager() {
         let km = KeyManager::new();

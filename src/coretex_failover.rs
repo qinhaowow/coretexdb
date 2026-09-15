@@ -6,10 +6,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, RwLock, mpsc};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeHealth {
@@ -138,7 +137,7 @@ pub struct AppendEntriesResponse {
 pub trait RaftRpc: Send + Sync {
     async fn request_vote(&self, addr: &str, req: &VoteRequest) -> Result<VoteResponse, String>;
     async fn send_heartbeat(&self, addr: &str, req: &HeartbeatRequest) -> Result<HeartbeatResponse, String>;
-    async fn append_entries(&self, addr: &str, req: &AppendEntriesRequest) -> Result<AppendEntriesResponse, String> {
+    async fn append_entries(&self, _addr: &str, req: &AppendEntriesRequest) -> Result<AppendEntriesResponse, String> {
         // 默认实现：返回拒绝，让不支持日志复制的实现保持简单
         Ok(AppendEntriesResponse {
             follower_id: "unknown".to_string(),
@@ -732,7 +731,7 @@ impl RaftLog {
             None => return Ok(()),
         };
         let data = serde_json::to_vec(&self.entries)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(path, data)?;
         Ok(())
     }
@@ -880,7 +879,8 @@ impl LogReplicator {
 
     pub async fn append(&self, term: u64, command: LogCommand) -> u64 {
         let mut log = self.log.write().await;
-        let index = log.append(LogEntry {
+        
+        log.append(LogEntry {
             term,
             index: 0,
             command,
@@ -888,8 +888,7 @@ impl LogReplicator {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
-        });
-        index
+        })
     }
 
     /// 复制日志到所有 Follower（并行）

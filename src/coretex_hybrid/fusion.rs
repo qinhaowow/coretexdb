@@ -5,19 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ScoreFusion {
     RRF { k: u32 },
+    #[default]
     WeightedSum,
     WeightedSumNormalized,
     LearningToRank,
     CombMNZ,
 }
 
-impl Default for ScoreFusion {
-    fn default() -> Self {
-        Self::WeightedSum
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LTRWeights {

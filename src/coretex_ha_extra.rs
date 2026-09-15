@@ -9,12 +9,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tokio::time;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::coretex_failover::{AppendEntriesRequest, AppendEntriesResponse, LogEntry, LogReplicator, RaftLog, LogCommand, RaftRpc};
+use crate::coretex_failover::RaftLog;
 
 // =================== Raft Snapshot ===================
 
@@ -274,7 +273,7 @@ impl RaftSnapshotManager {
         }
 
         // 保存 snapshot
-        if let Err(e) = self.store.save(req.snapshot.clone()).await {
+        if let Err(_e) = self.store.save(req.snapshot.clone()).await {
             return InstallSnapshotResponse {
                 follower_id: self.local_node_id.clone(),
                 term: req.term,
@@ -562,7 +561,7 @@ impl CrashRecoveryManager {
             .unwrap_or_default();
 
         // 2. 重放 WAL（从 start_lsn 开始）
-        let mut wal = crate::coretex_transaction::WriteAheadLog::with_persistence(&self.wal_path, 100_000, true)
+        let wal = crate::coretex_transaction::WriteAheadLog::with_persistence(&self.wal_path, 100_000, true)
             .map_err(|e| e.to_string())?;
         let entries = wal.get_entries_from(start_lsn);
 
@@ -638,7 +637,8 @@ impl RaftLog {
 mod tests {
     use super::*;
     use crate::coretex_transaction::WalEntry;
-use crate::coretex_core::Result;
+    use crate::coretex_core::Result;
+    use crate::coretex_failover::{LogEntry, LogCommand};
 
     #[tokio::test]
     async fn test_two_pc_begin_success() {
