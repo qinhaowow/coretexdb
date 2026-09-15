@@ -1,10 +1,21 @@
 //! Storage engine for CortexDB
+//!
+//! Two engines implement [`StorageEngine`]:
+//!
+//! * [`MemoryStorage`] — volatile, used for tests and `memory_only` configs.
+//! * [`FileStorage`] — durable append-only log, the default for on-disk data.
+//!
+//! `PersistentStorage` (RocksDB) is still available behind the optional
+//! `rocksdb` feature but is no longer required for durability; `FileStorage`
+//! has no C/C++ build dependencies.
 
 use async_trait::async_trait;
-use crate::coretex_core::{CoreTexError, Result};
+use crate::coretex_core::Result;
 #[cfg(feature = "rocksdb")]
 use rocksdb::{DB, Options};
-use bincode;
+
+pub mod file_store;
+pub use file_store::FileStorage;
 
 /// Storage engine trait
 #[async_trait]

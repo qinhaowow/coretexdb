@@ -1,6 +1,5 @@
 //! CoreTexDB - A multimodal vector database for AI applications 
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,7 +81,7 @@ pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, Write
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
-pub use coretex_storage::{StorageEngine, MemoryStorage};
+pub use coretex_storage::{StorageEngine, MemoryStorage, FileStorage};
 #[cfg(feature = "rocksdb")]
 pub use coretex_storage::PersistentStorage; 
 pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult, HNSWIndex, IVFIndex, ScalarIndex}; 
@@ -197,7 +196,9 @@ impl Default for DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
-            wal_enabled: true,
+            // FileStorage is already a crash-safe append-only log, so the
+            // separate WAL would only be a second, redundant journal.
+            wal_enabled: false,
             wal_max_segment_size: 64 * 1024 * 1024, // 64 MB
         }
     }
@@ -208,7 +209,12 @@ pub struct DatabaseMetadata {
     pub version: String,
     pub created_at: u64,
     pub last_modified: u64,
+    /// Collection names, kept so older metadata files and human readers still
+    /// work. `schemas` is the authoritative copy.
     pub collections: Vec<String>,
+    /// Full collection definitions, restored into memory at startup.
+    #[serde(default)]
+    pub schemas: Vec<CollectionSchema>,
 }
 
 impl Default for DatabaseMetadata {
@@ -221,6 +227,7 @@ impl Default for DatabaseMetadata {
                 .as_secs(),
             last_modified: 0,
             collections: vec![],
+            schemas: vec![],
         }
     }
 }
@@ -237,39 +244,45 @@ impl DbConfig {
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
-            wal_enabled: true,
+            wal_enabled: false,
             wal_max_segment_size: 64 * 1024 * 1024,
+        }
+    }
+
+    /// Config for a purely in-memory database: no directories, no files.
+    pub fn memory_only() -> Self {
+        Self {
+            memory_only: true,
+            create_dirs_on_init: false,
+            wal_enabled: false,
+            ..Self::default()
         }
     }
 }
 
 impl CoreTexDB {
+    /// A volatile, in-memory database. Nothing is written to disk; intended for
+    /// tests and ephemeral workloads. Use [`CoreTexDB::with_config`] with a
+    /// non-`memory_only` config for durable storage.
     pub fn new() -> Self {
-        let storage: Box<dyn StorageEngine> = Box::new(MemoryStorage::new());
-        let storage = Arc::new(RwLock::new(storage));
-        let index_manager = Arc::new(IndexManager::new());
-        let data_manager = DataManager::new(storage, index_manager);
-        
-        Self {
-            data_manager,
-            config: DbConfig::default(),
-            wal: None,
-        }
+        Self::with_config(DbConfig::memory_only())
     }
 
+    /// Build a database from `config`. When `config.memory_only` is false the
+    /// data lives in a durable [`FileStorage`] log under `config.data_dir`.
+    ///
+    /// The storage engine is opened by [`CoreTexDB::init`], not here, so that
+    /// its failure can be reported as an error instead of a panic.
     pub fn with_config(config: DbConfig) -> Self {
         let storage: Box<dyn StorageEngine> = if config.memory_only {
             Box::new(MemoryStorage::new())
         } else {
-            #[cfg(feature = "rocksdb")]
-            { Box::new(PersistentStorage::new(&config.data_dir)) }
-            #[cfg(not(feature = "rocksdb"))]
-            { panic!("memory_only=false requires the 'rocksdb' feature. Enable it in Cargo.toml or set memory_only=true") }
+            Box::new(FileStorage::new(FileStorage::store_path(&config.data_dir)))
         };
         let storage = Arc::new(RwLock::new(storage));
         let index_manager = Arc::new(IndexManager::new());
         let data_manager = DataManager::new(storage, index_manager);
-        
+
         Self {
             data_manager,
             config,
@@ -281,9 +294,24 @@ impl CoreTexDB {
         if self.config.create_dirs_on_init && !self.config.memory_only {
             self.create_directories().await?;
         }
-        
+
         if !self.config.memory_only {
             self.init_metadata().await?;
+
+            // Open the durable log before reading anything back out of it.
+            self.data_manager.storage_ref().write().await.init().await?;
+
+            // Rebuild in-memory state from the manifest plus the vector log.
+            let metadata = self.load_metadata().await?;
+            if !metadata.schemas.is_empty() {
+                let vectors = self.data_manager.restore_from_storage(&metadata.schemas).await?;
+                tracing::info!(
+                    "restored {} collection(s) and {} vector(s) from {}",
+                    metadata.schemas.len(),
+                    vectors,
+                    self.config.data_dir
+                );
+            }
         }
 
         // Initialize WAL if enabled
@@ -295,7 +323,7 @@ impl CoreTexDB {
                     .with_max_segment_size(self.config.wal_max_segment_size)
             );
             wal.init().await
-                .map_err(|e| CoreTexError::Io(e))?;
+                .map_err(CoreTexError::Io)?;
 
             // Wire WAL into DataManager (OnceLock ensures this happens exactly once)
             self.data_manager.set_wal(Arc::clone(&wal))
@@ -332,14 +360,14 @@ impl CoreTexDB {
             let path = PathBuf::from(dir);
             if !path.exists() {
                 fs::create_dir_all(&path)
-                    .map_err(|e| CoreTexError::Io(e))?;
+                    .map_err(CoreTexError::Io)?;
             }
         }
         
         let collections_dir = PathBuf::from(&self.config.data_dir).join("collections");
         if !collections_dir.exists() {
             fs::create_dir_all(&collections_dir)
-                .map_err(|e| CoreTexError::Io(e))?;
+                .map_err(CoreTexError::Io)?;
         }
         
         Ok(())
@@ -350,16 +378,16 @@ impl CoreTexDB {
         
         if metadata_path.exists() {
             let content = fs::read_to_string(&metadata_path)
-                .map_err(|e| CoreTexError::Io(e))?;
+                .map_err(CoreTexError::Io)?;
             
             let _metadata: DatabaseMetadata = serde_json::from_str(&content)
                 .map_err(|e| CoreTexError::ValidationError(format!("Invalid metadata format: {}", e)))?;
         } else {
             let metadata = DatabaseMetadata::default();
             let content = serde_json::to_string_pretty(&metadata)
-                .map_err(|e| CoreTexError::Serialization(e))?;
+                .map_err(CoreTexError::Serialization)?;
             fs::write(&metadata_path, content)
-                .map_err(|e| CoreTexError::Io(e))?;
+                .map_err(CoreTexError::Io)?;
         }
         
         Ok(())
@@ -373,7 +401,7 @@ impl CoreTexDB {
         }
         
         let content = fs::read_to_string(&metadata_path)
-            .map_err(|e| CoreTexError::Io(e))?;
+            .map_err(CoreTexError::Io)?;
         
         let metadata: DatabaseMetadata = serde_json::from_str(&content)
             .map_err(|e| CoreTexError::ValidationError(format!("Invalid metadata format: {}", e)))?;
@@ -381,25 +409,64 @@ impl CoreTexDB {
         Ok(metadata)
     }
     
+    /// Write `metadata` to `metadata.json` atomically: a reader sees either the
+    /// previous manifest or the complete new one, never a half-written file.
     pub async fn save_metadata(&self, metadata: &DatabaseMetadata) -> Result<()> {
         let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
+        let temp_path = metadata_path.with_extension("json.tmp");
         let content = serde_json::to_string_pretty(metadata)
-            .map_err(|e| CoreTexError::Serialization(e))?;
-        fs::write(&metadata_path, content)
-            .map_err(|e| CoreTexError::Io(e))?;
+            .map_err(CoreTexError::Serialization)?;
+
+        fs::write(&temp_path, content).map_err(CoreTexError::Io)?;
+        fs::rename(&temp_path, &metadata_path).map_err(CoreTexError::Io)?;
         Ok(())
     }
 
+    /// Persist the current set of collections to the manifest. A no-op for
+    /// in-memory databases.
+    async fn persist_manifest(&self) -> Result<()> {
+        if self.config.memory_only {
+            return Ok(());
+        }
+
+        let mut metadata = self.load_metadata().await.unwrap_or_default();
+        metadata.schemas = self.data_manager.schemas().await;
+        metadata.collections = metadata.schemas.iter().map(|s| s.name.clone()).collect();
+        metadata.last_modified = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.save_metadata(&metadata).await
+    }
+
     pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
-        self.data_manager.create_collection(name, dimension, metric).await
+        self.data_manager.create_collection(name, dimension, metric).await?;
+        self.persist_manifest().await
+    }
+
+    /// Create a collection with an explicit index type (`brute_force`, `hnsw`,
+    /// `ivf`, `scalar`). Unrecognised values fall back to the exact index.
+    pub async fn create_collection_with_index(
+        &self,
+        name: &str,
+        dimension: usize,
+        metric: &str,
+        index_type: &str,
+    ) -> Result<()> {
+        self.data_manager
+            .create_collection_with_index(name, dimension, metric, index_type)
+            .await?;
+        self.persist_manifest().await
     }
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
-        self.data_manager.delete_collection(name).await
+        self.data_manager.delete_collection(name).await?;
+        self.persist_manifest().await
     }
 
     pub async fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
-        self.data_manager.rename_collection(old_name, new_name).await
+        self.data_manager.rename_collection(old_name, new_name).await?;
+        self.persist_manifest().await
     }
 
     pub async fn list_collections(&self) -> Result<Vec<String>> {

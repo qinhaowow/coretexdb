@@ -89,6 +89,46 @@ pub struct ScalarIndex {
     sorted_scalars: std::sync::Arc<tokio::sync::RwLock<Vec<(f32, String)>>>, // Sorted list of (value, ID) pairs
 }
 
+/// Distance between two vectors under `metric`, lower always meaning "more
+/// similar", so every index can rank results the same way.
+///
+/// This is the single source of truth for distance. Each index used to carry
+/// its own copy of this match, and they disagreed: only `cosine` and
+/// `euclidean` were implemented, while `dotproduct` and `manhattan` fell
+/// through a `_ =>` arm into cosine. Collections created with either of those
+/// metrics were therefore ranked by the wrong metric, silently.
+///
+/// A length mismatch yields the worst possible distance rather than silently
+/// comparing the overlapping prefix.
+pub(crate) fn metric_distance(metric: &str, a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::MAX;
+    }
+
+    match metric {
+        "euclidean" => a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f32>()
+            .sqrt(),
+        // Negated inner product: maximising similarity is the same as
+        // minimising this, which keeps "lower is better" true.
+        "dotproduct" => -a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>(),
+        "manhattan" => a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum(),
+        // Cosine, including the empty/unknown metric name.
+        _ => {
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm_a == 0.0 || norm_b == 0.0 {
+                return 1.0;
+            }
+            1.0 - dot / (norm_a * norm_b)
+        }
+    }
+}
+
 impl BruteForceIndex {
     /// Create a new brute-force index with the specified distance metric
     pub fn new(metric: &str) -> Self {
@@ -99,40 +139,9 @@ impl BruteForceIndex {
     }
     
     /// Calculate distance between two vectors
+    /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        match self.metric.as_str() {
-            "cosine" => {
-                // Cosine similarity (higher is better, so we return 1 - similarity for distance)
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                
-                1.0 - (dot_product / (norm_a * norm_b))
-            },
-            "euclidean" => {
-                // Euclidean distance
-                a.iter().zip(b.iter())
-                    .map(|(x, y)| (x - y).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            },
-            _ => {
-                // Default to cosine
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                
-                1.0 - (dot_product / (norm_a * norm_b))
-            }
-        }
+        metric_distance(&self.metric, a, b)
     }
 }
 
@@ -206,39 +215,23 @@ impl HNSWIndex {
         Ok(index)
     }
 
+    /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        match self.metric.as_str() {
-            "cosine" => {
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                1.0 - (dot_product / (norm_a * norm_b))
-            }
-            "euclidean" => {
-                a.iter().zip(b.iter())
-                    .map(|(x, y)| (x - y).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            }
-            _ => {
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                1.0 - (dot_product / (norm_a * norm_b))
-            }
-        }
+        metric_distance(&self.metric, a, b)
     }
 
-    fn random_level() -> usize {
+    /// Random level for a new node, drawn from the standard HNSW geometric
+    /// distribution with `mL = 1 / ln(M)`.
+    ///
+    /// This used to be `-ln(p) * 16.0`, which is `ln(M)` out by a factor of
+    /// `1/mL`: it produced levels averaging ~11 instead of ~1, so the upper
+    /// levels held one node each and carried no useful navigation.
+    fn random_level(&self) -> usize {
         let mut rng = rand::thread_rng();
-        let p: f64 = rand::Rng::gen(&mut rng);
-        (-p.ln() * 16.0) as usize
+        // `gen_range` excludes zero, keeping `ln` finite and the cast bounded.
+        let p: f64 = rand::Rng::gen_range(&mut rng, f64::EPSILON..1.0);
+        let ml = 1.0 / (self.m.max(2) as f64).ln();
+        ((-p.ln()) * ml) as usize
     }
 
     fn search_layer(
@@ -354,45 +347,14 @@ impl IVFIndex {
     }
     
     /// Calculate distance between two vectors
+    /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        match self.metric.as_str() {
-            "cosine" => {
-                // Cosine similarity (higher is better, so we return 1 - similarity for distance)
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                
-                1.0 - (dot_product / (norm_a * norm_b))
-            },
-            "euclidean" => {
-                // Euclidean distance
-                a.iter().zip(b.iter())
-                    .map(|(x, y)| (x - y).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            },
-            _ => {
-                // Default to cosine
-                let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                
-                1.0 - (dot_product / (norm_a * norm_b))
-            }
-        }
+        metric_distance(&self.metric, a, b)
     }
     
     /// Assign a vector to the nearest centroid
-    fn assign_to_cluster(&self, vector: &[f32]) -> usize {
-        let centroids = self.centroids.blocking_read();
+    async fn assign_to_cluster(&self, vector: &[f32]) -> usize {
+        let centroids = self.centroids.read().await;
         if centroids.is_empty() {
             return 0;
         }
@@ -421,13 +383,19 @@ impl ScalarIndex {
         }
     }
     
-    /// Update the sorted list of scalars
-    fn update_sorted(&self) {
-        let scalars = self.scalars.blocking_read();
+    /// Build the sorted `(value, id)` snapshot for a scalar map.
+    ///
+    /// Pure and lock-free on purpose: `add()` calls this while already holding
+    /// the `scalars` write guard, so re-acquiring that guard here would
+    /// self-deadlock. The previous `blocking_read()` version additionally
+    /// panicked whenever it ran inside a tokio runtime.
+    fn sorted_snapshot(
+        scalars: &std::collections::HashMap<String, f32>,
+    ) -> Vec<(f32, String)> {
         let mut sorted = scalars.iter()
             .map(|(id, value)| (*value, id.clone()))
             .collect::<Vec<_>>();
-        
+
         sorted.sort_by(|a, b| {
             a.0.partial_cmp(&b.0).unwrap_or_else(|| {
                 if a.0.is_nan() && b.0.is_nan() {
@@ -441,9 +409,20 @@ impl ScalarIndex {
                 }
             })
         });
-        
-        let mut sorted_scalars = self.sorted_scalars.blocking_write();
-        *sorted_scalars = sorted;
+
+        sorted
+    }
+
+    /// Rebuild `sorted_scalars` from the current scalar map.
+    ///
+    /// Acquires the read guard, derives the snapshot, releases it, and only
+    /// then publishes the result — no lock is held across the update.
+    async fn refresh_sorted(&self) {
+        let sorted = {
+            let scalars = self.scalars.read().await;
+            Self::sorted_snapshot(&scalars)
+        };
+        *self.sorted_scalars.write().await = sorted;
     }
 }
 
@@ -516,9 +495,17 @@ impl VectorIndex for HNSWIndex {
         vectors.insert(id.to_string(), vector.to_vec());
         drop(vectors);
 
-        let level = Self::random_level();
+        let level = self.random_level();
         let mut graph = self.graph.write().await;
         let entry_point = self.entry_point.read().await.clone();
+
+        // Highest level present *before* this insert, used by the entry-point
+        // rule below.
+        let top_most_level = graph
+            .values()
+            .map(|levels| levels.len().saturating_sub(1))
+            .max()
+            .unwrap_or(0);
 
         let mut node_levels = vec![Vec::new(); level + 1];
         if let Some(ref ep) = entry_point {
@@ -527,10 +514,15 @@ impl VectorIndex for HNSWIndex {
 
             for l in (0..=level.min(top_level)).rev() {
                 let (results, _) = self.search_layer(ep, vector, self.ef_construction, l, &vectors_read, &graph);
-                let neighbors: Vec<String> = results.into_iter()
-                    .take(self.m)
-                    .map(|r| r.0.id)
-                    .collect();
+                // `results` is a heap, so iterating it yields an arbitrary
+                // order; taking the first `m` wired the graph to random
+                // neighbours. Rank by distance and keep the closest `m`.
+                let mut ranked: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
+                ranked.sort_by(|a, b| {
+                    a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                ranked.truncate(self.m);
+                let neighbors: Vec<String> = ranked.into_iter().map(|r| r.id).collect();
                 if l <= level {
                     node_levels[l] = neighbors.clone();
                 }
@@ -553,12 +545,12 @@ impl VectorIndex for HNSWIndex {
         graph.insert(id.to_string(), node_levels);
         drop(graph);
 
-        if level > self.entry_point.read().await.as_ref().map(|_| 0).unwrap_or(0) {
-            let mut ep = self.entry_point.write().await;
-            *ep = Some(id.to_string());
-        } else if entry_point.is_none() {
-            let mut ep = self.entry_point.write().await;
-            *ep = Some(id.to_string());
+        // The entry point must be the node with the highest level. This used to
+        // compare against `map(|_| 0)`, making the condition `level > 0`, so any
+        // node above level 0 took over the entry point and the hierarchy became
+        // unnavigable from the top.
+        if entry_point.is_none() || level > top_most_level {
+            *self.entry_point.write().await = Some(id.to_string());
         }
 
         Ok(())
@@ -569,7 +561,7 @@ impl VectorIndex for HNSWIndex {
         vectors.remove(id);
         let mut graph = self.graph.write().await;
         graph.remove(id);
-        for (_, levels) in graph.iter_mut() {
+        for levels in graph.values_mut() {
             for layer in levels.iter_mut() {
                 layer.retain(|n| n != id);
             }
@@ -623,9 +615,16 @@ impl VectorIndex for HNSWIndex {
                 v.get(id).cloned()
             };
             if let Some(vec) = vector {
-                let level = Self::random_level();
+                let level = self.random_level();
                 let mut graph = self.graph.write().await;
                 let entry_point = self.entry_point.read().await.clone();
+
+                // Highest level present *before* this insert.
+                let top_most_level = graph
+                    .values()
+                    .map(|levels| levels.len().saturating_sub(1))
+                    .max()
+                    .unwrap_or(0);
 
                 let mut node_levels = vec![Vec::new(); level + 1];
                 if let Some(ref ep) = entry_point {
@@ -634,10 +633,13 @@ impl VectorIndex for HNSWIndex {
 
                     for l in (0..=level.min(top_level)).rev() {
                         let (results, _) = self.search_layer(ep, &vec, self.ef_construction, l, &vectors_read, &graph);
-                        let neighbors: Vec<String> = results.into_iter()
-                            .take(self.m)
-                            .map(|r| r.0.id)
-                            .collect();
+                        // Keep the closest `m`, not the heap's arbitrary first `m`.
+                        let mut ranked: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
+                        ranked.sort_by(|a, b| {
+                            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        ranked.truncate(self.m);
+                        let neighbors: Vec<String> = ranked.into_iter().map(|r| r.id).collect();
                         if l <= level {
                             node_levels[l] = neighbors.clone();
                         }
@@ -659,12 +661,13 @@ impl VectorIndex for HNSWIndex {
 
                 graph.insert(id.clone(), node_levels);
 
-                if level > self.entry_point.read().await.as_ref().map(|_| 0).unwrap_or(0) {
-                    let mut ep = self.entry_point.write().await;
-                    *ep = Some(id.clone());
-                } else if entry_point.is_none() {
-                    let mut ep = self.entry_point.write().await;
-                    *ep = Some(id.clone());
+                // The entry point must be the node with the highest level.
+                // This used to compare against `map(|_| 0)`, making the
+                // condition `level > 0`, so any node above level 0 took over
+                // the entry point and the hierarchy stopped being navigable
+                // from the top.
+                if entry_point.is_none() || level > top_most_level {
+                    *self.entry_point.write().await = Some(id.clone());
                 }
             }
         }
@@ -693,7 +696,7 @@ impl VectorIndex for IVFIndex {
         let mut vectors = self.vectors.write().await;
         vectors.insert(id.to_string(), vector.to_vec());
 
-        let cluster_id = self.assign_to_cluster(vector);
+        let cluster_id = self.assign_to_cluster(vector).await;
         let mut vector_to_cluster = self.vector_to_cluster.write().await;
         vector_to_cluster.insert(id.to_string(), cluster_id);
 
@@ -865,25 +868,30 @@ impl VectorIndex for ScalarIndex {
         }
         
         let scalar = vector[0];
-        let mut scalars = self.scalars.write().await;
-        scalars.insert(id.to_string(), scalar);
-        
-        // Update sorted list
-        self.update_sorted();
-        
+
+        // Derive the sorted snapshot from the map we already hold, then publish
+        // it. Acquiring `scalars` a second time here would deadlock.
+        let sorted = {
+            let mut scalars = self.scalars.write().await;
+            scalars.insert(id.to_string(), scalar);
+            Self::sorted_snapshot(&scalars)
+        };
+        *self.sorted_scalars.write().await = sorted;
+
         Ok(())
     }
     
     async fn remove(&self, id: &str) -> Result<bool> {
-        let mut scalars = self.scalars.write().await;
-        let removed = scalars.remove(id).is_some();
-        
-        if removed {
-            // Update sorted list
-            self.update_sorted();
+        {
+            let mut scalars = self.scalars.write().await;
+            if scalars.remove(id).is_none() {
+                return Ok(false);
+            }
         }
-        
-        Ok(removed)
+
+        self.refresh_sorted().await;
+
+        Ok(true)
     }
     
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
@@ -916,7 +924,7 @@ impl VectorIndex for ScalarIndex {
     
     async fn build(&self) -> Result<()> {
         // Update sorted list
-        self.update_sorted();
+        self.refresh_sorted().await;
         Ok(())
     }
     
@@ -1239,7 +1247,7 @@ impl PQIndex {
             return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
         }
 
-        let query_code = self.encode_vector(query, &codebook);
+        let _query_code = self.encode_vector(query, &codebook);
         let original = self.original_vectors.read().await;
 
         let mut results: Vec<SearchResult> = original
@@ -1259,33 +1267,9 @@ impl PQIndex {
         Ok(results)
     }
 
+    /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        match self.metric.as_str() {
-            "cosine" => {
-                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                1.0 - (dot / (norm_a * norm_b))
-            },
-            "euclidean" => {
-                a.iter().zip(b.iter())
-                    .map(|(x, y)| (x - y).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            },
-            _ => {
-                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm_a == 0.0 || norm_b == 0.0 {
-                    return 1.0;
-                }
-                1.0 - (dot / (norm_a * norm_b))
-            }
-        }
+        metric_distance(&self.metric, a, b)
     }
 
     pub fn compression_ratio(&self) -> f32 {

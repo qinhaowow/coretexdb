@@ -13,14 +13,13 @@
 //! - cluster: 集群管理
 //! - migrate: 数据迁移
 
-use clap::{Command, Arg, ArgAction, value_parser};
+use clap::{Command, Arg, ArgAction};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::net::SocketAddr;
-use std::time::Duration;
 
-use crate::{CoreTexDB, DbConfig, ApiConfig, start_server};
+use crate::{CoreTexDB, ApiConfig, start_server, DbConfig};
 use crate::coretex_core::Result;
+use crate::coretex_data::{index_type_name, metric_name};
 
 /// Run the CLI
 pub fn run_cli() -> Result<()> {
@@ -31,14 +30,18 @@ pub fn run_cli() -> Result<()> {
 }
 
 async fn run_cli_async() -> Result<()> {
-    let db = Arc::new(RwLock::new(CoreTexDB::new()));
-    db.read().await.init().await.map_err(|e| format!("DB init failed: {}", e))?;
-
     let mut cmd = Command::new("coretex")
         .version(env!("CARGO_PKG_VERSION"))
         .about("CoreTexDB command-line interface")
         .subcommand_required(true)
-        .arg_required_else_help(true);
+        .arg_required_else_help(true)
+        .arg(
+            Arg::new("data-dir")
+                .long("data-dir")
+                .global(true)
+                .help("Directory that holds the database (metadata.json + vector log)")
+                .default_value("./coretex_data"),
+        );
 
     // ==================== server ====================
     cmd = cmd.subcommand(
@@ -57,13 +60,6 @@ async fn run_cli_async() -> Result<()> {
                     .long("port")
                     .help("Port to bind the server to")
                     .default_value("5000"),
-            )
-            .arg(
-                Arg::new("data-dir")
-                    .short('d')
-                    .long("data-dir")
-                    .help("Directory to store data")
-                    .default_value("./data"),
             )
             .arg(
                 Arg::new("auth")
@@ -118,8 +114,11 @@ async fn run_cli_async() -> Result<()> {
                         Arg::new("index")
                             .short('i')
                             .long("index")
-                            .help("Index type (hnsw, ivf, brute)")
-                            .default_value("hnsw"),
+                            .help("Index type: brute_force (exact, default), hnsw, ivf, scalar")
+                            // Exact by default, matching `CoreTexDB::create_collection`.
+                            // Defaulting to an approximate index would silently trade
+                            // accuracy away for every collection created without `-i`.
+                            .default_value(crate::coretex_data::DEFAULT_INDEX_TYPE),
                     ),
             )
             .subcommand(
@@ -426,7 +425,7 @@ async fn run_cli_async() -> Result<()> {
                         Arg::new("set")
                             .long("set")
                             .num_args(2)
-                            .value_names(&["KEY", "VALUE"])
+                            .value_names(["KEY", "VALUE"])
                         .help("Set config value"),
                     ),
             ),
@@ -555,6 +554,19 @@ async fn run_cli_async() -> Result<()> {
 
     let matches = cmd.get_matches();
 
+    // Every subcommand shares one durable database, so changes made by one
+    // invocation are visible to the next one.
+    let data_dir = matches
+        .get_one::<String>("data-dir")
+        .map(String::as_str)
+        .unwrap_or("./coretex_data");
+    let db = Arc::new(RwLock::new(CoreTexDB::with_config(DbConfig::new(data_dir))));
+    db.read()
+        .await
+        .init()
+        .await
+        .map_err(|e| format!("DB init failed: {}", e))?;
+
     match matches.subcommand() {
         Some(("server", sub_matches)) => {
             let address = sub_matches.get_one::<String>("address").unwrap();
@@ -571,6 +583,7 @@ async fn run_cli_async() -> Result<()> {
             let config = ApiConfig {
                 address: address.clone(),
                 port: port.parse().unwrap(),
+                data_dir: data_dir.clone(),
                 enable_cors: true,
                 cors_allowed_origins: Vec::new(),
                 enable_auth,
@@ -589,10 +602,30 @@ async fn run_cli_async() -> Result<()> {
                     let index = m.get_one::<String>("index").unwrap();
 
                     let db_ref = db.clone();
-                    db_ref.read().await.create_collection(name, dimension, metric).await
+                    db_ref.read().await
+                        .create_collection_with_index(name, dimension, metric, index)
+                        .await
                         .map_err(|e| format!("Failed to create collection: {}", e))?;
 
-                    println!("✓ Collection '{}' created (dim={}, metric={}, index={})", name, dimension, metric, index);
+                    // Report what was actually stored rather than what was asked
+                    // for. An unrecognised metric or index type falls back to
+                    // cosine / the exact index, and echoing the raw arguments
+                    // would hide that from the user.
+                    let schema = db_ref.read().await.get_collection(name).await
+                        .map_err(|e| format!("Failed to read back collection: {}", e))?;
+                    let effective_index = schema
+                        .indexes
+                        .first()
+                        .map(|i| index_type_name(&i.index_type))
+                        .unwrap_or("none");
+
+                    println!(
+                        "✓ Collection '{}' created (dim={}, metric={}, index={})",
+                        name,
+                        schema.dimension,
+                        metric_name(&schema.distance_metric),
+                        effective_index
+                    );
                 }
 
                 Some(("list", m)) => {
@@ -853,8 +886,18 @@ async fn run_cli_async() -> Result<()> {
 
             let vector: Vec<f32> = vector_str.split(',').map(|s| s.trim().parse::<f32>().unwrap()).collect();
 
+            // `--filter` is a JSON document; a malformed one is a user error and
+            // must be reported rather than silently searching without a filter.
+            let filter = match m.get_one::<String>("filter") {
+                Some(raw) => Some(
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .map_err(|e| format!("Invalid --filter JSON: {}", e))?,
+                ),
+                None => None,
+            };
+
             let db_ref = db.clone();
-            let results = db_ref.read().await.search(collection, vector, k, None).await
+            let results = db_ref.read().await.search(collection, vector, k, filter).await
                 .map_err(|e| format!("Search failed: {}", e))?;
 
             if format == "json" {
@@ -979,7 +1022,7 @@ async fn run_cli_async() -> Result<()> {
                     match user_sub.subcommand() {
                         Some(("create", m)) => {
                             let username = m.get_one::<String>("username").unwrap();
-                            let password = m.get_one::<String>("password").unwrap();
+                            let _password = m.get_one::<String>("password").unwrap();
                             let role = m.get_one::<String>("role").unwrap();
                             println!("✓ User '{}' created with role '{}'", username, role);
                         }
@@ -1069,7 +1112,7 @@ async fn run_cli_async() -> Result<()> {
             match sub_matches.subcommand() {
                 Some(("create", m)) => {
                     let username = m.get_one::<String>("username").unwrap();
-                    let password = m.get_one::<String>("password").unwrap();
+                    let _password = m.get_one::<String>("password").unwrap();
                     let ttl: i64 = m.get_one::<String>("ttl").unwrap().parse().unwrap_or(86400);
                     let token = format!("tk_{}_{}", username, chrono::Utc::now().timestamp());
                     println!("Token: {}", token);
@@ -1139,7 +1182,6 @@ async fn run_cli_async() -> Result<()> {
             println!("Type 'help' for commands, 'exit' to quit");
 
             use std::io::BufRead;
-use crate::coretex_core::Result;
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
                 let line = line.unwrap_or_default();

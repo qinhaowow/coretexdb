@@ -115,7 +115,7 @@ pub struct IndexConfig {
 } 
 
 /// Index type 
-#[derive(Debug, Clone, Serialize, Deserialize)] 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] 
 pub enum IndexType { 
     BruteForce, 
     HNSW, 

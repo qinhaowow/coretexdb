@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
-use crate::coretex_core::{CollectionSchema, CoreTexError, Result, DistanceMetric};
+use crate::coretex_core::{CollectionSchema, CoreTexError, IndexConfig, IndexType, Result, DistanceMetric};
 use crate::coretex_storage::StorageEngine;
 use crate::coretex_index::{IndexManager, SearchResult};
 use crate::coretex_transaction::{TransactionManager, TransactionId, IsolationLevel, TransactionError};
@@ -17,6 +17,65 @@ pub use storage_adapter::{UnifiedStorageAdapter, AdapterError, ConsistencyLevel,
 pub struct VectorRecord {
     pub vector: Vec<f32>,
     pub metadata: serde_json::Value,
+}
+
+/// Canonical lowercase name of a [`DistanceMetric`]. Matches the strings
+/// accepted by the CLI and the REST API, and by the index constructors.
+pub(crate) fn metric_name(metric: &DistanceMetric) -> &'static str {
+    match metric {
+        DistanceMetric::Cosine => "cosine",
+        DistanceMetric::Euclidean => "euclidean",
+        DistanceMetric::DotProduct => "dotproduct",
+        DistanceMetric::Manhattan => "manhattan",
+    }
+}
+
+fn parse_metric(name: &str) -> DistanceMetric {
+    match name {
+        "euclidean" => DistanceMetric::Euclidean,
+        "dotproduct" => DistanceMetric::DotProduct,
+        "manhattan" => DistanceMetric::Manhattan,
+        _ => DistanceMetric::Cosine,
+    }
+}
+
+/// The single index name for a collection.
+fn index_name_for(collection: &str) -> String {
+    format!("{}_index", collection)
+}
+
+/// The default index is exact, so out-of-the-box results are always correct.
+/// The approximate indexes (`hnsw`, `ivf`) must be requested explicitly, and
+/// are documented as approximate.
+///
+/// This is the single source of truth: the CLI, the REST API and the library
+/// all resolve their default from here, so none of them can drift into
+/// silently defaulting to an approximate index.
+pub(crate) const DEFAULT_INDEX_TYPE: &str = "brute_force";
+
+/// Map a user-facing index name onto the index type and the name
+/// [`IndexManager::create_index`] expects.
+///
+/// Anything unrecognised becomes the exact index. Falling back to an
+/// approximate index would silently trade away result quality, which is the
+/// worse failure for a database.
+fn parse_index_type(raw: &str) -> (IndexType, &'static str) {
+    match raw {
+        "hnsw" => (IndexType::HNSW, "hnsw"),
+        "ivf" => (IndexType::IVF, "ivf"),
+        "scalar" => (IndexType::Scalar, "scalar"),
+        _ => (IndexType::BruteForce, "brute_force"),
+    }
+}
+
+/// Reverse of [`parse_index_type`], for persisting the choice in the manifest.
+pub(crate) fn index_type_name(index_type: &IndexType) -> &'static str {
+    match index_type {
+        IndexType::BruteForce => "brute_force",
+        IndexType::HNSW => "hnsw",
+        IndexType::IVF => "ivf",
+        IndexType::Scalar => "scalar",
+    }
 }
 
 pub struct DataManager {
@@ -114,7 +173,7 @@ impl DataManager {
 
     /// Inject a WAL for durability. All subsequent writes will be logged
     /// to the WAL before being applied to the storage engine.
-    pub fn with_wal(mut self, wal: Arc<WriteAheadLog>) -> Self {
+    pub fn with_wal(self, wal: Arc<WriteAheadLog>) -> Self {
         let _ = self.wal.set(wal);
         self
     }
@@ -140,14 +199,14 @@ impl DataManager {
         vector: &[f32],
         metadata: &serde_json::Value,
     ) -> Result<u64> {
-        if let Some(ref wal) = self.wal.get() {
+        if let Some(wal) = self.wal.get() {
             let data = serde_json::json!({
                 "vector": vector,
                 "metadata": metadata,
             });
             wal.log_operation(entry_type, collection, key, data)
                 .await
-                .map_err(|e| CoreTexError::Io(e))
+                .map_err(CoreTexError::Io)
         } else {
             Ok(0)
         }
@@ -175,12 +234,12 @@ impl DataManager {
         let entries = recovery
             .recover_storage_entries()
             .await
-            .map_err(|e| CoreTexError::Io(e))?;
+            .map_err(CoreTexError::Io)?;
 
         let mut replayed = 0u64;
         let mut skipped = 0u64;
 
-        for (entry_type, collection, key, vector, metadata) in &entries {
+        for (entry_type, _collection, key, vector, metadata) in &entries {
             match entry_type {
                 WalEntryType::Insert | WalEntryType::Update => {
                     // Write directly to storage
@@ -234,33 +293,146 @@ impl DataManager {
         &self.index_manager
     }
 
-    pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
-        let mut collections = self.collections.write().await;
+    pub fn storage_ref(&self) -> &Arc<RwLock<Box<dyn StorageEngine>>> {
+        &self.storage
+    }
 
-        if collections.contains_key(name) {
-            return Err(CoreTexError::ValidationError(format!("Collection '{}' already exists", name)));
+    /// Snapshot of every collection schema, ordered by name for stable output.
+    pub async fn schemas(&self) -> Vec<CollectionSchema> {
+        let collections = self.collections.read().await;
+        let mut schemas: Vec<CollectionSchema> = collections.values().cloned().collect();
+        schemas.sort_by(|a, b| a.name.cmp(&b.name));
+        schemas
+    }
+
+    /// Rebuild in-memory state from the durable log.
+    ///
+    /// Each schema in `schemas` is recreated along with its index, then every
+    /// persisted vector is streamed back into both the in-memory map and the
+    /// index. Returns the number of vectors restored.
+    ///
+    /// Vector keys are matched against the known collection names rather than
+    /// split on `:`, so a collection name or vector id containing a colon stays
+    /// unambiguous. Keys belonging to no known collection are orphans of a
+    /// deleted collection and are skipped.
+    pub async fn restore_from_storage(&self, schemas: &[CollectionSchema]) -> Result<usize> {
+        for schema in schemas {
+            if self.collection_exists(&schema.name).await {
+                continue;
+            }
+            self.create_collection_with_index(
+                &schema.name,
+                schema.dimension,
+                metric_name(&schema.distance_metric),
+                schema
+                    .indexes
+                    .first()
+                    .map(|i| index_type_name(&i.index_type))
+                    .unwrap_or(DEFAULT_INDEX_TYPE),
+            )
+            .await?;
         }
 
-        let schema = CollectionSchema {
-            name: name.to_string(),
-            dimension,
-            distance_metric: match metric {
-                "euclidean" => DistanceMetric::Euclidean,
-                "dotproduct" => DistanceMetric::DotProduct,
-                "manhattan" => DistanceMetric::Manhattan,
-                _ => DistanceMetric::Cosine,
-            },
-            indexes: vec![],
-            metadata_schema: None,
+        let keys = {
+            let storage = self.storage.read().await;
+            storage.list().await?
         };
 
-        collections.insert(name.to_string(), schema);
+        // Index name and in-memory map for each collection, resolved once.
+        let mut restored = 0usize;
+        for key in keys {
+            let Some(schema) = schemas
+                .iter()
+                .filter(|s| {
+                    key.len() > s.name.len()
+                        && key.starts_with(&s.name)
+                        && key.as_bytes()[s.name.len()] == b':'
+                })
+                .max_by_key(|s| s.name.len())
+            else {
+                continue;
+            };
+            let collection = schema.name.as_str();
+            let id = &key[collection.len() + 1..];
 
-        let mut data = self.data.write().await;
-        data.insert(name.to_string(), HashMap::new());
+            let record = {
+                let storage = self.storage.read().await;
+                storage.retrieve(&key).await?
+            };
+            let Some((vector, metadata)) = record else {
+                continue;
+            };
 
-        let index_name = format!("{}_hnsw", name);
-        self.index_manager.create_index(&index_name, "hnsw", metric).await
+            let index_name = index_name_for(collection);
+            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                let _ = index.add(id, &vector).await;
+            }
+
+            let mut data = self.data.write().await;
+            if let Some(collection_data) = data.get_mut(collection) {
+                collection_data.insert(id.to_string(), VectorRecord { vector, metadata });
+                restored += 1;
+            }
+        }
+        Ok(restored)
+    }
+
+    /// Create a collection backed by the default index, which is exact.
+    pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
+        self.create_collection_with_index(name, dimension, metric, DEFAULT_INDEX_TYPE)
+            .await
+    }
+
+    /// Create a collection together with its index.
+    ///
+    /// `index_type` accepts `brute_force`/`brute` (exact), `hnsw`, `ivf`, or
+    /// `scalar`. Anything unrecognised falls back to the exact index, so a typo
+    /// can never silently trade accuracy for speed. The choice is recorded in
+    /// the schema, so restarting the database rebuilds the same index.
+    pub async fn create_collection_with_index(
+        &self,
+        name: &str,
+        dimension: usize,
+        metric: &str,
+        index_type: &str,
+    ) -> Result<()> {
+        let (kind, engine_name) = parse_index_type(index_type);
+        let distance_metric = parse_metric(metric);
+        let index_name = index_name_for(name);
+
+        {
+            let mut collections = self.collections.write().await;
+            if collections.contains_key(name) {
+                return Err(CoreTexError::ValidationError(format!(
+                    "Collection '{}' already exists",
+                    name
+                )));
+            }
+
+            collections.insert(
+                name.to_string(),
+                CollectionSchema {
+                    name: name.to_string(),
+                    dimension,
+                    distance_metric: distance_metric.clone(),
+                    indexes: vec![IndexConfig {
+                        name: index_name.clone(),
+                        index_type: kind,
+                        parameters: HashMap::new(),
+                    }],
+                    metadata_schema: None,
+                },
+            );
+        }
+
+        {
+            let mut data = self.data.write().await;
+            data.insert(name.to_string(), HashMap::new());
+        }
+
+        self.index_manager
+            .create_index(&index_name, engine_name, metric_name(&distance_metric))
+            .await
             .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
 
         Ok(())
@@ -277,10 +449,25 @@ impl DataManager {
 
         let mut data = self.data.write().await;
         data.remove(name);
+        drop(data);
 
-        let index_name = format!("{}_hnsw", name);
+        let index_name = index_name_for(name);
         self.index_manager.delete_index(&index_name).await
             .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
+
+        // Drop the persisted vectors as well. Leaving them behind would
+        // resurrect them if a collection of the same name were recreated.
+        let prefix = format!("{}:", name);
+        let storage = self.storage.read().await;
+        let keys: Vec<String> = storage
+            .list()
+            .await?
+            .into_iter()
+            .filter(|key| key.starts_with(&prefix))
+            .collect();
+        for key in keys {
+            storage.delete(&key).await?;
+        }
 
         Ok(())
     }
@@ -322,18 +509,12 @@ impl DataManager {
         };
 
         // 删除旧索引
-        let old_index_name = format!("{}_hnsw", old_name);
+        let old_index_name = index_name_for(old_name);
         let _ = self.index_manager.delete_index(&old_index_name).await;
 
         // 创建新索引
-        let new_index_name = format!("{}_hnsw", new_name);
-        let metric_str = match schema.distance_metric {
-            crate::coretex_core::DistanceMetric::Euclidean => "euclidean",
-            crate::coretex_core::DistanceMetric::DotProduct => "dotproduct",
-            crate::coretex_core::DistanceMetric::Manhattan => "manhattan",
-            crate::coretex_core::DistanceMetric::Cosine => "cosine",
-        };
-        self.index_manager.create_index(&new_index_name, "hnsw", metric_str).await
+        let new_index_name = index_name_for(new_name);
+        self.index_manager.create_index(&new_index_name, "hnsw", metric_name(&schema.distance_metric)).await
             .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
 
         // 将数据写入新索引
@@ -425,7 +606,7 @@ impl DataManager {
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             for (id, vector, _) in &vectors {
                 let _ = index.add(id, vector).await;
@@ -474,7 +655,7 @@ impl DataManager {
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             for id in ids {
                 let _ = index.remove(id).await;
@@ -510,55 +691,73 @@ impl DataManager {
         k: usize,
         filter: Option<serde_json::Value>,
     ) -> Result<Vec<SearchResult>> {
-        let _schema = self.get_collection(collection).await?;
+        let schema = self.get_collection(collection).await?;
 
-        let index_name = format!("{}_hnsw", collection);
+        // A filtered query is answered by an exact scan. Asking the index for
+        // only its top `k` candidates and then filtering would return fewer
+        // than `k` matches even when more exist, because a selective filter can
+        // reject every candidate the index returned.
+        if let Some(filter) = filter {
+            return self
+                .search_scan(collection, &query, k, Some(&filter), &schema.distance_metric)
+                .await;
+        }
 
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            let results = index.search(&query, k * 2).await
+            let results = index.search(&query, k).await
                 .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
-
-            if let Some(filter_obj) = filter {
-                let data = self.data.read().await;
-                let collection_data = data.get(collection);
-
-                let filtered: Vec<SearchResult> = results.into_iter()
-                    .filter(|r| {
-                        if let Some(cd) = collection_data {
-                            if let Some(record) = cd.get(&r.id) {
-                                return Self::matches_filter(&record.metadata, &filter_obj);
-                            }
-                        }
-                        true
-                    })
-                    .take(k)
-                    .collect();
-
-                return Ok(filtered);
-            }
-
             return Ok(results.into_iter().take(k).collect());
         }
 
+        // No index for this collection: fall back to an exact scan.
+        self.search_scan(collection, &query, k, None, &schema.distance_metric)
+            .await
+    }
+
+    /// Exact k-NN scan honouring `metric` and, when given, `filter`.
+    ///
+    /// The filter is applied before ranking, so `k` results come back whenever
+    /// `k` matching vectors exist.
+    async fn search_scan(
+        &self,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+        filter: Option<&serde_json::Value>,
+        metric: &DistanceMetric,
+    ) -> Result<Vec<SearchResult>> {
         let data = self.data.read().await;
         let collection_data = data.get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
         let mut results: Vec<SearchResult> = collection_data
             .iter()
-            .map(|(id, record)| {
-                let distance = Self::cosine_distance(&query, &record.vector);
-                SearchResult {
-                    id: id.clone(),
-                    distance,
-                }
+            .filter(|(_, record)| {
+                filter
+                    .map(|f| Self::matches_filter(&record.metadata, f))
+                    .unwrap_or(true)
+            })
+            .map(|(id, record)| SearchResult {
+                id: id.clone(),
+                distance: Self::distance(metric, query, &record.vector),
             })
             .collect();
 
         results.sort_by(|a, b| {
             a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
         });
-        Ok(results.into_iter().take(k).collect())
+        results.truncate(k);
+        Ok(results)
+    }
+
+    /// Distance between two vectors under `metric`. Lower is always better, so
+    /// every metric yields a consistent "closest first" ordering.
+    ///
+    /// Delegates to [`crate::coretex_index::metric_distance`] so the exact scan
+    /// and the indexes can never disagree about what a metric means.
+    fn distance(metric: &DistanceMetric, a: &[f32], b: &[f32]) -> f32 {
+        crate::coretex_index::metric_distance(metric_name(metric), a, b)
     }
 
     pub async fn get_vectors_count(&self, collection: &str) -> Result<usize> {
@@ -608,7 +807,7 @@ impl DataManager {
             metadata: meta,
         });
 
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             let _ = index.add(id, &vector).await;
         }
@@ -808,7 +1007,7 @@ impl DataManager {
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
         collection_data.clear();
 
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             let _ = index.clear().await;
         }
@@ -912,7 +1111,7 @@ impl DataManager {
             .unwrap()
             .as_secs();
         for id in &ids {
-            wal.append(crate::coretex_transaction::WalEntry {
+            let _ = wal.append(crate::coretex_transaction::WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: crate::coretex_transaction::WalOperation::Insert {
@@ -957,7 +1156,7 @@ impl DataManager {
             .as_secs();
         for id in ids {
             let lsn = wal.entries.len() as u64;
-            wal.append(crate::coretex_transaction::WalEntry {
+            let _ = wal.append(crate::coretex_transaction::WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: crate::coretex_transaction::WalOperation::Delete {
@@ -1009,7 +1208,7 @@ impl DataManager {
             .unwrap()
             .as_secs();
         let lsn = wal.entries.len() as u64;
-        wal.append(crate::coretex_transaction::WalEntry {
+        let _ = wal.append(crate::coretex_transaction::WalEntry {
             transaction_id: txn_id,
             timestamp,
             operation: crate::coretex_transaction::WalOperation::Update {
@@ -1072,7 +1271,7 @@ impl DataManager {
             .as_secs();
         for id in &inserted {
             let lsn = wal.entries.len() as u64;
-            wal.append(crate::coretex_transaction::WalEntry {
+            let _ = wal.append(crate::coretex_transaction::WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: crate::coretex_transaction::WalOperation::Insert {
@@ -1084,7 +1283,7 @@ impl DataManager {
         }
         for id in &updated {
             let lsn = wal.entries.len() as u64;
-            wal.append(crate::coretex_transaction::WalEntry {
+            let _ = wal.append(crate::coretex_transaction::WalEntry {
                 transaction_id: txn_id,
                 timestamp,
                 operation: crate::coretex_transaction::WalOperation::Update {
@@ -1222,22 +1421,6 @@ impl DataManager {
         }
         true
     }
-
-    fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() || a.is_empty() {
-            return f32::MAX;
-        }
-
-        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            return 1.0;
-        }
-
-        1.0 - (dot / (norm_a * norm_b))
-    }
 }
 
 // =================== 事务感知写入（解决事务孤岛）====================
@@ -1275,7 +1458,7 @@ impl DataManager {
                 let _ = tokio::runtime::Handle::try_current();
                 CoreTexError::CollectionNotFound(collection.to_string())
             })?;
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             for (id, vector, _) in &vectors {
                 let _ = index.add(id, vector).await;
@@ -1366,7 +1549,7 @@ impl DataManager {
             })?;
 
         // 从索引删除
-        let index_name = format!("{}_hnsw", collection);
+        let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             for id in ids {
                 let _ = index.remove(id).await;
@@ -1417,7 +1600,7 @@ impl DataManager {
         let lh = self.lakehouse.as_ref()
             .ok_or_else(|| CoreTexError::Other("Lakehouse not attached".to_string()))?;
         lh.migrate_data().await
-            .map_err(|e| CoreTexError::Other(e))
+            .map_err(CoreTexError::Other)
     }
 
     /// 获取 Lakehouse 统计

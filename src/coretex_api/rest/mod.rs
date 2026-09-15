@@ -13,9 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
-use crate::{CoreTexDB, DbConfig, SearchResult};
+use crate::{CoreTexDB, DbConfig};
 use crate::coretex_auth::{AuthService, Permission, RateLimiter};
 use crate::coretex_core::Result;
 
@@ -23,6 +22,9 @@ use crate::coretex_core::Result;
 pub struct ApiConfig {
     pub address: String,
     pub port: u16,
+    /// Directory holding the database. The server keeps its state here so it
+    /// survives restarts.
+    pub data_dir: String,
     /// 是否启用 CORS。生产环境应设为 false，仅当需要被浏览器跨域调用时启用。
     pub enable_cors: bool,
     /// CORS 允许的来源白名单。当 enable_cors=true 时生效，必须显式配置，
@@ -38,6 +40,7 @@ impl Default for ApiConfig {
         Self {
             address: "0.0.0.0".to_string(),
             port: 5000,
+            data_dir: "./coretex_data".to_string(),
             enable_cors: false,
             cors_allowed_origins: Vec::new(),
             enable_auth: true,
@@ -205,7 +208,7 @@ pub struct LoginResponse {
 }
 
 pub async fn start_server(config: ApiConfig) -> Result<()> {
-    let db = CoreTexDB::new();
+    let db = CoreTexDB::with_config(DbConfig::new(&config.data_dir));
     db.init().await.map_err(|e| format!("Failed to init DB: {}", e))?;
 
     let auth = Arc::new(AuthService::new());
@@ -704,9 +707,9 @@ async fn update_vectors(
             if i < vectors.len() {
                 if let Ok(Some((_, metadata))) = db.get_vector(&name, id).await {
                     let new_vector = vectors[i].clone();
-                    let new_metadata = req.metadata.as_ref().map(|m| m.get(i).cloned()).flatten().unwrap_or(metadata);
+                    let new_metadata = req.metadata.as_ref().and_then(|m| m.get(i).cloned()).unwrap_or(metadata);
                     
-                    let _ = db.delete_vectors(&name, &[id.clone()]).await;
+                    let _ = db.delete_vectors(&name, std::slice::from_ref(id)).await;
                     let _ = db.insert_vectors(&name, vec![(id.clone(), new_vector, new_metadata)]).await;
                     updated_count += 1;
                 }
@@ -716,7 +719,7 @@ async fn update_vectors(
         for (i, id) in req.ids.iter().enumerate() {
             if let Ok(Some((vector, _))) = db.get_vector(&name, id).await {
                 let new_metadata = metadata.get(i).cloned().unwrap_or(serde_json::json!({}));
-                let _ = db.delete_vectors(&name, &[id.clone()]).await;
+                let _ = db.delete_vectors(&name, std::slice::from_ref(id)).await;
                 let _ = db.insert_vectors(&name, vec![(id.clone(), vector, new_metadata)]).await;
                 updated_count += 1;
             }
