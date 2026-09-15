@@ -84,4 +84,11 @@ cmake/
 # Probe / temp test artifacts
 kill_probe.txt
 lock_probe.txt
-write_spatial.py
+
+# 运行时数据目录（由程序自动重建；此前因未匹配 data/ 而漏网）
+coretex_data/
+
+# 编辑器 / 手动备份残留
+*.bak
+*.orig
+*.old
