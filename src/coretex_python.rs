@@ -36,12 +36,8 @@ pub struct PyAsyncCortexDB {
 impl PyCortexDB {
     #[new]
     fn new(data_dir: Option<String>, memory_only: Option<bool>) -> PyResult<Self> {
-        let config = DbConfig {
-            data_dir: data_dir.unwrap_or_else(|| "./data".to_string()),
-            memory_only: memory_only.unwrap_or(false),
-            max_vectors_per_collection: 1000000,
-            ..Default::default()
-        };
+        let mut config = DbConfig::new(data_dir.as_deref().unwrap_or("./coretex_data"));
+        config.memory_only = memory_only.unwrap_or(false);
 
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| PyCoreTexError::new(format!("Runtime init failed: {}", e)))?;
@@ -304,12 +300,8 @@ impl PyCortexDB {
 impl PyAsyncCortexDB {
     #[new]
     fn new(data_dir: Option<String>, memory_only: Option<bool>) -> PyResult<Self> {
-        let config = DbConfig {
-            data_dir: data_dir.unwrap_or_else(|| "./data".to_string()),
-            memory_only: memory_only.unwrap_or(false),
-            max_vectors_per_collection: 1000000,
-            ..Default::default()
-        };
+        let mut config = DbConfig::new(data_dir.as_deref().unwrap_or("./coretex_data"));
+        config.memory_only = memory_only.unwrap_or(false);
 
         // 异步版本不需要在 new 中初始化，由 await init() 完成
         let db = CoreTexDB::with_config(config);

@@ -27,7 +27,7 @@ pub struct Metric {
 }
 
 pub struct PrometheusMetrics {
-    metrics: Arc<RwLock<HashMap<String, Metric>>>,
+    _metrics: Arc<RwLock<HashMap<String, Metric>>>,
     counters: Arc<RwLock<HashMap<String, f64>>>,
     gauges: Arc<RwLock<HashMap<String, f64>>>,
     histograms: Arc<RwLock<HashMap<String, Vec<f64>>>>,
@@ -36,7 +36,7 @@ pub struct PrometheusMetrics {
 impl PrometheusMetrics {
     pub fn new() -> Self {
         Self {
-            metrics: Arc::new(RwLock::new(HashMap::new())),
+            _metrics: Arc::new(RwLock::new(HashMap::new())),
             counters: Arc::new(RwLock::new(HashMap::new())),
             gauges: Arc::new(RwLock::new(HashMap::new())),
             histograms: Arc::new(RwLock::new(HashMap::new())),
@@ -250,7 +250,7 @@ impl Default for SlowQueryConfig {
         Self {
             enabled: true,
             slow_threshold_ms: 100,
-            log_path: "logs/slow_queries.log".to_string(),
+            log_path: "data/logs/slow_query.log".to_string(),
             max_log_entries: 10000,
         }
     }

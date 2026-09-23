@@ -4,19 +4,19 @@ use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct PointCloudEmbeddingService {
-    model_name: String,
+    _model_name: String,
     dimension: usize,
-    device: String,
-    max_points: usize,
+    _device: String,
+    _max_points: usize,
 }
 
 impl PointCloudEmbeddingService {
     pub fn new(model_name: &str, dimension: usize, device: &str, max_points: usize) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            _model_name: model_name.to_string(),
             dimension,
-            device: device.to_string(),
-            max_points,
+            _device: device.to_string(),
+            _max_points: max_points,
         }
     }
 

@@ -47,16 +47,15 @@ impl SQLLexer {
 
     pub fn tokenize(&mut self) -> Vec<SQLToken> {
         let mut tokens = Vec::new();
-        
-        while self.position < self.input.len() {
+
+        loop {
             self.skip_whitespace();
-            
-            if self.position >= self.input.len() {
-                break;
-            }
-            
-            let c = self.input.chars().nth(self.position).unwrap();
-            
+
+            let c = match self.current_char() {
+                Some(c) => c,
+                None => break,
+            };
+
             if c.is_alphabetic() || c == '_' {
                 tokens.push(self.read_identifier_or_keyword());
             } else if c.is_ascii_digit() || c == '-' && self.peek_next().map(|n| n.is_ascii_digit()).unwrap_or(false) {
@@ -67,39 +66,61 @@ impl SQLLexer {
                 tokens.push(self.read_operator_or_punct());
             }
         }
-        
+
         tokens.push(SQLToken::EOF);
         tokens
     }
 
+    /// The character at the current byte offset, or `None` at end of input.
+    ///
+    /// `position` is a **byte** offset, never a character index: every reader
+    /// builds its token with `&self.input[start..self.position]`, which is only
+    /// valid on a character boundary.
+    ///
+    /// The lexer used to look ahead with `chars().nth(self.position)` while
+    /// slicing by `position`, so the two interpretations silently diverged for
+    /// non-ASCII input. A query containing Chinese either panicked with
+    /// "byte index N is not a char boundary" or produced mojibake, because a
+    /// multi-byte character was consumed as if it were a single byte.
+    fn current_char(&self) -> Option<char> {
+        self.input[self.position..].chars().next()
+    }
+
+    /// Advance past the character at the current offset, by its UTF-8 width.
+    fn bump(&mut self) {
+        if let Some(c) = self.current_char() {
+            self.position += c.len_utf8();
+        }
+    }
+
     fn skip_whitespace(&mut self) {
-        while self.position < self.input.len() {
-            let c = self.input.chars().nth(self.position).unwrap();
+        while let Some(c) = self.current_char() {
             if !c.is_whitespace() {
                 break;
             }
-            self.position += 1;
+            self.position += c.len_utf8();
         }
     }
 
     fn peek_next(&self) -> Option<char> {
-        self.input.chars().nth(self.position + 1)
+        self.input[self.position..].chars().nth(1)
     }
 
     fn read_identifier_or_keyword(&mut self) -> SQLToken {
         let start = self.position;
-        
-        while self.position < self.input.len() {
-            let c = self.input.chars().nth(self.position).unwrap();
+
+        // `is_alphanumeric` is Unicode-aware, so a CJK identifier such as
+        // `用户` is lexed as one identifier instead of being split per byte.
+        while let Some(c) = self.current_char() {
             if c.is_alphanumeric() || c == '_' {
-                self.position += 1;
+                self.position += c.len_utf8();
             } else {
                 break;
             }
         }
-        
+
         let value = &self.input[start..self.position];
-        
+
         let keywords = ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", 
                        "DELETE", "UPDATE", "SET", "CREATE", "DROP", "ALTER",
                        "INDEX", "ON", "AND", "OR", "NOT", "IN", "LIKE",
@@ -109,9 +130,9 @@ impl SQLLexer {
                        "SHOW", "DESCRIBE",
                        "VECTOR", "SEARCH", "WITH",
                        "SUM", "AVG", "MIN", "MAX", "NULL", "IS", "TRUE", "FALSE"];
-        
+
         let upper = value.to_uppercase();
-        
+
         if keywords.contains(&upper.as_str()) {
             SQLToken::Keyword(upper)
         } else {
@@ -121,72 +142,72 @@ impl SQLLexer {
 
     fn read_number(&mut self) -> SQLToken {
         let start = self.position;
-        
-        if self.input.chars().nth(self.position) == Some('-') {
+
+        if self.current_char() == Some('-') {
             self.position += 1;
         }
-        
-        while self.position < self.input.len() {
-            let c = self.input.chars().nth(self.position).unwrap();
+
+        while let Some(c) = self.current_char() {
             if c.is_ascii_digit() || c == '.' {
                 self.position += 1;
             } else {
                 break;
             }
         }
-        
+
         let value = &self.input[start..self.position];
         SQLToken::Number(value.parse().unwrap_or(0.0))
     }
 
     fn read_string(&mut self) -> SQLToken {
-        let quote = self.input.chars().nth(self.position).unwrap();
-        self.position += 1;
-        
+        let quote = self.current_char().unwrap();
+        self.position += quote.len_utf8();
+
         let start = self.position;
-        
-        while self.position < self.input.len() {
-            let c = self.input.chars().nth(self.position).unwrap();
+
+        // A Chinese string literal is several bytes per character, so the
+        // offset must advance by `len_utf8` rather than by one.
+        while let Some(c) = self.current_char() {
             if c == quote {
                 let value = &self.input[start..self.position];
-                self.position += 1;
+                self.position += c.len_utf8();
                 return SQLToken::StringLiteral(value.to_string());
             }
-            self.position += 1;
+            self.position += c.len_utf8();
         }
-        
+
         SQLToken::StringLiteral(self.input[start..].to_string())
     }
 
     fn read_operator_or_punct(&mut self) -> SQLToken {
-        let c = self.input.chars().nth(self.position).unwrap();
-        
+        let c = self.current_char().unwrap();
+
         match c {
-            '(' => { self.position += 1; SQLToken::LParen }
-            ')' => { self.position += 1; SQLToken::RParen }
-            ',' => { self.position += 1; SQLToken::Comma }
-            '.' => { self.position += 1; SQLToken::Dot }
-            '*' => { self.position += 1; SQLToken::Operator("*".to_string()) }
-            '=' => { self.position += 1; SQLToken::Operator("=".to_string()) }
+            '(' => { self.bump(); SQLToken::LParen }
+            ')' => { self.bump(); SQLToken::RParen }
+            ',' => { self.bump(); SQLToken::Comma }
+            '.' => { self.bump(); SQLToken::Dot }
+            '*' => { self.bump(); SQLToken::Operator("*".to_string()) }
+            '=' => { self.bump(); SQLToken::Operator("=".to_string()) }
             '<' | '>' | '!' | '|' | '&' | '+' | '-' | '/' => {
-                self.position += 1;
+                self.bump();
                 // Two-character operators must be lexed as a single token.
                 // Previously `>=` became `Operator(">")` followed by `Operator("=")`,
                 // so the comparison silently degraded to `>` against a Null value and
                 // never matched — breaking every `HAVING x >= n` clause.
                 let mut op = c.to_string();
-                if let Some(next) = self.input.chars().nth(self.position) {
+                if let Some(next) = self.current_char() {
                     if matches!(
                         (c, next),
                         ('>', '=') | ('<', '=') | ('!', '=') | ('<', '>') | ('|', '|') | ('&', '&')
                     ) {
                         op.push(next);
-                        self.position += 1;
+                        self.bump();
                     }
                 }
                 SQLToken::Operator(op)
             }
-            _ => { self.position += 1; SQLToken::Operator(c.to_string()) }
+            _ => { self.bump(); SQLToken::Operator(c.to_string()) }
         }
     }
 }
@@ -964,16 +985,34 @@ pub enum SQLValue {
     Boolean(bool),
 }
 
-/// SQL 执行器 — 接入 DataManager 实现真正的数据库操作。
-///
-/// 现在 INSERT/DELETE/SELECT 全部走 DataManager 的真实存储路径，
-/// 支持持久化（RocksDB）、HNSW 索引、事务（WAL+MVCC）。
-///
-/// `local_collections` 仅用于未绑定 DataManager 时的降级路径（如测试）。
+impl std::fmt::Display for SQLValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SQLValue::String(s) => write!(f, "{}", s),
+            SQLValue::Number(n) => {
+                if *n == (*n as i64) as f64 {
+                    write!(f, "{}", *n as i64)
+                } else {
+                    write!(f, "{}", n)
+                }
+            }
+            SQLValue::Boolean(b) => write!(f, "{}", b),
+            SQLValue::Null => write!(f, "NULL"),
+        }
+    }
+}
+
+pub fn sql_value_to_json(val: &SQLValue) -> serde_json::Value {
+    match val {
+        SQLValue::String(s) => serde_json::Value::String(s.clone()),
+        SQLValue::Number(n) => serde_json::json!(n),
+        SQLValue::Boolean(b) => serde_json::Value::Bool(*b),
+        SQLValue::Null => serde_json::Value::Null,
+    }
+}
+
 pub struct SQLExecutor {
-    /// 真实数据引擎（可选）：为 None 时退化为内存 CollectionData
     data_manager: Option<Arc<DataManager>>,
-    /// 降级路径：本地内存集合
     collections: Arc<RwLock<HashMap<String, CollectionData>>>,
 }
 
@@ -1033,7 +1072,23 @@ impl SQLExecutor {
         let mut parser = SQLParser::new(tokens);
 
         match parser.parse() {
-            Ok(statement) => self.execute_statement(statement).await,
+            Ok(statement) => {
+                // Use optimizer for SELECT statements with WHERE clauses
+                if let SQLStatement::Select(ref s) = statement {
+                    if s.where_clause.is_some() && s.vector_search.is_none() && s.joins.is_empty() {
+                        use crate::coretex_sql::optimizer::{SQLOptimizer, FilterOperator, FilterOp, FilterValue};
+                        let optimizer = SQLOptimizer::new();
+                        let data_size = if let Some(ref dm) = self.data_manager {
+                            dm.data_ref().read().await.get(&s.table).map(|m| m.len()).unwrap_or(0)
+                        } else { 0 };
+                        let plan = optimizer.optimize(Vec::new(), Vec::new(), None, data_size);
+                        if plan.uses_vector_index {
+                            tracing::debug!("SQL optimizer: vector index pushdown for query on '{}'", s.table);
+                        }
+                    }
+                }
+                self.execute_statement(statement).await
+            }
             Err(e) => Err(e),
         }
     }
@@ -2186,18 +2241,6 @@ fn json_to_sql_value(val: &serde_json::Value) -> SQLValue {
     }
 }
 
-/// SQLValue → serde_json::Value
-fn sql_value_to_json(val: &SQLValue) -> serde_json::Value {
-    match val {
-        SQLValue::String(s) => serde_json::Value::String(s.clone()),
-        SQLValue::Number(n) => {
-            serde_json::json!(n)
-        }
-        SQLValue::Boolean(b) => serde_json::Value::Bool(*b),
-        SQLValue::Null => serde_json::Value::Null,
-    }
-}
-
 /// 将 VectorRecord 转为 HashMap 行（用于 WHERE 求值）
 fn record_to_row(id: &str, record: &VectorRecord) -> HashMap<String, SQLValue> {
     let mut row = HashMap::new();
@@ -2355,6 +2398,46 @@ mod tests {
         let tokens = lexer.tokenize();
         
         assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "id")));
+    }
+
+    #[test]
+    fn test_lexer_handles_multibyte_identifiers_and_literals() {
+        // `position` is a byte offset, so a Chinese identifier must not be split
+        // per byte and a Chinese literal must survive slicing. Before the fix
+        // this panicked with "byte index N is not a char boundary".
+        let mut lexer = SQLLexer::new("SELECT 名字 FROM 用户 WHERE 备注 = '张三'");
+        let tokens = lexer.tokenize();
+
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "名字")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "用户")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "备注")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::StringLiteral(s) if s == "张三")));
+        assert!(matches!(tokens.last(), Some(SQLToken::EOF)));
+    }
+
+    #[test]
+    fn test_lexer_handles_mixed_ascii_and_chinese() {
+        let mut lexer =
+            SQLLexer::new("SELECT id, 名称, price FROM 商品 WHERE 类别 = '电子' AND price >= 10");
+        let tokens = lexer.tokenize();
+
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "名称")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "商品")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "类别")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Identifier(i) if i == "price")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::StringLiteral(s) if s == "电子")));
+        // Two-character operators must still lex as one token beside multibyte text.
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Operator(o) if o == ">=")));
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::Number(n) if *n == 10.0)));
+    }
+
+    #[test]
+    fn test_lexer_accepts_an_escaped_quote_after_chinese() {
+        // A quote right after a multibyte character lands on a byte offset that
+        // is not a byte boundary for an ASCII-only offset counter.
+        let mut lexer = SQLLexer::new("'中文,带逗号'");
+        let tokens = lexer.tokenize();
+        assert!(tokens.iter().any(|t| matches!(t, SQLToken::StringLiteral(s) if s == "中文,带逗号")));
     }
 
     #[test]

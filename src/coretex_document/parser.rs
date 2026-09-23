@@ -342,7 +342,7 @@ impl DocumentParser for AudioParser {
         metadata.insert("type".to_string(), serde_json::Value::String("audio".to_string()));
         metadata.insert("size".to_string(), serde_json::Value::Number(data.len().into()));
         
-        let mut text = String::new();
+        let mut text = format!("Audio file ({} bytes)", data.len());
         let mut format = "unknown".to_string();
         
         if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE" {
@@ -380,7 +380,6 @@ impl DocumentParser for AudioParser {
             text = format!("FLAC audio ({} bytes)", data.len());
         } else {
             metadata.insert("format".to_string(), serde_json::Value::String("unknown".to_string()));
-            text = format!("Audio file ({} bytes)", data.len());
         }
         
         metadata.insert("detected_format".to_string(), serde_json::Value::String(format));

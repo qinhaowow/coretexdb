@@ -73,6 +73,24 @@ pub struct DeleteResult {
     pub message: String,
 }
 
+/// Auth 用户操作结果
+#[derive(Clone, SimpleObject)]
+pub struct AuthUserResult {
+    pub success: bool,
+    pub user_id: String,
+    pub message: String,
+}
+
+/// Auth 登录结果
+#[derive(Clone, SimpleObject)]
+pub struct AuthLoginResult {
+    pub success: bool,
+    pub token: String,
+    pub user_id: String,
+    pub expires_in: i32,
+    pub message: String,
+}
+
 /// 元数据过滤操作
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub enum FilterOp {
@@ -114,6 +132,22 @@ impl MetadataFilterInput {
         } else {
             self.value.to_lowercase()
         };
+
+        // Try numeric comparison first for ordering operators
+        match self.op {
+            FilterOp::Gt | FilterOp::Lt | FilterOp::Gte | FilterOp::Lte => {
+                if let (Ok(an), Ok(bn)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    return match self.op {
+                        FilterOp::Gt => an > bn,
+                        FilterOp::Lt => an < bn,
+                        FilterOp::Gte => an >= bn,
+                        FilterOp::Lte => an <= bn,
+                        _ => unreachable!(),
+                    };
+                }
+            }
+            _ => {}
+        }
 
         match self.op {
             FilterOp::Eq => a == b,
@@ -497,6 +531,110 @@ impl MutationRoot {
             Ok(false)
         }
     }
+
+    /// 创建用户
+    async fn create_user(
+        &self,
+        ctx: &Context<'_>,
+        username: String,
+        password: String,
+        email: Option<String>,
+    ) -> FieldResult<AuthUserResult> {
+        let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        match auth.create_user(&username, &password, email.as_deref()).await {
+            Ok(user_id) => Ok(AuthUserResult {
+                success: true,
+                user_id,
+                message: format!("User '{}' created successfully", username),
+            }),
+            Err(e) => Ok(AuthUserResult {
+                success: false,
+                user_id: String::new(),
+                message: e,
+            }),
+        }
+    }
+
+    /// 用户登录
+    async fn login(
+        &self,
+        ctx: &Context<'_>,
+        username: String,
+        password: String,
+    ) -> FieldResult<AuthLoginResult> {
+        let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        match auth.authenticate(&username, &password).await {
+            Ok(token) => Ok(AuthLoginResult {
+                success: true,
+                token: token.token,
+                user_id: token.user_id,
+                expires_in: token.expires_in as i32,
+                message: "Login successful".to_string(),
+            }),
+            Err(e) => Ok(AuthLoginResult {
+                success: false,
+                token: String::new(),
+                user_id: String::new(),
+                expires_in: 0,
+                message: e,
+            }),
+        }
+    }
+
+    /// 删除用户
+    async fn delete_user(
+        &self,
+        ctx: &Context<'_>,
+        user_id: String,
+    ) -> FieldResult<bool> {
+        let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        Ok(auth.delete_user(&user_id).await)
+    }
+
+    /// 分配角色
+    async fn assign_role(
+        &self,
+        ctx: &Context<'_>,
+        user_id: String,
+        role: String,
+    ) -> FieldResult<AuthUserResult> {
+        let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        match auth.assign_role(&user_id, &role).await {
+            Ok(()) => Ok(AuthUserResult {
+                success: true,
+                user_id,
+                message: format!("Role '{}' assigned successfully", role),
+            }),
+            Err(e) => Ok(AuthUserResult {
+                success: false,
+                user_id,
+                message: e,
+            }),
+        }
+    }
+
+    /// 吊销 Token
+    async fn revoke_token(
+        &self,
+        ctx: &Context<'_>,
+        token: String,
+    ) -> FieldResult<bool> {
+        let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        Ok(auth.revoke_token(&token).await)
+    }
+
+    /// 重命名集合
+    async fn rename_collection(
+        &self,
+        ctx: &Context<'_>,
+        name: String,
+        new_name: String,
+    ) -> FieldResult<bool> {
+        let db = ctx.data::<Arc<RwLock<CoreTexDB>>>()?;
+        let db = db.read().await;
+        db.rename_collection(&name, &new_name).await?;
+        Ok(true)
+    }
 }
 
 // ==================== Subscription ====================
@@ -547,9 +685,11 @@ pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 pub fn build_schema(db: Arc<RwLock<CoreTexDB>>) -> AppSchema {
     let (tx, _rx) = broadcast::channel::<DataChangeEvent>(10000);
     let broadcaster = Arc::new(tx);
+    let auth = Arc::new(crate::coretex_auth::AuthService::new());
     Schema::build(QueryRoot::default(), MutationRoot, SubscriptionRoot)
         .data(db)
         .data(broadcaster)
+        .data(auth)
         .finish()
 }
 

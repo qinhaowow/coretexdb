@@ -85,7 +85,7 @@ impl BM25Index {
         let mut docs = self.documents.write().await;
         docs.insert(doc_id.clone(), doc);
 
-        let N = docs.len() as f32;
+        let n = docs.len() as f32;
         let mut doc_freqs: HashMap<String, usize> = HashMap::new();
 
         for doc in docs.values() {
@@ -99,13 +99,13 @@ impl BM25Index {
         idf.clear();
         
         for (term, df) in doc_freqs {
-            let idf_score = ((N - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln();
+            let idf_score = ((n - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln();
             idf.insert(term, idf_score);
         }
 
         let total_len: f32 = docs.values().map(|d| d.tokens.len() as f32).sum();
         let mut avgdl = self.avgdl.write().await;
-        *avgdl = if N > 0.0 { total_len / N } else { 0.0 };
+        *avgdl = if n > 0.0 { total_len / n } else { 0.0 };
 
         Ok(())
     }

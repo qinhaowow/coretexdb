@@ -237,11 +237,11 @@ impl RTreeNode {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    fn _is_empty(&self) -> bool {
         self.entries.is_empty() && self.children.is_empty()
     }
 
-    fn entry_count(&self) -> usize {
+    fn _entry_count(&self) -> usize {
         if self.is_leaf {
             self.entries.len()
         } else {
@@ -263,7 +263,7 @@ impl RTreeNode {
         self.bounds.max_lon = self.bounds.max_lon.max(bbox.max_lon);
     }
 
-    fn recompute_bounds(&mut self) {
+    fn _recompute_bounds(&mut self) {
         if self.is_leaf {
             self.bounds = GeoBoundingBox::new(f64::MAX, f64::MIN, f64::MAX, f64::MIN);
             let points: Vec<_> = self.entries.iter().map(|(_, p)| p.clone()).collect();
@@ -579,7 +579,7 @@ impl RTree {
         }
     }
 
-    pub fn height(&self) -> usize {
+    pub fn _height(&self) -> usize {
         let mut h = 1;
         let mut node = &self.nodes[self.root];
         while !node.is_leaf && !node.children.is_empty() {
@@ -589,13 +589,13 @@ impl RTree {
         h
     }
 
-    pub fn count(&self) -> usize {
+    pub fn _count(&self) -> usize {
         let mut count = 0;
-        self.count_node(self.root, &mut count);
+        self._count_node(self.root, &mut count);
         count
     }
 
-    fn count_node(&self, node_idx: usize, count: &mut usize) {
+    fn _count_node(&self, node_idx: usize, count: &mut usize) {
         if node_idx >= self.nodes.len() {
             return;
         }
@@ -604,7 +604,7 @@ impl RTree {
             *count += node.entries.len();
         } else {
             for &child_idx in &node.children {
-                self.count_node(child_idx, count);
+                self._count_node(child_idx, count);
             }
         }
     }

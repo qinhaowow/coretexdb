@@ -8,9 +8,9 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::time::{self, Duration};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use sha1::{Sha1, Digest as Sha1Digest};
+use sha1::Sha1;
 use hmac::{Hmac, Mac};
-use base64;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 pub struct CdcEngine {
     source_connectors: Arc<RwLock<HashMap<String, Box<dyn CdcSource + Send + Sync>>>>,
@@ -126,7 +126,7 @@ impl PostgresCdcSource {
         self
     }
 
-    fn now_ms() -> u64 {
+    fn _now_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1001,7 +1001,7 @@ impl CdcSource for MysqlCdcSource {
                             .unwrap_or("").to_string();
 
                         table_map.insert(table_id, TableMapEntry {
-                            schema: schema.clone(),
+                            _schema: schema.clone(),
                             table: table.clone(),
                         });
                     }
@@ -1101,7 +1101,7 @@ impl MysqlCdcSource {
 
 /// MySQL TABLE_MAP_EVENT 缓存条目
 struct TableMapEntry {
-    schema: String,
+    _schema: String,
     table: String,
 }
 
@@ -1311,7 +1311,7 @@ impl CdcSource for MongodbCdcSource {
             // saslStart
             let nonce = format!("{}", uuid_simple_mongo());
             let client_first = format!("n={},r={}", user, nonce);
-            let payload = base64::encode(&client_first);
+            let payload = BASE64.encode(&client_first);
 
             let sasl_start = build_mongo_cmd(
                 2,
@@ -1331,7 +1331,7 @@ impl CdcSource for MongodbCdcSource {
             // Parse server response to get server nonce + salt + iterations
             if let Some(doc) = sasl_resp.first() {
                 if let Some(payload_b64) = doc.get("payload").and_then(|v| v.as_str()) {
-                    if let Ok(payload_str) = base64::decode(payload_b64) {
+                    if let Ok(payload_str) = BASE64.decode(payload_b64) {
                         if let Ok(text) = String::from_utf8(payload_str) {
                             let (server_nonce, salt_b64, iterations) =
                                 parse_scram_server_first(&text);
@@ -1342,7 +1342,7 @@ impl CdcSource for MongodbCdcSource {
                                 server_nonce,
                                 compute_scram_proof(&pass, &salt_b64, iterations as u32, &nonce, &server_nonce)
                             );
-                            let final_payload = base64::encode(&client_final);
+                            let final_payload = BASE64.encode(&client_final);
 
                             let sasl_continue = build_mongo_cmd(
                                 3,
@@ -1680,7 +1680,7 @@ fn compute_scram_proof(
     client_nonce: &str,
     server_nonce: &str,
 ) -> String {
-    let salt = base64::decode(salt_b64).unwrap_or_default();
+    let salt = BASE64.decode(salt_b64).unwrap_or_default();
     let _combined_nonce = format!("{},{}", client_nonce, server_nonce);
 
     // SaltedPassword = Hi(Normalize(password), salt, i)
@@ -1712,7 +1712,7 @@ fn compute_scram_proof(
         proof[i] = client_key[i] ^ client_sig[i];
     }
 
-    base64::encode(proof)
+    BASE64.encode(proof)
 }
 
 /// 简化的 PBKDF2-HMAC-SHA256
@@ -1865,19 +1865,19 @@ impl CdcEngine {
 
 pub struct VectorSyncHandler {
     cdc_receiver: broadcast::Receiver<CdcEvent>,
-    target_collection: String,
+    _target_collection: String,
     field_mapping: HashMap<String, String>,
 }
 
 impl VectorSyncHandler {
     pub fn new(
         cdc_receiver: broadcast::Receiver<CdcEvent>,
-        target_collection: String,
+        _target_collection: String,
         field_mapping: HashMap<String, String>,
     ) -> Self {
         Self {
             cdc_receiver,
-            target_collection,
+            _target_collection,
             field_mapping,
         }
     }

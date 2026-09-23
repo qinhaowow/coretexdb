@@ -189,7 +189,8 @@ mod tests {
         
         assert_eq!(config.cert_path, "cert.pem");
         assert_eq!(config.key_path, "key.pem");
-        assert!(config.ca_path.is_none());
+        assert_eq!(config.ca_path, Some("ca.pem".to_string()));
+        assert!(config.verify_client);
     }
 
     #[tokio::test]

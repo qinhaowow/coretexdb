@@ -397,10 +397,10 @@ impl IntegerVector {
 
 pub struct SpacetimeIndex {
     data: Vec<SpacetimePoint>,
-    x_bins: usize,
-    y_bins: usize,
-    z_bins: usize,
-    t_bins: usize,
+    _x_bins: usize,
+    _y_bins: usize,
+    _z_bins: usize,
+    _t_bins: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -418,10 +418,10 @@ impl SpacetimeIndex {
     pub fn new(x_bins: usize, y_bins: usize, z_bins: usize, t_bins: usize) -> Self {
         Self {
             data: Vec::new(),
-            x_bins,
-            y_bins,
-            z_bins,
-            t_bins,
+            _x_bins: x_bins,
+            _y_bins: y_bins,
+            _z_bins: z_bins,
+            _t_bins: t_bins,
         }
     }
 
@@ -493,7 +493,7 @@ impl SpacetimeIndex {
 
 pub struct UserDefinedFunction {
     name: String,
-    func_type: UdfType,
+    _func_type: UdfType,
     parameters: Vec<UdfParameter>,
     body: String,
 }
@@ -525,7 +525,7 @@ impl UserDefinedFunction {
     pub fn new(name: &str, func_type: UdfType) -> Self {
         Self {
             name: name.to_string(),
-            func_type,
+            _func_type: func_type,
             parameters: Vec::new(),
             body: String::new(),
         }

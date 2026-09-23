@@ -108,7 +108,7 @@ impl Tracer {
         SpanBuilder {
             tracer: self.clone(),
             span_id,
-            trace_id,
+            _trace_id: trace_id,
         }
     }
 
@@ -198,7 +198,7 @@ impl Clone for Tracer {
 pub struct SpanBuilder {
     tracer: Tracer,
     span_id: String,
-    trace_id: String,
+    _trace_id: String,
 }
 
 impl SpanBuilder {

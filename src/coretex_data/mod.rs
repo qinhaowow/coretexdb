@@ -78,6 +78,7 @@ pub(crate) fn index_type_name(index_type: &IndexType) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 pub struct DataManager {
     collections: Arc<RwLock<HashMap<String, CollectionSchema>>>,
     data: Arc<RwLock<HashMap<String, HashMap<String, VectorRecord>>>>,
@@ -804,13 +805,20 @@ impl DataManager {
 
         collection_data.insert(id.to_string(), VectorRecord {
             vector: vector.clone(),
-            metadata: meta,
+            metadata: meta.clone(),
         });
 
         let index_name = index_name_for(collection);
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             let _ = index.add(id, &vector).await;
         }
+
+        // Without this the new vector only ever lived in memory and in a WAL
+        // that is disabled by default, so an update was silently lost on
+        // restart while a plain insert survived.
+        let storage = self.storage.read().await;
+        let storage_key = format!("{}:{}", collection, id);
+        let _ = storage.store(&storage_key, &vector, &meta).await;
 
         Ok(true)
     }
@@ -831,83 +839,39 @@ impl DataManager {
             }
         }
 
-        let mut inserted = Vec::new();
-        let mut updated = Vec::new();
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (id, vector, metadata) in vectors {
-            let record = VectorRecord {
-                vector,
-                metadata,
-            };
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), record);
-                updated.push(id);
-            } else {
-                collection_data.insert(id.clone(), record);
-                inserted.push(id);
-            }
-        }
-
-        Ok((inserted, updated))
+        let result = self.bulk_upsert(collection, vectors).await?;
+        Ok((result.inserted, result.updated))
     }
 
+    /// Insert-or-replace a batch of vectors.
+    ///
+    /// Delegates to [`Self::insert_vectors`] so a bulk write reaches the index,
+    /// the WAL and `FileStorage` exactly like a single insert. It used to write
+    /// straight into the in-memory map, which left search stale and lost the
+    /// batch on restart.
     pub async fn bulk_insert(
         &self,
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        let dimension = self.get_collection_dimension(collection).await?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: dimension,
-                    actual: vector.len(),
-                });
-            }
-        }
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        let mut ids = Vec::new();
-        for (id, vector, metadata) in vectors {
-            collection_data.insert(id.clone(), VectorRecord { vector, metadata });
-            ids.push(id.clone());
-        }
-
-        Ok(ids)
+        self.insert_vectors(collection, vectors).await
     }
 
+    /// Update the vectors that already exist, skipping the rest.
+    ///
+    /// Delegates to [`Self::update_vector`] so the index, WAL and `FileStorage`
+    /// stay in step with the in-memory map.
     pub async fn bulk_update(
         &self,
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        let dimension = self.get_collection_dimension(collection).await?;
-
-        for (_, vector, _) in &vectors {
-            if vector.len() != dimension {
-                return Err(CoreTexError::DimensionMismatch {
-                    expected: dimension,
-                    actual: vector.len(),
-                });
-            }
-        }
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
         let mut updated_ids = Vec::new();
         for (id, vector, metadata) in vectors {
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), VectorRecord { vector, metadata });
+            if self
+                .update_vector(collection, &id, vector, Some(metadata))
+                .await?
+            {
                 updated_ids.push(id);
             }
         }
@@ -915,23 +879,35 @@ impl DataManager {
         Ok(updated_ids)
     }
 
+    /// Delete the ids that are present, reporting exactly which ones went away.
+    ///
+    /// Delegates to [`Self::delete_vectors`]. Resolving the present ids first is
+    /// what lets this keep returning a list rather than a bare count.
     pub async fn bulk_delete(
         &self,
         collection: &str,
         ids: Vec<String>,
     ) -> Result<Vec<String>> {
         let mut deleted_ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for id in &ids {
-            if collection_data.remove(id).is_some() {
-                deleted_ids.push(id.clone());
+        {
+            let data = self.data.read().await;
+            let collection_data = data
+                .get(collection)
+                .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+            for id in &ids {
+                if collection_data.contains_key(id) && seen.insert(id.clone()) {
+                    deleted_ids.push(id.clone());
+                }
             }
         }
 
+        if deleted_ids.is_empty() {
+            return Ok(deleted_ids);
+        }
+
+        self.delete_vectors(collection, &deleted_ids).await?;
         Ok(deleted_ids)
     }
 
@@ -951,21 +927,38 @@ impl DataManager {
             }
         }
 
-        let mut inserted = Vec::new();
+        // Partition first so the caller still learns which ids were new, then
+        // route each half through the single-vector paths. This is what makes an
+        // upsert durable and visible to search; the old body wrote only to the
+        // in-memory map.
+        let mut fresh: Vec<(String, Vec<f32>, serde_json::Value)> = Vec::new();
+        let mut existing: Vec<(String, Vec<f32>, serde_json::Value)> = Vec::new();
+        {
+            let data = self.data.read().await;
+            let collection_data = data
+                .get(collection)
+                .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+            let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for entry in vectors {
+                // A repeated id inside the batch behaves like the old code: the
+                // first occurrence inserts, the rest update.
+                if collection_data.contains_key(&entry.0) || !claimed.insert(entry.0.clone()) {
+                    existing.push(entry);
+                } else {
+                    fresh.push(entry);
+                }
+            }
+        }
+
+        let inserted = self.insert_vectors(collection, fresh).await?;
+
         let mut updated = Vec::new();
-
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-
-        for (id, vector, metadata) in vectors {
-            let record = VectorRecord { vector, metadata };
-            if collection_data.contains_key(&id) {
-                collection_data.insert(id.clone(), record);
+        for (id, vector, metadata) in existing {
+            if self
+                .update_vector(collection, &id, vector, Some(metadata))
+                .await?
+            {
                 updated.push(id);
-            } else {
-                collection_data.insert(id.clone(), record);
-                inserted.push(id);
             }
         }
 
@@ -1001,18 +994,63 @@ impl DataManager {
         Ok(result)
     }
 
-    pub async fn clear_collection(&self, collection: &str) -> Result<()> {
-        let mut data = self.data.write().await;
-        let collection_data = data.get_mut(collection)
-            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-        collection_data.clear();
+    /// Delete every vector whose metadata matches `filter`, returning the ids
+    /// that were really removed.
+    ///
+    /// Filtered deletion must travel the same durable path as an explicit
+    /// delete ([`Self::delete_vectors`]) so every id gets a WAL entry and a
+    /// storage tombstone. Clearing the in-memory map instead would look like a
+    /// delete while leaving the log full of live records — a restart replays
+    /// them and the "deleted" vectors come back.
+    pub async fn delete_vectors_where(
+        &self,
+        collection: &str,
+        filter: &serde_json::Value,
+    ) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = {
+            let data = self.data.read().await;
+            let collection_data = data
+                .get(collection)
+                .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+            collection_data
+                .iter()
+                .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        ids.sort();
 
-        let index_name = index_name_for(collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            let _ = index.clear().await;
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(())
+        self.delete_vectors(collection, &ids).await?;
+
+        // Report only what is actually gone, so the reported ids can never
+        // disagree with the store.
+        let data = self.data.read().await;
+        let gone = match data.get(collection) {
+            Some(collection_data) => ids
+                .into_iter()
+                .filter(|id| !collection_data.contains_key(id))
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(gone)
+    }
+
+    /// Remove every vector in `collection`, returning how many were removed.
+    ///
+    /// Delegates to [`Self::delete_vectors_where`] with the match-everything
+    /// filter, so a clear is exactly as durable as a delete. It used to clear
+    /// the in-memory map and the index while writing nothing to storage, which
+    /// made every cleared vector reappear after a restart.
+    pub async fn clear_collection(&self, collection: &str) -> Result<usize> {
+        // An empty filter object matches every record.
+        let removed = self
+            .delete_vectors_where(collection, &serde_json::json!({}))
+            .await?;
+        Ok(removed.len())
     }
 
     pub async fn get_total_vector_count(&self) -> usize {

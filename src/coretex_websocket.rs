@@ -227,9 +227,9 @@ struct Connection {
     last_pong_at: Instant,
     missed_pongs: u32,
     heartbeat_seq: u64,
-    connected_at: Instant,
+    _connected_at: Instant,
     resume_token: Option<String>,
-    last_event_id: Option<String>,
+    _last_event_id: Option<String>,
     rate_count: u32,
     rate_window_start: Instant,
 }
@@ -258,24 +258,24 @@ impl HeartbeatManager {
     }
 
     /// 检查连接是否应该被视为断开
-    pub fn should_disconnect(&self, conn: &Connection) -> bool {
+    fn should_disconnect(&self, conn: &Connection) -> bool {
         conn.missed_pongs >= self.max_missed
     }
 
     /// 记录 Ping 发送
-    pub fn record_ping(&self, conn: &mut Connection) {
+    fn record_ping(&self, conn: &mut Connection) {
         conn.last_ping_at = Instant::now();
         conn.missed_pongs += 1;
     }
 
     /// 记录 Pong 接收
-    pub fn record_pong(&self, conn: &mut Connection) {
+    fn record_pong(&self, conn: &mut Connection) {
         conn.last_pong_at = Instant::now();
         conn.missed_pongs = 0;
     }
 
     /// 估算 RTT
-    pub fn estimate_rtt_ms(&self, conn: &Connection) -> u64 {
+    fn estimate_rtt_ms(&self, conn: &Connection) -> u64 {
         if conn.last_ping_at > conn.last_pong_at {
             conn.last_ping_at.duration_since(conn.last_pong_at).as_millis() as u64
         } else {
@@ -298,7 +298,10 @@ impl Default for WsRateLimiter {
 }
 
 impl WsRateLimiter {
-    pub fn check(&self, conn: &mut Connection) -> bool {
+    fn check(&self, conn: &mut Connection) -> bool {
+        if self.max_requests == 0 {
+            return true; // 0 means unlimited
+        }
         let now = Instant::now();
         if now.duration_since(conn.rate_window_start) > self.window {
             conn.rate_count = 0;
@@ -369,9 +372,9 @@ impl WebSocketServer {
             last_pong_at: Instant::now(),
             missed_pongs: 0,
             heartbeat_seq: 0,
-            connected_at: Instant::now(),
+            _connected_at: Instant::now(),
             resume_token: Some(resume_token.clone()),
-            last_event_id: None,
+            _last_event_id: None,
             rate_count: 0,
             rate_window_start: Instant::now(),
         };
@@ -443,10 +446,12 @@ impl WebSocketServer {
                 Some(self.handle_delete(req).await)
             }
             WebSocketMessage::Subscribe(req) => {
+                drop(conn_guard);
                 self.handle_subscribe(connection_id, req).await;
                 None
             }
             WebSocketMessage::Unsubscribe(req) => {
+                drop(conn_guard);
                 self.handle_unsubscribe(connection_id, req).await;
                 None
             }
@@ -713,7 +718,7 @@ pub struct WebSocketStats {
 
 pub struct WebSocketClient {
     client_id: String,
-    server_url: String,
+    _server_url: String,
     subscriptions: Vec<String>,
     resume_token: Option<String>,
     heartbeat_seq: u64,
@@ -726,7 +731,7 @@ impl WebSocketClient {
     pub fn new(server_url: &str) -> Self {
         Self {
             client_id: Uuid::new_v4().to_string(),
-            server_url: server_url.to_string(),
+            _server_url: server_url.to_string(),
             subscriptions: Vec::new(),
             resume_token: None,
             heartbeat_seq: 0,
@@ -923,9 +928,9 @@ mod tests {
             last_pong_at: Instant::now(),
             missed_pongs: 0,
             heartbeat_seq: 0,
-            connected_at: Instant::now(),
+            _connected_at: Instant::now(),
             resume_token: None,
-            last_event_id: None,
+            _last_event_id: None,
             rate_count: 0,
             rate_window_start: Instant::now(),
         };
@@ -939,15 +944,22 @@ mod tests {
         let server = WebSocketServer::new(WebSocketConfig::default());
         let _ = server.handle_connection("conn1".to_string()).await;
 
-        server.handle_message("conn1", WebSocketMessage::Subscribe(SubscribeRequest {
+        let resp = server.handle_message("conn1", WebSocketMessage::Subscribe(SubscribeRequest {
             collection: "test".to_string(),
             event_types: vec!["insert".to_string()],
             client_id: "client1".to_string(),
             filter: None,
         })).await;
+        // Subscribe returns None (no response message)
+        assert!(resp.is_none());
 
         let subs = server.subscriptions.read().await;
-        assert!(subs.contains_key("test"));
+        assert!(subs.contains_key("test"), "subscription for 'test' not found");
+        assert_eq!(subs.get("test").unwrap().len(), 1);
+
+        let subs = server.subscriptions.read().await;
+        assert!(subs.contains_key("test"), "subscription for 'test' not found");
+        assert_eq!(subs.get("test").unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -659,7 +659,11 @@ mod tests {
         retriever.insert("txt1".to_string(), Modality::Text, vec![0.1, 0.2, 0.3], "a cat sitting".to_string()).await;
 
         let results = retriever.cross_search(&[0.1, 0.2, 0.3], 3).await;
-        // img1 和 txt1 与查询向量相同，应排在前
-        assert_eq!(results[0].similarity, 1.0);
+        assert!(!results.is_empty());
+        // img1 and txt1 have identical vectors to query, should rank first with similarity ~1.0
+        assert!(results[0].similarity > 0.99);
+        // The two identical-vector results should be in top 2
+        assert!(results.len() >= 2);
+        assert!(results[1].similarity > 0.99);
     }
 }

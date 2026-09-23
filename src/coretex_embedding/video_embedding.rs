@@ -4,19 +4,19 @@ use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct VideoEmbeddingService {
-    model_name: String,
+    _model_name: String,
     dimension: usize,
-    device: String,
-    frame_sample_rate: u32,
+    _device: String,
+    _frame_sample_rate: u32,
 }
 
 impl VideoEmbeddingService {
     pub fn new(model_name: &str, dimension: usize, device: &str, frame_sample_rate: u32) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            _model_name: model_name.to_string(),
             dimension,
-            device: device.to_string(),
-            frame_sample_rate,
+            _device: device.to_string(),
+            _frame_sample_rate: frame_sample_rate,
         }
     }
 

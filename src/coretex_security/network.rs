@@ -29,7 +29,7 @@ pub enum PolicyAction {
 }
 
 pub struct NetworkIsolation {
-    policies: Arc<RwLock<HashSet<String>>>,
+    _policies: Arc<RwLock<HashSet<String>>>,
     whitelist: Arc<RwLock<HashSet<String>>>,
     blacklist: Arc<RwLock<HashSet<String>>>,
     default_action: PolicyAction,
@@ -39,7 +39,7 @@ pub struct NetworkIsolation {
 impl NetworkIsolation {
     pub fn new() -> Self {
         Self {
-            policies: Arc::new(RwLock::new(HashSet::new())),
+            _policies: Arc::new(RwLock::new(HashSet::new())),
             whitelist: Arc::new(RwLock::new(HashSet::new())),
             blacklist: Arc::new(RwLock::new(HashSet::new())),
             default_action: PolicyAction::Deny,

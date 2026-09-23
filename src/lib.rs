@@ -28,6 +28,7 @@ pub mod coretex_spatial_transaction;
 pub mod coretex_sql;
 pub mod coretex_compression;
 pub mod coretex_security; 
+pub mod coretex_crypto;
 #[cfg(feature = "python")]
 pub mod coretex_python;
 #[cfg(feature = "onnx")]
@@ -88,7 +89,7 @@ pub use coretex_index::{VectorIndex, BruteForceIndex, IndexManager, SearchResult
 pub use coretex_query::{QueryType, QueryParams, QueryResult as CoreTexQueryResult, DefaultQueryProcessor, QueryPlanner, QueryItem};
 pub use coretex_query::cost_model::{IndexSelector as QueryIndexSelector, CostInput, CostEstimate, IndexKind as QueryIndexKind, JoinType, JoinPlan, JoinPushdownOptimizer, OptimizationStats};
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
-pub use coretex_api::rest::{start_server, ApiConfig};
+pub use coretex_api::rest::{start_server, start_server_with_db, ApiConfig};
 pub use coretex_api::graphql::{AppSchema, build_schema}; 
 pub use coretex_cli::run_cli; 
 pub use coretex_utils::{
@@ -103,7 +104,7 @@ pub use coretex_embedding::{
     StreamingEmbedder, StreamItem, StreamResult, EmbeddingStream, StreamingStats,
     BatchedStreamEmbedder, WindowedStreamEmbedder, BackpressureStreamEmbedder, BackpressureSignal
 }; 
-pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsInterceptor, ComposedInterceptor};
+pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsInterceptor, ComposedInterceptor};
 pub mod grpc_client {
     pub use crate::coretex_grpc::server::client::{connect, AuthApply};
 }
@@ -117,7 +118,7 @@ pub use coretex_monitoring::{PrometheusMetrics, DatabaseMetrics, AlertManager, A
 pub use coretex_spatial_transaction::{RTreeIndex, RTreeEntry, RTreeNode, MBR, SplitStrategy, SpatialTransaction, SpatialTxState, SpatialOperation, TlsSpatialCoordinator, TlsChannel, TlsHandshakeResult};
 pub use coretex_sql::{SQLExecutor, SQLStatement, SQLSelect, SQLInsert, SQLDelete, SQLResult, SQLValue, SQLLexer, SQLParser, SQLCreateIndex, SQLCondition, SQLToken, SQLUpdate, SelectColumn, AggregateFunction, VectorSearch};
 pub use coretex_sql::optimizer::{SQLOptimizer, ExecutionPlan, SQLOperator, SQLOperatorKind, IndexKind, VectorPushdownOperator, FilterOperator, FilterOp, FilterValue, ProjectionOperator, LimitOperator, DistanceOp};
-pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
+pub use coretex_compression::{VectorCompressor, CompressedVector, CompressionAlgorithm, CompressionStats, CompressionFactory, CompressedStorage, RunLengthEncoding, DeltaCoding, QuantizationCompressor};
 pub use coretex_security::{TlsConfig, TlsServer, TlsClient, EncryptionService, EncryptedData, EncryptionKey, KeyManager, AuditLogger, AuditEvent, AuditLevel, AuditAction, ACLEngine, ACLPolicy, Subject, SubjectType, Resource, ResourceType, Action, Effect, ACLValidator, VaultKMS, KMSConfig, KMSProvider, ExternalKey, KeyRotationManager, InputValidator, RateLimitValidator, NetworkIsolation, NetworkPolicy, IpRange, PolicyAction, IPRangeManager}; 
 pub use coretex_simd::{simd_utils, SimdCapabilities};
 pub use coretex_websocket::{WebSocketServer, WebSocketClient, WebSocketConfig, WebSocketMessage, WebSocketStats, HeartbeatInfo, ReconnectInfo, AckInfo, HeartbeatManager, WsRateLimiter, ConnectionState, AuthRequest, AuthOkResponse, SearchRequest as WsSearchRequest, SearchResponse as WsSearchResponse, SearchResult as WsSearchResult, VectorEntry as WsVectorEntry, InsertRequest as WsInsertRequest, InsertResponse as WsInsertResponse, DeleteRequest as WsDeleteRequest, DeleteResponse as WsDeleteResponse, SubscribeRequest as WsSubscribeRequest, UnsubscribeRequest as WsUnsubscribeRequest, DataChangeEvent as WsDataChangeEvent, ErrorResponse as WsErrorResponse};
@@ -156,7 +157,7 @@ pub use coretex_data::{DataManager, VectorRecord, BulkResult, UnifiedStorageAdap
 pub use coretex_failover::{FailoverManager, FailoverConfig, FailoverEvent, NodeHealth, NodeStatus, ClusterStats, ConnectionPool, RaftRpc, HttpRaftRpc, VoteRequest, VoteResponse, HeartbeatRequest, HeartbeatResponse, LogEntry, LogCommand, AppendEntriesRequest, AppendEntriesResponse, RaftLog, LogReplicator};
 pub use coretex_domain_index::{DomainIndex, DomainDocument, DomainSearchResult, DomainIndexManager, NewsWeatherIndex, GeoLocationIndex, FinancialIndex, KnowledgeIndex};
 pub use coretex_search_pipeline::{TextTokenizer, StopWords, Stemmer, RRFFusion, Candidate, RerankScorer, BM25RerankScorer, LengthPenaltyScorer, RerankPipeline, Modality, EmbeddingModel, RoutingStrategy, RoutingWeights, CrossModalResult, CrossModalRetriever};
-pub use coretex_grpo::{GRPOConfig, PolicyNetwork, GRPOExperience, GRPOStats, GRPOOptimizer, GRPOUpdateResult, GRPOSearchOptimizer, SearchAction};
+pub use coretex_grpo::{GRPOConfig, PolicyNetwork, GRPOExperience, GRPOStats, GRPOOptimizer, GRPOUpdateResult, GRPOSearchOptimizer, SearchAction, AdaptiveSearchController};
 pub use coretex_bio::{KmerIndexer, SequenceChunker, SequenceChunk, SequenceChunkWithMeta, BinaryVector, IntegerVector, SpacetimeIndex, SpacetimePoint, UserDefinedFunction, UdfType, UdfParameter, UdfParamType, UdfRegistry};
 pub use coretex_types_extra::{DE9IM, SpatialRelation, Topology3D, WindowType, WindowFunction, WindowResult, TimeSeriesWindow, DocumentChunk, RagResult, RagRetriever, ECommerceIndex, Product, Order, InventoryItem, MedicalIndex, Patient, Diagnosis, Drug, LogisticsIndex, Package, Route, Carrier};
 pub use coretex_observability_extra::{AlertChannel, AlertNotification, WebhookChannel, SlackChannel, EmailChannel, EmailMessage, PagerDutyChannel, AlertDispatcher, DispatchResult, SpanContext, ContextPropagator, TraceHeaderFormat, PITRManager, TimelineEntry, BackupRecord, PITRReport};
@@ -166,16 +167,44 @@ pub struct CoreTexDB {
     pub data_manager: DataManager,
     pub config: DbConfig,
     pub wal: Option<Arc<WriteAheadLog>>,
+    /// Per-collection file persistence nested under FileStorage's `store/` dir.
+    pub persistence: Option<Arc<coretex_persistence::PersistenceManager>>,
 }
 
+/// On-disk layout under an install root (`--data-dir`):
+///
+/// ```text
+/// {base}/
+/// ├── bin/ include/
+/// └── data/
+///     ├── coretex/
+///     │   ├── collections/<name>/{vectors,metadata}
+///     │   ├── indexes/{vector,scalar}
+///     │   ├── metadata/metadata.json
+///     │   └── store/store-NNNNNN.log
+///     ├── wal/
+///     ├── backup/{full,incremental}/
+///     ├── logs/
+///     └── temp/
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConfig {
+    /// Install root (`--data-dir`).
+    #[serde(default)]
+    pub base_dir: String,
+    /// Main database data: `{base}/data/coretex`.
     pub data_dir: String,
     pub bin_dir: String,
+    /// `{base}/data/logs`.
     pub log_dir: String,
+    /// `{base}/data/wal`.
     pub wal_dir: String,
+    /// `{base}/data/backup` (with `full/` and `incremental/` children).
     pub backup_dir: String,
     pub include_dir: String,
+    /// `{base}/data/temp`.
+    #[serde(default)]
+    pub temp_dir: String,
     pub memory_only: bool,
     pub max_vectors_per_collection: usize,
     pub create_dirs_on_init: bool,
@@ -183,16 +212,17 @@ pub struct DbConfig {
     pub wal_max_segment_size: u64,
 }
 
-impl Default for DbConfig {
-    fn default() -> Self {
-        let base_dir = "./coretex_data".to_string();
+impl DbConfig {
+    fn from_base(base_dir: &str) -> Self {
         Self {
-            data_dir: format!("{}/data", base_dir),
+            base_dir: base_dir.to_string(),
+            data_dir: format!("{}/data/coretex", base_dir),
             bin_dir: format!("{}/bin", base_dir),
-            log_dir: format!("{}/logs", base_dir),
-            wal_dir: format!("{}/wal", base_dir),
-            backup_dir: format!("{}/backup", base_dir),
+            log_dir: format!("{}/data/logs", base_dir),
+            wal_dir: format!("{}/data/wal", base_dir),
+            backup_dir: format!("{}/data/backup", base_dir),
             include_dir: format!("{}/include", base_dir),
+            temp_dir: format!("{}/data/temp", base_dir),
             memory_only: false,
             max_vectors_per_collection: 1000000,
             create_dirs_on_init: true,
@@ -201,6 +231,36 @@ impl Default for DbConfig {
             wal_enabled: false,
             wal_max_segment_size: 64 * 1024 * 1024, // 64 MB
         }
+    }
+
+    pub fn collections_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.data_dir).join("collections")
+    }
+
+    pub fn metadata_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.data_dir).join("metadata")
+    }
+
+    pub fn metadata_path(&self) -> std::path::PathBuf {
+        self.metadata_dir().join("metadata.json")
+    }
+
+    pub fn indexes_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.data_dir).join("indexes")
+    }
+
+    pub fn backup_full_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.backup_dir).join("full")
+    }
+
+    pub fn backup_incremental_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.backup_dir).join("incremental")
+    }
+}
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self::from_base("./coretex_data")
     }
 }
 
@@ -234,19 +294,7 @@ impl Default for DatabaseMetadata {
 
 impl DbConfig {
     pub fn new(base_dir: &str) -> Self {
-        Self {
-            data_dir: format!("{}/data", base_dir),
-            bin_dir: format!("{}/bin", base_dir),
-            log_dir: format!("{}/logs", base_dir),
-            wal_dir: format!("{}/wal", base_dir),
-            backup_dir: format!("{}/backup", base_dir),
-            include_dir: format!("{}/include", base_dir),
-            memory_only: false,
-            max_vectors_per_collection: 1000000,
-            create_dirs_on_init: true,
-            wal_enabled: false,
-            wal_max_segment_size: 64 * 1024 * 1024,
-        }
+        Self::from_base(base_dir)
     }
 
     /// Config for a purely in-memory database: no directories, no files.
@@ -283,10 +331,27 @@ impl CoreTexDB {
         let index_manager = Arc::new(IndexManager::new());
         let data_manager = DataManager::new(storage, index_manager);
 
+        let persistence = if config.memory_only {
+            None
+        } else {
+            let pconfig = coretex_persistence::PersistenceConfig {
+                backend: coretex_persistence::StorageBackend::FileSystem,
+                data_dir: config.data_dir.clone(),
+                rocksdb_config: None,
+                s3_config: None,
+                replication_factor: 1,
+                sync_write: false,
+                wal_enabled: false,
+                compression_enabled: false,
+            };
+            Some(Arc::new(coretex_persistence::PersistenceManager::new(pconfig)))
+        };
+
         Self {
             data_manager,
             config,
             wal: None,
+            persistence,
         }
     }
 
@@ -300,6 +365,13 @@ impl CoreTexDB {
 
             // Open the durable log before reading anything back out of it.
             self.data_manager.storage_ref().write().await.init().await?;
+
+            // Initialize the nested PersistenceManager (data/coretex/collections/).
+            if let Some(ref p) = self.persistence {
+                p.initialize().await.map_err(|e| {
+                    CoreTexError::Internal(format!("persistence init failed: {}", e))
+                })?;
+            }
 
             // Rebuild in-memory state from the manifest plus the vector log.
             let metadata = self.load_metadata().await?;
@@ -347,15 +419,16 @@ impl CoreTexDB {
     }
     
     pub async fn create_directories(&self) -> Result<()> {
+        // Runtime creates only data-side dirs under the install root.
+        // bin/ and include/ belong to the install layout and are NOT created here.
         let dirs = vec![
             &self.config.data_dir,
-            &self.config.bin_dir,
             &self.config.log_dir,
             &self.config.wal_dir,
             &self.config.backup_dir,
-            &self.config.include_dir,
+            &self.config.temp_dir,
         ];
-        
+
         for dir in dirs {
             let path = PathBuf::from(dir);
             if !path.exists() {
@@ -363,23 +436,37 @@ impl CoreTexDB {
                     .map_err(CoreTexError::Io)?;
             }
         }
-        
-        let collections_dir = PathBuf::from(&self.config.data_dir).join("collections");
-        if !collections_dir.exists() {
-            fs::create_dir_all(&collections_dir)
-                .map_err(CoreTexError::Io)?;
+
+        let extra = [
+            self.config.collections_dir(),
+            self.config.metadata_dir(),
+            self.config.indexes_dir().join("vector"),
+            self.config.indexes_dir().join("scalar"),
+            self.config.backup_full_dir(),
+            self.config.backup_incremental_dir(),
+            PathBuf::from(&self.config.data_dir).join("store"),
+        ];
+        for path in extra {
+            if !path.exists() {
+                fs::create_dir_all(&path).map_err(CoreTexError::Io)?;
+            }
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn init_metadata(&self) -> Result<()> {
-        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
-        
+        let metadata_path = self.config.metadata_path();
+        if let Some(parent) = metadata_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent).map_err(CoreTexError::Io)?;
+            }
+        }
+
         if metadata_path.exists() {
             let content = fs::read_to_string(&metadata_path)
                 .map_err(CoreTexError::Io)?;
-            
+
             let _metadata: DatabaseMetadata = serde_json::from_str(&content)
                 .map_err(|e| CoreTexError::ValidationError(format!("Invalid metadata format: {}", e)))?;
         } else {
@@ -389,13 +476,24 @@ impl CoreTexDB {
             fs::write(&metadata_path, content)
                 .map_err(CoreTexError::Io)?;
         }
-        
+
+        // Spec: metadata/ must always contain config.toml and auth.json.
+        let meta_dir = self.config.metadata_dir();
+        let config_toml = meta_dir.join("config.toml");
+        if !config_toml.exists() {
+            fs::write(&config_toml, "").map_err(CoreTexError::Io)?;
+        }
+        let auth_json = meta_dir.join("auth.json");
+        if !auth_json.exists() {
+            fs::write(&auth_json, "{\"users\":{}}").map_err(CoreTexError::Io)?;
+        }
+
         Ok(())
     }
     
     pub async fn load_metadata(&self) -> Result<DatabaseMetadata> {
-        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
-        
+        let metadata_path = self.config.metadata_path();
+
         if !metadata_path.exists() {
             return Ok(DatabaseMetadata::default());
         }
@@ -409,10 +507,17 @@ impl CoreTexDB {
         Ok(metadata)
     }
     
-    /// Write `metadata` to `metadata.json` atomically: a reader sees either the
-    /// previous manifest or the complete new one, never a half-written file.
+    /// Write the manifest atomically under `data/coretex/metadata/`: a reader
+    /// sees either the previous manifest or the complete new one, never a
+    /// half-written file. The `.tmp` sibling lives next to the target so the
+    /// rename stays on one filesystem.
     pub async fn save_metadata(&self, metadata: &DatabaseMetadata) -> Result<()> {
-        let metadata_path = PathBuf::from(&self.config.data_dir).join("metadata.json");
+        let metadata_path = self.config.metadata_path();
+        if let Some(parent) = metadata_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent).map_err(CoreTexError::Io)?;
+            }
+        }
         let temp_path = metadata_path.with_extension("json.tmp");
         let content = serde_json::to_string_pretty(metadata)
             .map_err(CoreTexError::Serialization)?;
@@ -441,6 +546,12 @@ impl CoreTexDB {
 
     pub async fn create_collection(&self, name: &str, dimension: usize, metric: &str) -> Result<()> {
         self.data_manager.create_collection(name, dimension, metric).await?;
+        // Create the per-collection directory under data/coretex/collections/.
+        if self.persistence.is_some() {
+            let base = self.config.collections_dir().join(name);
+            let _ = std::fs::create_dir_all(base.join("vectors"));
+            let _ = std::fs::create_dir_all(base.join("metadata"));
+        }
         self.persist_manifest().await
     }
 
@@ -456,16 +567,33 @@ impl CoreTexDB {
         self.data_manager
             .create_collection_with_index(name, dimension, metric, index_type)
             .await?;
+        // Create the per-collection directory under data/coretex/collections/.
+        if self.persistence.is_some() {
+            let base = self.config.collections_dir().join(name);
+            let _ = std::fs::create_dir_all(base.join("vectors"));
+            let _ = std::fs::create_dir_all(base.join("metadata"));
+        }
         self.persist_manifest().await
     }
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
         self.data_manager.delete_collection(name).await?;
+        // Remove the per-collection directory under data/coretex/collections/.
+        let base = self.config.collections_dir().join(name);
+        if base.exists() {
+            let _ = std::fs::remove_dir_all(&base);
+        }
         self.persist_manifest().await
     }
 
     pub async fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
         self.data_manager.rename_collection(old_name, new_name).await?;
+        // Move the per-collection directory under data/coretex/collections/.
+        let old_path = self.config.collections_dir().join(old_name);
+        let new_path = self.config.collections_dir().join(new_name);
+        if old_path.exists() {
+            let _ = std::fs::rename(&old_path, &new_path);
+        }
         self.persist_manifest().await
     }
 
@@ -478,7 +606,14 @@ impl CoreTexDB {
     }
 
     pub async fn insert_vectors(&self, collection: &str, vectors: Vec<(String, Vec<f32>, serde_json::Value)>) -> Result<Vec<String>> {
-        self.data_manager.insert_vectors(collection, vectors).await
+        let ids = self.data_manager.insert_vectors(collection, vectors.clone()).await?;
+        // Mirror writes into PersistenceManager (data/coretex/collections/<name>/).
+        if let Some(ref p) = self.persistence {
+            for (id, vec, meta) in &vectors {
+                let _ = p.save_vector(collection, id, vec, Some(meta)).await;
+            }
+        }
+        Ok(ids)
     }
 
     pub async fn get_vector(&self, collection: &str, id: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>> {
@@ -488,7 +623,54 @@ impl CoreTexDB {
     }
 
     pub async fn delete_vectors(&self, collection: &str, ids: &[String]) -> Result<usize> {
-        self.data_manager.delete_vectors(collection, ids).await
+        let n = self.data_manager.delete_vectors(collection, ids).await?;
+        // Mirror deletes into PersistenceManager.
+        if let Some(ref p) = self.persistence {
+            for id in ids {
+                let _ = p.delete_vector(collection, id).await;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Delete every vector whose metadata matches `filter`; returns the ids removed.
+    pub async fn delete_vectors_where(
+        &self,
+        collection: &str,
+        filter: &serde_json::Value,
+    ) -> Result<Vec<String>> {
+        let ids = self.data_manager.delete_vectors_where(collection, filter).await?;
+        if let Some(ref p) = self.persistence {
+            for id in &ids {
+                let _ = p.delete_vector(collection, id).await;
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Remove every vector in `collection`; returns how many were removed.
+    pub async fn clear_collection(&self, collection: &str) -> Result<usize> {
+        let n = self.data_manager.clear_collection(collection).await?;
+        // Drop the whole per-collection directory and recreate it empty.
+        let base = self.config.collections_dir().join(collection);
+        if base.exists() {
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        let _ = std::fs::create_dir_all(base.join("vectors"));
+        let _ = std::fs::create_dir_all(base.join("metadata"));
+        Ok(n)
+    }
+
+    /// Every vector in `collection`, ordered by id, as `(id, vector, metadata)`.
+    pub async fn list_vectors(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(String, Vec<f32>, serde_json::Value)>> {
+        let records = self.data_manager.get_all_vectors(collection).await?;
+        Ok(records
+            .into_iter()
+            .map(|(id, record)| (id, record.vector, record.metadata))
+            .collect())
     }
 
     pub async fn search(&self, collection: &str, query: Vec<f32>, k: usize, filter: Option<serde_json::Value>) -> Result<Vec<SearchResult>> {
@@ -506,7 +688,13 @@ impl CoreTexDB {
         vector: Vec<f32>,
         metadata: Option<serde_json::Value>,
     ) -> Result<bool> {
-        self.data_manager.update_vector(collection, id, vector, metadata).await
+        let ok = self.data_manager.update_vector(collection, id, vector.clone(), metadata.clone()).await?;
+        if ok {
+            if let Some(ref p) = self.persistence {
+                let _ = p.save_vector(collection, id, &vector, metadata.as_ref()).await;
+            }
+        }
+        Ok(ok)
     }
 
     pub async fn upsert_vectors(
@@ -514,7 +702,13 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<(Vec<String>, Vec<String>)> {
-        self.data_manager.upsert_vectors(collection, vectors).await
+        let result = self.data_manager.upsert_vectors(collection, vectors.clone()).await?;
+        if let Some(ref p) = self.persistence {
+            for (id, vec, meta) in &vectors {
+                let _ = p.save_vector(collection, id, vec, Some(meta)).await;
+            }
+        }
+        Ok(result)
     }
 
     pub async fn bulk_insert(
@@ -522,7 +716,13 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        self.data_manager.bulk_insert(collection, vectors).await
+        let ids = self.data_manager.bulk_insert(collection, vectors.clone()).await?;
+        if let Some(ref p) = self.persistence {
+            for (id, vec, meta) in &vectors {
+                let _ = p.save_vector(collection, id, vec, Some(meta)).await;
+            }
+        }
+        Ok(ids)
     }
 
     pub async fn bulk_update(
@@ -530,7 +730,13 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<Vec<String>> {
-        self.data_manager.bulk_update(collection, vectors).await
+        let ids = self.data_manager.bulk_update(collection, vectors.clone()).await?;
+        if let Some(ref p) = self.persistence {
+            for (id, vec, meta) in &vectors {
+                let _ = p.save_vector(collection, id, vec, Some(meta)).await;
+            }
+        }
+        Ok(ids)
     }
 
     pub async fn bulk_delete(
@@ -538,7 +744,13 @@ impl CoreTexDB {
         collection: &str,
         ids: Vec<String>,
     ) -> Result<Vec<String>> {
-        self.data_manager.bulk_delete(collection, ids).await
+        let deleted = self.data_manager.bulk_delete(collection, ids.clone()).await?;
+        if let Some(ref p) = self.persistence {
+            for id in &deleted {
+                let _ = p.delete_vector(collection, id).await;
+            }
+        }
+        Ok(deleted)
     }
 
     pub async fn bulk_upsert(
@@ -546,7 +758,13 @@ impl CoreTexDB {
         collection: &str,
         vectors: Vec<(String, Vec<f32>, serde_json::Value)>,
     ) -> Result<BulkResult> {
-        self.data_manager.bulk_upsert(collection, vectors).await
+        let result = self.data_manager.bulk_upsert(collection, vectors.clone()).await?;
+        if let Some(ref p) = self.persistence {
+            for (id, vec, meta) in &vectors {
+                let _ = p.save_vector(collection, id, vec, Some(meta)).await;
+            }
+        }
+        Ok(result)
     }
 
     pub async fn get_vectors_by_ids(
@@ -638,5 +856,157 @@ mod tests {
 
         let collections = db.list_collections().await.unwrap();
         assert!(!collections.contains(&"test_workflow".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use std::time::Instant;
+
+    fn bench_config() -> DbConfig {
+        let dir = std::env::temp_dir().join(format!("coretex_bench_{}", rand_id()));
+        DbConfig::new(dir.to_str().unwrap())
+    }
+
+    fn rand_id() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
+    }
+
+    #[tokio::test]
+    async fn bench_insert_throughput() {
+        let config = bench_config();
+        let db = CoreTexDB::with_config(config.clone());
+        db.init().await.unwrap();
+
+        let dim = 128;
+        db.create_collection("bench_insert", dim, "cosine").await.unwrap();
+        let batch_sizes = [100, 500, 1000];
+        let mut results = Vec::new();
+        let mut offset = 0;
+
+        for &n in &batch_sizes {
+            let vectors: Vec<(String, Vec<f32>, serde_json::Value)> = (0..n)
+                .map(|i| {
+                    let v: Vec<f32> = (0..dim).map(|j| ((offset + i) * dim + j) as f32).collect();
+                    (format!("v{}", offset + i), v, serde_json::json!({}))
+                })
+                .collect();
+            offset += n;
+
+            let start = Instant::now();
+            db.insert_vectors("bench_insert", vectors).await.unwrap();
+            let elapsed = start.elapsed();
+            let throughput = n as f64 / elapsed.as_secs_f64();
+            results.push((n, elapsed, throughput));
+        }
+
+        println!("\n=== Insert Throughput Benchmark ===");
+        println!("{:<10} {:>12} {:>15}", "Batch", "Time", "Vectors/sec");
+        println!("{}", "-".repeat(40));
+        for (n, elapsed, throughput) in &results {
+            println!("{:<10} {:>11.2?} {:>13.0}/s", n, elapsed, throughput);
+        }
+
+        let count = db.get_vectors_count("bench_insert").await.unwrap();
+        assert_eq!(count, 1600);
+
+        let _ = std::fs::remove_dir_all(&config.data_dir);
+    }
+
+    #[tokio::test]
+    async fn bench_search_latency() {
+        let config = bench_config();
+        let db = CoreTexDB::with_config(config.clone());
+        db.init().await.unwrap();
+
+        let dim = 128;
+        let n = 1000;
+        db.create_collection("bench_search", dim, "cosine").await.unwrap();
+
+        // Insert test data
+        let vectors: Vec<(String, Vec<f32>, serde_json::Value)> = (0..n)
+            .map(|i| {
+                let v: Vec<f32> = (0..dim).map(|j| ((i * dim + j) as f32).sin()).collect();
+                (format!("v{}", i), v, serde_json::json!({}))
+            })
+            .collect();
+        db.insert_vectors("bench_search", vectors).await.unwrap();
+
+        // Benchmark search
+        let query: Vec<f32> = (0..dim).map(|j| (42 * dim + j) as f32).collect();
+        let k_values = [1, 5, 10, 50];
+        let iterations = 100;
+        let mut results = Vec::new();
+
+        for &k in &k_values {
+            let start = Instant::now();
+            for _ in 0..iterations {
+                let _ = db.search("bench_search", query.clone(), k, None).await.unwrap();
+            }
+            let elapsed = start.elapsed();
+            let avg_us = elapsed.as_micros() as f64 / iterations as f64;
+            results.push((k, avg_us));
+        }
+
+        println!("\n=== Search Latency Benchmark (1000 vectors, dim=128) ===");
+        println!("{:<10} {:>15}", "K", "Avg Latency");
+        println!("{}", "-".repeat(28));
+        for (k, avg_us) in &results {
+            println!("{:<10} {:>12.1}μs", k, avg_us);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&config.data_dir);
+    }
+
+    #[tokio::test]
+    async fn bench_concurrent_insert() {
+        use std::sync::Arc;
+
+        let config = bench_config();
+        let db = Arc::new(CoreTexDB::with_config(config.clone()));
+        db.init().await.unwrap();
+
+        let dim = 64;
+        let total = 2000;
+        let num_tasks = 4;
+        let per_task = total / num_tasks;
+        db.create_collection("bench_concurrent", dim, "cosine").await.unwrap();
+
+        let start = Instant::now();
+        let mut handles = Vec::new();
+
+        for t in 0..num_tasks {
+            let db = db.clone();
+            handles.push(tokio::spawn(async move {
+                let vectors: Vec<(String, Vec<f32>, serde_json::Value)> = (0..per_task)
+                    .map(|i| {
+                        let idx = t * per_task + i;
+                        let v: Vec<f32> = (0..dim).map(|j| ((idx * dim + j) as f32).sin()).collect();
+                        (format!("v{}", idx), v, serde_json::json!({}))
+                    })
+                    .collect();
+                db.insert_vectors("bench_concurrent", vectors).await.unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = start.elapsed();
+        let throughput = total as f64 / elapsed.as_secs_f64();
+
+        println!("\n=== Concurrent Insert Benchmark ===");
+        println!("Tasks: {}, Total vectors: {}, Dim: {}", num_tasks, total, dim);
+        println!("Elapsed: {:.2?}", elapsed);
+        println!("Throughput: {:.0} vectors/sec", throughput);
+
+        let count = db.get_vectors_count("bench_concurrent").await.unwrap();
+        assert_eq!(count, total);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&config.data_dir);
     }
 }

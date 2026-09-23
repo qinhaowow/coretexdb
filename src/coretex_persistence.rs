@@ -122,11 +122,24 @@ impl PersistenceManager {
         &self.config
     }
 
+    /// Base directory for collection data: `<data_dir>/collections`.
+    /// `data_dir` is already `…/data/coretex`, so this is
+    /// `…/data/coretex/collections/<name>/{vectors,metadata}`.
+    fn collections_base(&self) -> PathBuf {
+        PathBuf::from(&self.config.data_dir).join("collections")
+    }
+
     pub async fn initialize(&self) -> Result<(), PersistenceError> {
         let data_dir = PathBuf::from(&self.config.data_dir);
         
         if !data_dir.exists() {
             std::fs::create_dir_all(&data_dir)
+                .map_err(|e| PersistenceError::IoError(e.to_string()))?;
+        }
+
+        let collections_base = self.collections_base();
+        if !collections_base.exists() {
+            std::fs::create_dir_all(&collections_base)
                 .map_err(|e| PersistenceError::IoError(e.to_string()))?;
         }
 
@@ -136,8 +149,7 @@ impl PersistenceManager {
     }
 
     async fn load_collections(&self) -> Result<(), PersistenceError> {
-        let data_dir = PathBuf::from(&self.config.data_dir);
-        let collections_dir = data_dir.join("collections");
+        let collections_dir = self.collections_base();
         
         if !collections_dir.exists() {
             return Ok(());
@@ -198,9 +210,7 @@ impl PersistenceManager {
         vector: &[f32],
         metadata: Option<&serde_json::Value>,
     ) -> Result<(), PersistenceError> {
-        let collection_dir = PathBuf::from(&self.config.data_dir)
-            .join("collections")
-            .join(collection);
+        let collection_dir = self.collections_base().join(collection);
         
         std::fs::create_dir_all(collection_dir.join("vectors"))
             .map_err(|e| PersistenceError::IoError(e.to_string()))?;
@@ -258,9 +268,7 @@ impl PersistenceManager {
         collection: &str,
         id: &str,
     ) -> Result<Option<(Vec<f32>, Option<serde_json::Value>)>, PersistenceError> {
-        let collection_dir = PathBuf::from(&self.config.data_dir)
-            .join("collections")
-            .join(collection);
+        let collection_dir = self.collections_base().join(collection);
 
         let vector_path = collection_dir.join("vectors").join(format!("{}.vec", id));
         
@@ -279,7 +287,7 @@ impl PersistenceManager {
         }
 
         let vector: Vec<f32> = vector_bytes
-            .as_chunks::<4>().0.iter()
+            .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
 
@@ -303,9 +311,7 @@ impl PersistenceManager {
     }
 
     pub async fn delete_vector(&self, collection: &str, id: &str) -> Result<bool, PersistenceError> {
-        let collection_dir = PathBuf::from(&self.config.data_dir)
-            .join("collections")
-            .join(collection);
+        let collection_dir = self.collections_base().join(collection);
 
         let vector_path = collection_dir.join("vectors").join(format!("{}.vec", id));
         let metadata_path = collection_dir.join("metadata").join(format!("{}.json", id));
@@ -338,7 +344,7 @@ impl PersistenceManager {
         let collections = self.collections.read().await;
         
         for name in collections.keys() {
-            let src = data_dir.join("collections").join(name);
+            let src = self.collections_base().join(name);
             let dst = checkpoint_dir.join(name);
             
             if src.exists() {
@@ -364,8 +370,7 @@ impl PersistenceManager {
             return Err(PersistenceError::CheckpointNotFound(checkpoint_id.to_string()));
         }
 
-        let data_dir = PathBuf::from(&self.config.data_dir);
-        let collections_dir = data_dir.join("collections");
+        let collections_dir = self.collections_base();
 
         if collections_dir.exists() {
             std::fs::remove_dir_all(&collections_dir)

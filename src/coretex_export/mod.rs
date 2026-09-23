@@ -6,6 +6,23 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+/// UTF-8 byte-order mark, written at the start of every CSV export.
+///
+/// Excel on a Chinese Windows install decodes a `.csv` using the system ANSI
+/// code page (GBK) unless the file begins with a BOM, so a UTF-8 file holding
+/// Chinese text opens as mojibake. The BOM is the portable way to declare "this
+/// is UTF-8", and other readers (LibreOffice, pandas, every Unix tool) ignore
+/// it.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// Wrap a field in double quotes, doubling any embedded quote.
+///
+/// Used for everything that can contain a comma, a quote or a newline: string
+/// values, headers, and any JSON object/array rendered into a single cell.
+fn quote_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
 pub struct DataExporter {
     output_path: String,
 }
@@ -47,8 +64,13 @@ impl DataExporter {
         let file = File::create(&path).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
         
+        writer.write_all(UTF8_BOM).map_err(|e| e.to_string())?;
+
         if let Some(first) = data.first() {
-            let headers = Self::get_headers(first);
+            let headers: Vec<String> = Self::get_headers(first)
+                .iter()
+                .map(|h| quote_field(h))
+                .collect();
             writer.write_all(headers.join(",").as_bytes()).map_err(|e| e.to_string())?;
             writer.write_all(b"\n").map_err(|e| e.to_string())?;
             
@@ -76,9 +98,13 @@ impl DataExporter {
             if let Some(obj) = value.as_object() {
                 return obj.values()
                     .map(|v| match v {
-                        serde_json::Value::String(s) => format!("\"{}\"", s.replace('"', "\"\"")),
-                        serde_json::Value::Null => "".to_string(),
-                        other => other.to_string(),
+                        serde_json::Value::String(s) => quote_field(s),
+                        serde_json::Value::Null => String::new(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        // An object or array stringifies to something full of
+                        // commas, so it must be quoted to stay in one column.
+                        other => quote_field(&other.to_string()),
                     })
                     .collect();
             }
@@ -121,11 +147,12 @@ impl VectorExporter {
         let file = File::create(filename).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
         
+        writer.write_all(UTF8_BOM).map_err(|e| e.to_string())?;
         writer.write_all(b"id,dimension,vector\n").map_err(|e| e.to_string())?;
         
         for (id, (vec, _)) in vectors {
             let vector_str = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(";");
-            writeln!(writer, "{},{},{}", id, vec.len(), vector_str)
+            writeln!(writer, "{},{},{}", quote_field(id), vec.len(), vector_str)
                 .map_err(|e| e.to_string())?;
         }
         
@@ -331,6 +358,35 @@ use crate::coretex_core::Result;
         
         let result = exporter.export_csv(&data, "test.csv");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn csv_export_is_utf8_with_bom_and_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let exporter = DataExporter::new(dir.path().to_str().unwrap());
+
+        let data = vec![serde_json::json!({
+            "名称": "红富士苹果, 特级",
+            "备注": "含\"引号\"",
+            "类别": "水果",
+            "数量": 12
+        })];
+        let path = exporter.export_csv(&data, "中文.csv").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+
+        // Excel on a Chinese Windows install decodes a BOM-less .csv as the
+        // system code page (GBK), which is what turns the file into mojibake.
+        assert_eq!(&bytes[..3], b"\xEF\xBB\xBF", "CSV must start with a UTF-8 BOM");
+
+        let text = std::str::from_utf8(&bytes[3..]).expect("CSV body must be valid UTF-8");
+        assert!(text.contains("名称"), "header must survive: {text}");
+        assert!(text.contains("红富士苹果"), "Chinese value must not be mangled");
+        // A comma inside a value must not split the row into extra columns.
+        assert!(text.contains("\"红富士苹果, 特级\""), "value with comma must be quoted");
+        // An embedded quote is doubled rather than being left to end the field.
+        assert!(text.contains("\"含\"\"引号\"\"\""), "quotes must be doubled");
+        // Numbers stay unquoted so a spreadsheet still reads them as numbers.
+        assert!(text.contains(",12,"), "number must stay unquoted: {text}");
     }
 
     #[test]

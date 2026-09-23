@@ -259,6 +259,10 @@ impl FineGrainedPermissionEngine {
             return Err(format!("Role {} already exists", role.id));
         }
         
+        // Also populate role_permissions mapping
+        let mut role_perms = self.role_permissions.write().await;
+        role_perms.insert(role.id.clone(), role.permissions.clone());
+        
         roles.insert(role.id.clone(), role);
         Ok(())
     }
@@ -269,6 +273,10 @@ impl FineGrainedPermissionEngine {
         if users.contains_key(&user.id) {
             return Err(format!("User {} already exists", user.id));
         }
+        
+        // Also populate user_roles mapping
+        let mut user_roles = self.user_roles.write().await;
+        user_roles.insert(user.id.clone(), user.roles.clone());
         
         users.insert(user.id.clone(), user);
         Ok(())

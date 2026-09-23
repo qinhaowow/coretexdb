@@ -29,7 +29,7 @@ impl TimeSeriesPoint {
 }
 
 pub struct TimeSeries {
-    name: String,
+    _name: String,
     points: Vec<TimeSeriesPoint>,
     start_time: Option<i64>,
     end_time: Option<i64>,
@@ -38,7 +38,7 @@ pub struct TimeSeries {
 impl TimeSeries {
     pub fn new(name: &str) -> Self {
         Self {
-            name: name.to_string(),
+            _name: name.to_string(),
             points: Vec::new(),
             start_time: None,
             end_time: None,

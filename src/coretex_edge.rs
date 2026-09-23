@@ -9,7 +9,7 @@ pub struct EdgeDB {
     data_dir: String,
     in_memory: bool,
     collections: Arc<RwLock<std::collections::HashMap<String, EdgeCollection>>>,
-    config: EdgeConfig,
+    _config: EdgeConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +84,7 @@ impl EdgeDB {
             data_dir: "./data".to_string(),
             in_memory: true,
             collections: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            config: EdgeConfig::default(),
+            _config: EdgeConfig::default(),
         }
     }
 
@@ -93,7 +93,7 @@ impl EdgeDB {
             data_dir: "./data".to_string(),
             in_memory: false,
             collections: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            config,
+            _config: config,
         }
     }
 

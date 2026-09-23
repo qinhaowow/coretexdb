@@ -326,8 +326,9 @@ impl FileStorage {
         }
     }
 
-    /// The segment directory a database with this `data_dir` should use.
-    /// Keeps the log in its own subdirectory, next to `metadata.json`.
+    /// The segment directory for this `data_dir` (`<data_dir>/store`).
+    /// `data_dir` is normally `…/data/coretex`, so segments live at
+    /// `…/data/coretex/store/store-NNNNNN.log`.
     pub fn store_path(data_dir: &str) -> PathBuf {
         Path::new(data_dir).join("store")
     }
@@ -1072,6 +1073,67 @@ mod tests {
         assert_eq!(vector, vec![1.5]);
         assert_eq!(meta, serde_json::json!({"标题": "值"}));
         assert!(storage.retrieve("").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn chinese_english_mixed_metadata_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open(dir.path()).await;
+
+        let metadata = serde_json::json!({
+            "title": "CoreTexDB 是一款多模态向量数据库",
+            "description": "A multimodal vector database for AI applications",
+            "作者": "Cerebros Team",
+            "tags": ["向量搜索", "vector search", "相似度", "similarity"],
+            "中文详情": {
+                "功能": "支持中英文混合查询",
+                "性能": "每秒处理超过 10 万条向量",
+                "兼容性": "Windows / Linux / macOS"
+            },
+            "mixed": "数据库database引擎engine"
+        });
+
+        storage.store("doc:中文测试", &[1.0, 2.0, 3.0], &metadata).await.unwrap();
+
+        let (vector, meta) = storage.retrieve("doc:中文测试").await.unwrap().unwrap();
+        assert_eq!(vector, vec![1.0, 2.0, 3.0]);
+        assert_eq!(meta, metadata);
+
+        // Verify specific Chinese string values survive round-trip
+        assert_eq!(meta["title"].as_str().unwrap(), "CoreTexDB 是一款多模态向量数据库");
+        assert_eq!(meta["作者"].as_str().unwrap(), "Cerebros Team");
+        assert_eq!(meta["中文详情"]["功能"].as_str().unwrap(), "支持中英文混合查询");
+        assert_eq!(meta["mixed"].as_str().unwrap(), "数据库database引擎engine");
+    }
+
+    #[tokio::test]
+    async fn bulk_chinese_vectors_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open(dir.path()).await;
+
+        let categories = ["新闻", "科技", "体育", "娱乐", "财经"];
+        for (i, cat) in categories.iter().enumerate() {
+            let key = format!("article:{}:{}", cat, i);
+            let metadata = serde_json::json!({
+                "category": cat,
+                "title": format!("第{}篇{}文章", i + 1, cat),
+                "content": "这是一篇关于{}的测试文章，包含中英文混合内容 test content".replace("{}", cat),
+                "score": 0.5 + i as f64 * 0.1,
+            });
+            let vector: Vec<f32> = (0..8).map(|j| (i * 8 + j) as f32 * 0.1).collect();
+            storage.store(&key, &vector, &metadata).await.unwrap();
+        }
+
+        // Verify all records can be read back
+        for (i, cat) in categories.iter().enumerate() {
+            let key = format!("article:{}:{}", cat, i);
+            let (vector, meta) = storage.retrieve(&key).await.unwrap().unwrap();
+            assert_eq!(vector.len(), 8);
+            assert_eq!(meta["category"].as_str().unwrap(), *cat);
+            assert!(meta["title"].as_str().unwrap().contains(cat));
+        }
+
+        assert_eq!(storage.count().await.unwrap(), 5);
     }
 
     #[tokio::test]

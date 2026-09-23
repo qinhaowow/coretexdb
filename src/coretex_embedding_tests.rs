@@ -29,6 +29,7 @@ mod tests {
             pointcloud_model: "custom-pc-model".to_string(),
             device: "cuda".to_string(),
             batch_size: 64,
+            model_dir: None,
         };
         
         assert_eq!(config.device, "cuda");

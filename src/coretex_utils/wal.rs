@@ -12,14 +12,13 @@
 //! On startup, all WAL segment files are scanned in order and valid
 //! entries are replayed. Corrupted entries are skipped and logged.
 
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
 // ── CRC32 ──────────────────────────────────────────────────────────
@@ -114,6 +113,12 @@ pub struct WalStats {
 
 // ── WAL Engine ─────────────────────────────────────────────────────
 
+/// Parse segment number from a file name like `wal-000001.log`.
+fn parse_segment_number(name: &str) -> Option<u64> {
+    let stem = name.strip_prefix("wal-")?.strip_suffix(".log")?;
+    stem.parse().ok()
+}
+
 /// The Write-Ahead Log. Thread-safe, async.
 pub struct WriteAheadLog {
     log_dir: PathBuf,
@@ -130,7 +135,7 @@ impl WriteAheadLog {
     /// Create a new WAL. Does not initialize — call `init()`.
     pub fn new(log_dir: &str) -> Self {
         let log_path = PathBuf::from(log_dir);
-        let current_file = Arc::new(RwLock::new(log_path.join("wal_000000.log")));
+        let current_file = Arc::new(RwLock::new(log_path.join("wal-000001.log")));
 
         Self {
             log_dir: log_path,
@@ -173,14 +178,15 @@ impl WriteAheadLog {
     pub async fn init(&self) -> std::io::Result<()> {
         fs::create_dir_all(&self.log_dir).await?;
 
-        // Discover existing segments sorted by name
+        // Discover existing segments sorted by name.
+        // Strictly match wal-*.log only; ignore legacy wal_*.log and any other .log.
         let mut discovered: Vec<PathBuf> = Vec::new();
         let mut entries = fs::read_dir(&self.log_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "log" {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("wal-") && name.ends_with(".log") {
                         discovered.push(path);
                     }
                 }
@@ -242,7 +248,7 @@ impl WriteAheadLog {
         {
             let current_size = *self.current_size.write().await;
             if current_size + entry_size > self.max_segment_size {
-                drop(current_size);
+                let _ = current_size;
                 self.rotate().await?;
             }
         }
@@ -291,10 +297,21 @@ impl WriteAheadLog {
             .unwrap_or_default()
             .as_micros();
 
-        let seq = *self.sequence_counter.read().await;
+        let next_segment = {
+            let segments = self.segments.read().await;
+            let mut max_num = 0u64;
+            for seg in segments.iter() {
+                if let Some(name) = seg.file_name().and_then(|n| n.to_str()) {
+                    if let Some(n) = parse_segment_number(name) {
+                        max_num = max_num.max(n);
+                    }
+                }
+            }
+            max_num + 1
+        };
         let new_file = self
             .log_dir
-            .join(format!("wal_{:06}.log", seq + 1));
+            .join(format!("wal-{:06}.log", next_segment));
 
         // Create new file
         File::create(&new_file).await?.sync_all().await?;
@@ -487,6 +504,23 @@ impl WriteAheadLog {
 
         Ok(removed)
     }
+
+    /// Create a checkpoint: flush current segment, then GC old segments.
+    /// Returns (segments_removed, current_segment_path).
+    pub async fn checkpoint(&self, retain_segments: usize) -> std::io::Result<(usize, PathBuf)> {
+        // Force rotate to a new segment so the current one can be GC'd
+        self.rotate().await?;
+
+        // GC old segments
+        let removed = self.gc(retain_segments).await?;
+        let current = self.current_file.read().await.clone();
+
+        // Log checkpoint entry
+        let mut entry = WalEntry::new(WalEntryType::Checkpoint, "system", "_checkpoint", serde_json::json!({"checkpoint": true}));
+        let _ = self.append(&mut entry).await;
+
+        Ok((removed, current))
+    }
 }
 
 // ── Replay Result ──────────────────────────────────────────────────
@@ -618,6 +652,15 @@ mod tests {
         ));
         wal.init().await.unwrap();
         (dir, wal)
+    }
+
+    #[tokio::test]
+    async fn test_segment_naming_wal_dash_000001() {
+        let (_dir, wal) = setup_wal().await;
+        let path = wal.current_path().await;
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name, "wal-000001.log");
+        assert!(path.exists());
     }
 
     #[tokio::test]

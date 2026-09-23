@@ -136,7 +136,7 @@ impl AlertChannel for SlackChannel {
 /// Email 通知渠道（基于 SMTP，不直接依赖 SMTP 库，而是序列化到 outbox）
 pub struct EmailChannel {
     name: String,
-    smtp_server: String,
+    _smtp_server: String,
     from: String,
     to: Vec<String>,
     outbox: Arc<RwLock<Vec<EmailMessage>>>,
@@ -155,7 +155,7 @@ impl EmailChannel {
     pub fn new(name: String, smtp_server: String, from: String, to: Vec<String>) -> Self {
         Self {
             name,
-            smtp_server,
+            _smtp_server: smtp_server,
             from,
             to,
             outbox: Arc::new(RwLock::new(Vec::new())),

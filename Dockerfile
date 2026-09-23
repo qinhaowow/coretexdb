@@ -32,4 +32,6 @@ COPY --from=builder /app/target/release/coretex /usr/local/bin/coretex
 EXPOSE 5000 50051 8080
 VOLUME ["/app/data"]
 
-ENTRYPOINT ["coretex", "server", "--host", "0.0.0.0", "--port", "5000", "--grpc-port", "50051", "--ws-port", "8080"]
+# 注意：绑地址/端口是 `-a/--address` 与 `-p/--port`。曾写成 `--host`，
+# 那是个不存在的参数，容器一启动就会以 clap 的 “unexpected argument” 退出。
+ENTRYPOINT ["coretex", "server", "-a", "0.0.0.0", "-p", "5000", "--grpc-port", "50051", "--ws-port", "8080"]

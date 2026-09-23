@@ -33,7 +33,7 @@ pub struct ClusterNode {
 
 pub struct ClusterManager {
     nodes: Arc<RwLock<HashMap<String, ClusterNode>>>,
-    current_node_id: String,
+    _current_node_id: String,
     shards: Arc<RwLock<HashMap<u32, Shard>>>,
     replication_factor: usize,
 }
@@ -49,7 +49,7 @@ impl ClusterManager {
     pub fn new(node_id: &str, replication_factor: usize) -> Self {
         Self {
             nodes: Arc::new(RwLock::new(HashMap::new())),
-            current_node_id: node_id.to_string(),
+            _current_node_id: node_id.to_string(),
             shards: Arc::new(RwLock::new(HashMap::new())),
             replication_factor,
         }

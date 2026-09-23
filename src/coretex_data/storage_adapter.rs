@@ -74,7 +74,7 @@ struct WriteBackEntry {
     key: String,
     vector: Vec<f32>,
     metadata: serde_json::Value,
-    enqueued_at: Instant,
+    _enqueued_at: Instant,
 }
 
 /// 统一存储适配器：封装同步 StorageEngine + 异步 PersistenceManager
@@ -220,7 +220,7 @@ impl UnifiedStorageAdapter {
                     key: key.to_string(),
                     vector: vector.to_vec(),
                     metadata: metadata.clone(),
-                    enqueued_at: Instant::now(),
+                    _enqueued_at: Instant::now(),
                 });
 
                 let mut s = self.stats.write().await;

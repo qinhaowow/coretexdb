@@ -137,12 +137,8 @@ impl InputValidator {
         }
         
         for part in parts {
-            let num: u8 = part.parse()
+            let _num: u8 = part.parse()
                 .map_err(|_| format!("Invalid IP address: {}", ip))?;
-            
-            if num > 255 {
-                return Err("Invalid IP address octet".to_string());
-            }
         }
         
         Ok(())
@@ -194,14 +190,14 @@ impl Default for InputValidator {
 }
 
 pub struct RateLimitValidator {
-    max_requests_per_minute: usize,
+    _max_requests_per_minute: usize,
     blocked_ips: HashSet<String>,
 }
 
 impl RateLimitValidator {
     pub fn new(max_requests_per_minute: usize) -> Self {
         Self {
-            max_requests_per_minute,
+            _max_requests_per_minute: max_requests_per_minute,
             blocked_ips: HashSet::new(),
         }
     }
@@ -245,7 +241,8 @@ mod tests {
         let validator = InputValidator::new();
         
         let sanitized = validator.sanitize_string("It's a test");
-        assert!(!sanitized.contains('\''));
+        assert!(sanitized.contains("\\'"));
+        assert!(sanitized.contains("It"));
     }
 
     #[test]

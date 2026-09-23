@@ -20,6 +20,11 @@ impl CoretexService {
             db: Arc::new(RwLock::new(db)),
         }
     }
+
+    /// Wrap an already-shared database handle (used by the multi-protocol server).
+    pub fn from_shared(db: Arc<RwLock<CoreTexDB>>) -> Self {
+        Self { db }
+    }
 }
 
 // Generated code included via include!("../coretex_generated.rs") above

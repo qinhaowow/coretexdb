@@ -29,7 +29,7 @@ pub enum BackupSchedule {
 impl Default for BackupConfig {
     fn default() -> Self {
         Self {
-            backup_dir: "./backups".to_string(),
+            backup_dir: "./data/backup".to_string(),
             retention_days: 30,
             incremental_enabled: true,
             compression_enabled: true,
@@ -84,6 +84,24 @@ impl BackupManager {
 
     pub fn config(&self) -> &BackupConfig {
         &self.config
+    }
+
+    /// Resolve `<backup_dir>/{full|incremental}/<id>` for an existing backup id.
+    fn resolve_backup_dir(&self, backup_id: &str) -> PathBuf {
+        let full = PathBuf::from(&self.config.backup_dir).join("full").join(backup_id);
+        if full.exists() {
+            return full;
+        }
+        PathBuf::from(&self.config.backup_dir)
+            .join("incremental")
+            .join(backup_id)
+    }
+
+    fn type_dir_name(backup_type: BackupType) -> &'static str {
+        match backup_type {
+            BackupType::Incremental => "incremental",
+            BackupType::Full | BackupType::Snapshot => "full",
+        }
     }
 
     pub async fn initialize(&self) -> Result<(), BackupError> {
@@ -141,7 +159,9 @@ impl BackupManager {
             chrono::Utc::now().timestamp()
         );
 
-        let backup_dir = PathBuf::from(&self.config.backup_dir).join(&backup_id);
+        let backup_dir = PathBuf::from(&self.config.backup_dir)
+            .join(Self::type_dir_name(backup_type))
+            .join(&backup_id);
 
         fs::create_dir_all(&backup_dir)
             .await
@@ -211,47 +231,43 @@ impl BackupManager {
 
         match backup_type {
             BackupType::Full | BackupType::Snapshot => {
-                let config_file = PathBuf::from(&self.data_dir).join("config");
+                let config_file = PathBuf::from(&self.data_dir).join("metadata");
                 if config_file.exists() {
-                    let dest = backup_dir.join("config");
-                    fs::copy(&config_file, &dest)
-                        .await
-                        .map_err(|e| BackupError::IoError(e.to_string()))?;
+                    let dest = backup_dir.join("metadata");
+                    Self::copy_dir(&config_file, &dest).await?;
                 }
 
-                let index_dir = PathBuf::from(&self.data_dir).join("index");
+                let index_dir = PathBuf::from(&self.data_dir).join("indexes");
                 if index_dir.exists() {
-                    let dest = backup_dir.join("index");
+                    let dest = backup_dir.join("indexes");
                     Self::copy_dir(&index_dir, &dest).await?;
                 }
             }
             BackupType::Incremental => {
-                let config_file = PathBuf::from(&self.data_dir).join("config");
+                let config_file = PathBuf::from(&self.data_dir).join("metadata");
                 if config_file.exists() {
                     let parent_config = parent_backup_id.as_ref()
-                        .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid).join("config"));
+                        .map(|pid| self.resolve_backup_dir(pid).join("metadata"));
                     let should_copy = match &parent_config {
-                        Some(p) => !p.exists() || !Self::files_equal(&config_file, p).await,
+                        Some(p) => !p.exists() || !Self::dirs_equal(&config_file, p).await,
                         None => true,
                     };
                     if should_copy {
-                        let dest = backup_dir.join("config");
-                        fs::copy(&config_file, &dest)
-                            .await
-                            .map_err(|e| BackupError::IoError(e.to_string()))?;
+                        let dest = backup_dir.join("metadata");
+                        Self::copy_dir(&config_file, &dest).await?;
                     }
                 }
 
-                let index_dir = PathBuf::from(&self.data_dir).join("index");
+                let index_dir = PathBuf::from(&self.data_dir).join("indexes");
                 if index_dir.exists() {
                     let parent_index = parent_backup_id.as_ref()
-                        .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid).join("index"));
+                        .map(|pid| self.resolve_backup_dir(pid).join("indexes"));
                     let should_copy = match &parent_index {
                         Some(p) => !p.exists() || !Self::dirs_equal(&index_dir, p).await,
                         None => true,
                     };
                     if should_copy {
-                        let dest = backup_dir.join("index");
+                        let dest = backup_dir.join("indexes");
                         Self::copy_dir(&index_dir, &dest).await?;
                     }
                 }
@@ -288,7 +304,7 @@ impl BackupManager {
 
     async fn copy_incremental(&self, src: &PathBuf, dst: &PathBuf, parent_backup_id: &Option<String>) -> Result<(), BackupError> {
         let parent_dir = parent_backup_id.as_ref()
-            .map(|pid| PathBuf::from(&self.config.backup_dir).join(pid));
+            .map(|pid| self.resolve_backup_dir(pid));
 
         fs::create_dir_all(dst)
             .await
@@ -374,7 +390,7 @@ impl BackupManager {
     }
 
     pub async fn restore_backup(&self, backup_id: &str) -> Result<RestoreReport, BackupError> {
-        let backup_dir = PathBuf::from(&self.config.backup_dir).join(backup_id);
+        let backup_dir = self.resolve_backup_dir(backup_id);
         
         if !backup_dir.exists() {
             return Err(BackupError::BackupNotFound(backup_id.to_string()));
@@ -404,19 +420,25 @@ impl BackupManager {
             Self::copy_dir(&backup_collections, &collections_dir).await?;
         }
 
-        let backup_config = backup_dir.join("config");
-        if backup_config.exists() {
-            fs::copy(&backup_config, &data_dir.join("config"))
-                .await
-                .map_err(|e| BackupError::IoError(e.to_string()))?;
+        let backup_metadata_dir = backup_dir.join("metadata");
+        if backup_metadata_dir.exists() {
+            let dest_meta = data_dir.join("metadata");
+            if dest_meta.exists() {
+                fs::remove_dir_all(&dest_meta)
+                    .await
+                    .map_err(|e| BackupError::IoError(e.to_string()))?;
+            }
+            Self::copy_dir(&backup_metadata_dir, &dest_meta).await?;
         }
 
-        let backup_index = backup_dir.join("index");
+        let backup_index = backup_dir.join("indexes");
         if backup_index.exists() {
-            let dest_index = data_dir.join("index");
-            fs::remove_dir_all(&dest_index)
-                .await
-                .map_err(|e| BackupError::IoError(e.to_string()))?;
+            let dest_index = data_dir.join("indexes");
+            if dest_index.exists() {
+                fs::remove_dir_all(&dest_index)
+                    .await
+                    .map_err(|e| BackupError::IoError(e.to_string()))?;
+            }
             Self::copy_dir(&backup_index, &dest_index).await?;
         }
 
@@ -444,7 +466,7 @@ impl BackupManager {
     }
 
     pub async fn delete_backup(&self, backup_id: &str) -> Result<bool, BackupError> {
-        let backup_dir = PathBuf::from(&self.config.backup_dir).join(backup_id);
+        let backup_dir = self.resolve_backup_dir(backup_id);
         
         if backup_dir.exists() {
             fs::remove_dir_all(&backup_dir)
@@ -467,7 +489,7 @@ impl BackupManager {
         let backup = backups.get(backup_id)
             .ok_or_else(|| BackupError::BackupNotFound(backup_id.to_string()))?;
         
-        let backup_dir = PathBuf::from(&self.config.backup_dir).join(backup_id);
+        let backup_dir = self.resolve_backup_dir(backup_id);
         
         let current_checksum = self.calculate_checksum(&backup_dir).await?;
         
@@ -484,7 +506,7 @@ impl BackupManager {
             .collect();
         
         for backup_id in to_delete {
-            let backup_dir = PathBuf::from(&self.config.backup_dir).join(&backup_id);
+            let backup_dir = self.resolve_backup_dir(&backup_id);
             if backup_dir.exists() {
                 fs::remove_dir_all(&backup_dir)
                     .await
@@ -670,7 +692,7 @@ mod tests {
         let config = BackupConfig::default();
         let manager = BackupManager::new(config, "./data");
         
-        assert_eq!(manager.config().backup_dir, "./backups");
+        assert_eq!(manager.config().backup_dir, "./data/backup");
     }
 
     #[tokio::test]

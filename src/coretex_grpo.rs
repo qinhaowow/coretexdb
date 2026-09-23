@@ -37,7 +37,7 @@ impl Default for GRPOConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyNetwork {
     #[serde(skip)]
-    weights: Array1<f64>,
+    _weights: Array1<f64>,
     input_dim: usize,
     output_dim: usize,
     hidden_dim: usize,
@@ -62,7 +62,7 @@ impl PolicyNetwork {
         let layer2_bias = (0..output_dim).map(|_| 0.0).collect();
 
         Self {
-            weights: Array1::zeros(input_dim * output_dim),
+            _weights: Array1::zeros(input_dim * output_dim),
             input_dim,
             output_dim,
             hidden_dim,
@@ -365,7 +365,7 @@ impl GRPOOptimizer {
     pub fn load_policy(&mut self, data: &[u8]) -> Result<(), String> {
         let policy_data: PolicyData = bincode::deserialize(data).map_err(|e| e.to_string())?;
         self.policy = PolicyNetwork {
-            weights: Array1::zeros(policy_data.input_dim * policy_data.output_dim),
+            _weights: Array1::zeros(policy_data.input_dim * policy_data.output_dim),
             input_dim: policy_data.input_dim,
             output_dim: policy_data.output_dim,
             hidden_dim: policy_data.hidden_dim,
@@ -413,7 +413,7 @@ fn sample_from_probs(probs: &[f64], rng: &mut impl Rng) -> usize {
 
 pub struct GRPOSearchOptimizer {
     grpo: GRPOOptimizer,
-    feature_dim: usize,
+    _feature_dim: usize,
     action_history: Vec<(Vec<f64>, usize, f64)>,
 }
 
@@ -422,7 +422,7 @@ impl GRPOSearchOptimizer {
         let cfg = config.unwrap_or_default();
         Self {
             grpo: GRPOOptimizer::new(cfg, feature_dim, 10),
-            feature_dim,
+            _feature_dim: feature_dim,
             action_history: Vec::new(),
         }
     }
@@ -648,5 +648,175 @@ mod tests {
 
         let mut new_optimizer = GRPOOptimizer::new(GRPOConfig::default(), 4, 3);
         assert!(new_optimizer.load_policy(&data).is_ok());
+    }
+
+    #[test]
+    fn test_search_action_apply_all_variants() {
+        let actions = vec![
+            SearchAction::TopK(20),
+            SearchAction::EFSearch(150),
+            SearchAction::EFConstruction(300),
+            SearchAction::M(32),
+            SearchAction::NProbe(16),
+            SearchAction::Alpha(0.7),
+            SearchAction::Lambda(0.9),
+            SearchAction::Weight(0.5),
+            SearchAction::FusionMethod(2),
+            SearchAction::Skip,
+        ];
+        let mut params = HashMap::new();
+        for action in &actions {
+            action.apply_to_params(&mut params);
+        }
+        assert_eq!(params.get("top_k"), Some(&20.0));
+        assert_eq!(params.get("ef_search"), Some(&150.0));
+        assert_eq!(params.get("m"), Some(&32.0));
+        assert_eq!(params.get("nprobe"), Some(&16.0));
+        assert_eq!(params.get("alpha"), Some(&0.7));
+        assert_eq!(params.get("lambda"), Some(&0.9));
+        assert_eq!(params.get("weight"), Some(&0.5));
+        assert_eq!(params.get("fusion_method"), Some(&2.0));
+    }
+
+    #[test]
+    fn test_grpo_stats_tracking() {
+        let config = GRPOConfig { group_size: 4, ..Default::default() };
+        let mut optimizer = GRPOOptimizer::new(config, 4, 3);
+
+        for group_id in 0..2 {
+            for i in 0..4 {
+                let state = vec![i as f64 * 0.1; 4];
+                let (action, log_prob) = optimizer.select_action(&state);
+                optimizer.add_experience(GRPOExperience {
+                    state,
+                    action,
+                    old_log_prob: log_prob,
+                    reward: (i as f64) * 0.25,
+                    group_id,
+                    value: 0.0,
+                });
+            }
+        }
+
+        let result = optimizer.update_policy();
+        let stats = optimizer.get_stats();
+        assert!(stats.total_updates == 1);
+        assert!(stats.average_reward.is_finite());
+        assert!(result.average_advantage.is_finite());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 搜索集成：AdaptiveSearchController
+// ═══════════════════════════════════════════════════════════════
+
+/// Adaptive search controller that uses GRPO to dynamically tune search parameters per query.
+/// Each query goes through: feature extraction → policy network → action → feedback → update.
+pub struct AdaptiveSearchController {
+    optimizer: GRPOSearchOptimizer,
+    _feature_dim: usize,
+    feedback_history: Vec<(f64, Vec<String>)>,
+    max_history: usize,
+}
+
+impl AdaptiveSearchController {
+    pub fn new(feature_dim: usize, config: Option<GRPOConfig>) -> Self {
+        Self {
+            optimizer: GRPOSearchOptimizer::new(feature_dim, config),
+            _feature_dim: feature_dim,
+            feedback_history: Vec::new(),
+            max_history: 1000,
+        }
+    }
+
+    /// Extract query features for the GRPO policy network.
+    /// Encodes query length, token uniqueness, avg token frequency proxy, and positional info.
+    pub fn extract_features(query: &str, collection_size: usize) -> Vec<f64> {
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        let total_tokens = tokens.len() as f64;
+        let unique_tokens: f64 = {
+            let mut seen = std::collections::HashSet::new();
+            tokens.iter().filter(|t| seen.insert(**t)).count() as f64
+        };
+        let avg_token_len: f64 = if tokens.is_empty() {
+            0.0
+        } else {
+            tokens.iter().map(|t| t.len() as f64).sum::<f64>() / total_tokens
+        };
+        let collection_log = (collection_size as f64).ln().max(1.0);
+
+        let mut features = vec![0.0; 4];
+        features[0] = (total_tokens / 20.0).min(1.0);
+        features[1] = unique_tokens / total_tokens.max(1.0);
+        features[2] = (avg_token_len / 15.0).min(1.0);
+        features[3] = collection_log / 15.0;
+        features
+    }
+
+    /// Decide optimal search parameters for a given query.
+    pub fn suggest_params(&mut self, query: &str, collection_size: usize) -> HashMap<String, f64> {
+        let features = Self::extract_features(query, collection_size);
+        let action = self.optimizer.optimize_search_parameters(&features);
+
+        let mut params = HashMap::new();
+        // Defaults
+        params.insert("top_k".to_string(), 10.0);
+        params.insert("ef_search".to_string(), 64.0);
+        params.insert("ef_construction".to_string(), 128.0);
+        params.insert("m".to_string(), 16.0);
+        params.insert("nprobe".to_string(), 8.0);
+        params.insert("alpha".to_string(), 0.5);
+        params.insert("lambda".to_string(), 0.7);
+        params.insert("weight".to_string(), 0.5);
+        params.insert("fusion_method".to_string(), 1.0);
+        // Override with GRPO-suggested values
+        action.apply_to_params(&mut params);
+        params
+    }
+
+    /// Provide relevance feedback after a query is executed.
+    /// `reward` is based on user click-through or relevance scores.
+    pub fn provide_feedback(&mut self, reward: f64, group_id: usize) {
+        self.optimizer.provide_feedback(reward, group_id);
+        self.feedback_history.push((reward, Vec::new()));
+        if self.feedback_history.len() > self.max_history {
+            self.feedback_history.remove(0);
+        }
+    }
+
+    /// Run a policy update from accumulated experiences.
+    pub fn update(&mut self) -> GRPOUpdateResult {
+        self.optimizer.update()
+    }
+
+    /// Get current optimizer stats.
+    pub fn stats(&self) -> &GRPOStats {
+        self.optimizer.get_optimizer().get_stats()
+    }
+
+    /// Save the learned policy to bytes.
+    pub fn save_policy(&self) -> Vec<u8> {
+        self.optimizer.get_optimizer().save_policy()
+    }
+
+    /// Load a learned policy from bytes.
+    pub fn load_policy(&mut self, data: &[u8]) -> Result<(), String> {
+        self.optimizer.get_optimizer_mut().load_policy(data)
+    }
+
+    /// Compute a reward from a set of retrieval results.
+    /// reward = precision@k weighted by position (MRR-like).
+    pub fn compute_reward(retrieved_ids: &[String], relevant_ids: &[String], k: usize) -> f64 {
+        if relevant_ids.is_empty() || k == 0 {
+            return 0.0;
+        }
+        let relevant_set: std::collections::HashSet<&String> = relevant_ids.iter().collect();
+        let mut reward = 0.0;
+        for (i, id) in retrieved_ids.iter().take(k).enumerate() {
+            if relevant_set.contains(id) {
+                reward += 1.0 / (i as f64 + 1.0);
+            }
+        }
+        reward / k as f64
     }
 }

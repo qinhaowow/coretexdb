@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -134,6 +134,7 @@ pub struct AuthService {
     roles: Arc<RwLock<HashMap<String, Role>>>,
     tokens: Arc<RwLock<HashMap<String, TokenClaims>>>,
     config: JWTConfig,
+    persist_path: Option<std::path::PathBuf>,
 }
 
 impl AuthService {
@@ -147,6 +148,45 @@ impl AuthService {
             roles: Arc::new(RwLock::new(Self::default_roles())),
             tokens: Arc::new(RwLock::new(HashMap::new())),
             config,
+            persist_path: None,
+        }
+    }
+
+    /// Create a persistent AuthService that loads/saves users under
+    /// `<data_dir>/metadata/auth.json`.
+    pub fn with_persistence(data_dir: &str) -> Self {
+        let meta_dir = std::path::PathBuf::from(data_dir).join("metadata");
+        let _ = std::fs::create_dir_all(&meta_dir);
+        let path = meta_dir.join("auth.json");
+        // Load users from file BEFORE wrapping in RwLock to avoid blocking_write panic
+        let users_map = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<AuthPersistData>(&content).ok())
+                .map(|data| data.users)
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        Self {
+            users: Arc::new(RwLock::new(users_map)),
+            roles: Arc::new(RwLock::new(Self::default_roles())),
+            tokens: Arc::new(RwLock::new(HashMap::new())),
+            config: JWTConfig::default(),
+            persist_path: Some(path),
+        }
+    }
+
+    async fn save_to_disk(&self) {
+        if let Some(ref path) = self.persist_path {
+            let users = self.users.read().await.clone();
+            let data = AuthPersistData { users };
+            if let Ok(json) = serde_json::to_string_pretty(&data) {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, json);
+            }
         }
     }
 
@@ -227,6 +267,8 @@ impl AuthService {
         };
         
         users.insert(user_id.clone(), user);
+        drop(users);
+        self.save_to_disk().await;
         
         Ok(user_id)
     }
@@ -350,6 +392,8 @@ impl AuthService {
         if !user.roles.contains(&role_name.to_string()) {
             user.roles.push(role_name.to_string());
         }
+        drop(users);
+        self.save_to_disk().await;
         
         Ok(())
     }
@@ -448,8 +492,14 @@ impl AuthService {
     }
 
     pub async fn delete_user(&self, user_id: &str) -> bool {
-        let mut users = self.users.write().await;
-        users.remove(user_id).is_some()
+        let result = {
+            let mut users = self.users.write().await;
+            users.remove(user_id).is_some()
+        };
+        if result {
+            self.save_to_disk().await;
+        }
+        result
     }
 }
 
@@ -460,6 +510,11 @@ pub struct UserInfo {
     pub email: Option<String>,
     pub roles: Vec<String>,
     pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuthPersistData {
+    users: HashMap<String, User>,
 }
 
 fn uuid_simple() -> u64 {

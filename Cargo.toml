@@ -1,9 +1,9 @@
 [package]
 name = "coretexdb"
-version = "1.1.0"
+version = "0.2.1"
 edition = "2021"
-authors = ["Cerebros Team"]
-description = "A multimodal vector database for AI applications"
+authors = ["qinhaowo <qinhaowo@126.com>"]
+description = "CoreTexDB - A multimodal vector database for AI applications, developed with the assistance of the MiMo v2.5 large language model"
 license = "AGPL-3.0"
 readme = "README.md"
 homepage = "https://github.com/cerebros/CoretexDB"
@@ -24,16 +24,19 @@ path = "src/main.rs"
 [features]
 default = ["tokio", "serde", "compression", "metrics"]
 python = ["dep:pyo3", "dep:pyo3-asyncio"]
-full = ["tokio", "serde", "rocksdb", "compression", "metrics", "onnx", "tls-gen", "tantivy"]
+full = ["tokio", "serde", "rocksdb", "compression", "metrics", "onnx", "tls-gen", "tantivy", "embedded", "wasm", "s3"]
 tokio = ["dep:tokio", "dep:tokio-tungstenite"]
 serde = ["dep:serde", "dep:serde_json"]
-compression = ["dep:flate2", "dep:snap"]
+compression = ["dep:flate2", "dep:snap", "dep:lz4_flex", "dep:zstd"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 rocksdb = ["dep:rocksdb"]
 onnx = ["dep:ort"]
 tantivy = ["dep:tantivy"]
 # 启用真实自签名证书生成（基于 rcgen）
 tls-gen = ["dep:rcgen"]
+embedded = []
+wasm = []
+s3 = []
 
 [dependencies]
 # 异步运行时
@@ -85,6 +88,8 @@ clap = { version = "4.0", features = ["derive", "env"] }
 # 压缩
 flate2 = { version = "1.0", optional = true }
 snap = { version = "1.0", optional = true }
+lz4_flex = { version = "0.11", optional = true }
+zstd = { version = "0.13", optional = true }
 
 # 加密
 aes-gcm = "0.10"
@@ -96,6 +101,13 @@ base64 = "0.21"
 hex = "0.4"
 argon2 = "0.5"
 rand_core = "0.6"
+
+# B-C-D-D 协议加密
+ed25519-dalek = "2.1"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+zeroize = { version = "1.7", features = ["derive"] }
 
 # RPC
 reqwest = { version = "0.11", features = ["json"] }

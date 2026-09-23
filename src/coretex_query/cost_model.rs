@@ -202,9 +202,12 @@ impl JoinPushdownOptimizer {
         left_filter: Option<&str>,
         right_filter: Option<&str>,
     ) -> JoinPlan {
-        // LEFT JOIN 中右表过滤条件下推会改变结果语义，不能下推
-        let can_pushdown_right = matches!(join_type, JoinType::Inner | JoinType::Left);
-        let can_pushdown_left = matches!(join_type, JoinType::Inner | JoinType::Right);
+        // LEFT JOIN: left filter can be pushed down, right filter cannot
+        // (pushing right filter would exclude non-matching rows, changing result semantics)
+        // RIGHT JOIN: right filter can be pushed down, left filter cannot
+        // INNER JOIN: both can be pushed down
+        let can_pushdown_left = matches!(join_type, JoinType::Inner | JoinType::Left);
+        let can_pushdown_right = matches!(join_type, JoinType::Inner | JoinType::Right);
 
         JoinPlan {
             left_collection: left_collection.to_string(),

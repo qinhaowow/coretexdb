@@ -244,7 +244,7 @@ impl RaftSnapshotManager {
         self.store.save(snapshot.clone()).await?;
         // Log compaction：截断已 snapshot 的日志
         let mut log = self.log.write().await;
-        log.truncate_to(*self.applied_index.read().await);
+        let _ = log.truncate_to(*self.applied_index.read().await);
         Ok(snapshot)
     }
 

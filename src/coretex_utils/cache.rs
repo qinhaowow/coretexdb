@@ -347,9 +347,13 @@ mod tests {
         assert_eq!(cache.get(&"b"), Some(&2));
         assert_eq!(cache.get(&"c"), Some(&3));
         
+        // After get(a), order is [b, c, a]. get(b) -> [c, a, b]. get(c) -> [a, b, c].
+        // Insert d evicts a (LRU).
         cache.put("d", 4);
         
-        assert!(cache.get(&"a").is_some());
+        assert!(cache.get(&"a").is_none()); // evicted
+        assert!(cache.get(&"b").is_some());
+        assert!(cache.get(&"c").is_some());
         assert!(cache.get(&"d").is_some());
     }
 

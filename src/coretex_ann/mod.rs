@@ -15,6 +15,7 @@ pub struct ANNConfig {
 pub enum ANNAlgorithm {
     HNSW,
     IVF,
+    #[allow(non_camel_case_types)]
     IVF_PQ,
     NSG,
     SWGraph,

@@ -15,7 +15,7 @@ pub struct VectorLakehouse {
     cold_storage: Arc<dyn StorageBackendTrait>,
     metadata: Arc<RwLock<HashMap<String, DocumentMeta>>>,
     policy: Box<dyn TieringPolicy>,
-    config: TierConfig,
+    _config: TierConfig,
 }
 
 impl VectorLakehouse {
@@ -41,7 +41,7 @@ impl VectorLakehouse {
             cold_storage,
             metadata: Arc::new(RwLock::new(HashMap::new())),
             policy,
-            config,
+            _config: config,
         })
     }
 

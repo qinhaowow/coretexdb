@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::coretex_core::{CoreTexError, Result};
 
 /// Result of a vector search
@@ -80,6 +81,10 @@ pub struct IVFIndex {
     nprobe: usize, // Number of clusters to probe during search
     centroids: std::sync::Arc<tokio::sync::RwLock<Vec<Vec<f32>>>>, // Cluster centroids
     vector_to_cluster: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, usize>>>, // Mapping from vector ID to cluster ID
+    /// Set by every write, cleared by `build`. Clustering is deferred to the
+    /// next search so a batch of inserts costs one k-means pass, not one per
+    /// insert.
+    dirty: std::sync::Arc<AtomicBool>,
 }
 
 /// Scalar index implementation for numerical values
@@ -294,6 +299,7 @@ impl IVFIndex {
             nprobe: 10, // Default number of clusters to probe
             centroids: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            dirty: std::sync::Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -305,6 +311,7 @@ impl IVFIndex {
             nprobe,
             centroids: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            dirty: std::sync::Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -334,6 +341,8 @@ impl IVFIndex {
         let content = std::fs::read_to_string(path)?;
         let data: IVFIndexData = serde_json::from_str(&content)?;
 
+        // A saved index that already carries centroids does not need a rebuild.
+        let dirty = data.centroids.is_empty();
         let index = Self {
             vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
             metric: data.metric,
@@ -341,6 +350,7 @@ impl IVFIndex {
             nprobe: data.nprobe,
             centroids: std::sync::Arc::new(tokio::sync::RwLock::new(data.centroids)),
             vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(data.vector_to_cluster)),
+            dirty: std::sync::Arc::new(AtomicBool::new(dirty)),
         };
 
         Ok(index)
@@ -371,6 +381,22 @@ impl IVFIndex {
         }
         
         closest_cluster
+    }
+
+    /// True when the clustered state no longer reflects the stored vectors.
+    ///
+    /// Also true for a freshly loaded index that has vectors but no centroids,
+    /// so a build can never be silently skipped.
+    async fn is_stale(&self) -> bool {
+        if self.dirty.load(Ordering::Acquire) {
+            return true;
+        }
+        // No vectors means there is nothing to cluster: an empty index is not
+        // stale, it is simply empty.
+        if self.vectors.read().await.is_empty() {
+            return false;
+        }
+        self.centroids.read().await.is_empty()
     }
 }
 
@@ -700,6 +726,8 @@ impl VectorIndex for IVFIndex {
         let mut vector_to_cluster = self.vector_to_cluster.write().await;
         vector_to_cluster.insert(id.to_string(), cluster_id);
 
+        self.dirty.store(true, Ordering::Release);
+
         Ok(())
     }
 
@@ -710,18 +738,36 @@ impl VectorIndex for IVFIndex {
         if removed {
             let mut vector_to_cluster = self.vector_to_cluster.write().await;
             vector_to_cluster.remove(id);
+            self.dirty.store(true, Ordering::Release);
         }
 
         Ok(removed)
     }
 
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
+        // Clustering is deferred: writes only mark the index stale, and the
+        // single rebuild happens here instead of once per insert. Without this
+        // a freshly populated IVF index had no centroids at all and answered
+        // every query with an empty result set, silently.
+        if self.is_stale().await {
+            self.build().await?;
+        }
+
         let vectors = self.vectors.read().await;
+
+        // Genuinely empty is the only case where an empty answer is correct.
+        if vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let vector_to_cluster = self.vector_to_cluster.read().await;
         let centroids = self.centroids.read().await;
 
         if centroids.is_empty() {
-            return Ok(Vec::new());
+            return Err(CoreTexError::IndexError(
+                "IVF index has no centroids; refusing to return an empty result set"
+                    .to_string(),
+            ));
         }
 
         let mut cluster_distances: Vec<(usize, f32)> = centroids
@@ -733,7 +779,7 @@ impl VectorIndex for IVFIndex {
             })
             .collect();
 
-        cluster_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        cluster_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let nprobe = self.nprobe.min(cluster_distances.len());
         let probed_clusters: std::collections::HashSet<usize> = cluster_distances
@@ -759,7 +805,7 @@ impl VectorIndex for IVFIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
 
         Ok(results)
@@ -771,16 +817,32 @@ impl VectorIndex for IVFIndex {
         let ids: Vec<String> = vectors.keys().cloned().collect();
         drop(vectors);
 
-        if all_vectors.is_empty() || all_vectors.len() < self.nlist {
+        // Nothing to cluster: drop any stale centroids rather than leave a
+        // clustering that no longer describes the data.
+        if all_vectors.is_empty() {
+            self.centroids.write().await.clear();
+            self.vector_to_cluster.write().await.clear();
+            self.dirty.store(false, Ordering::Release);
             return Ok(());
         }
 
         let dim = all_vectors[0].len();
-        let nlist = self.nlist.min(all_vectors.len());
 
+        // Clamp instead of bailing out. The old guard returned early whenever
+        // `len < nlist` (default nlist = 100), so a small collection was never
+        // clustered and search answered empty forever. Clamping also keeps
+        // `step_by` below from being called with 0, which panics.
+        let nlist = self.nlist.clamp(1, all_vectors.len());
+        let step = (all_vectors.len() / nlist).max(1);
+
+        // k-means clusters by squared L2 regardless of `metric`; the metric
+        // only decides ranking, which goes through `metric_distance`. This is
+        // how IVF is normally built, and it keeps dotproduct (where the
+        // "distance" is a negated inner product) from collapsing every vector
+        // into a single cluster.
         let mut centroids: Vec<Vec<f32>> = all_vectors
             .iter()
-            .step_by(all_vectors.len() / nlist)
+            .step_by(step)
             .take(nlist)
             .cloned()
             .collect();
@@ -838,6 +900,8 @@ impl VectorIndex for IVFIndex {
             vector_to_cluster.insert(id.clone(), assignments[i]);
         }
 
+        self.dirty.store(false, Ordering::Release);
+
         Ok(())
     }
 
@@ -850,6 +914,8 @@ impl VectorIndex for IVFIndex {
 
         let mut centroids = self.centroids.write().await;
         centroids.clear();
+
+        self.dirty.store(true, Ordering::Release);
 
         Ok(())
     }

@@ -151,7 +151,7 @@ pub trait RaftRpc: Send + Sync {
 
 pub struct HttpRaftRpc {
     client: reqwest::Client,
-    timeout_ms: u64,
+    _timeout_ms: u64,
 }
 
 impl HttpRaftRpc {
@@ -160,7 +160,7 @@ impl HttpRaftRpc {
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .unwrap_or_default();
-        Self { client, timeout_ms }
+        Self { client, _timeout_ms: timeout_ms }
     }
 }
 

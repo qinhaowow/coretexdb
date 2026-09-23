@@ -183,12 +183,12 @@ impl Interceptor for RateLimitInterceptor {
 /// 指标拦截器
 #[derive(Clone)]
 pub struct MetricsInterceptor {
-    metrics: Arc<RwLock<GrpcMetrics>>,
+    _metrics: Arc<RwLock<GrpcMetrics>>,
 }
 
 impl MetricsInterceptor {
     pub fn new(metrics: Arc<RwLock<GrpcMetrics>>) -> Self {
-        Self { metrics }
+        Self { _metrics: metrics }
     }
 }
 
@@ -205,8 +205,8 @@ impl Interceptor for MetricsInterceptor {
         // 在请求完成后记录（使用 extensions）
         let mut req = request;
         req.extensions_mut().insert(MetricsContext {
-            method: path,
-            start,
+            _method: path,
+            _start: start,
         });
         Ok(req)
     }
@@ -214,8 +214,8 @@ impl Interceptor for MetricsInterceptor {
 
 #[derive(Clone)]
 struct MetricsContext {
-    method: String,
-    start: std::time::Instant,
+    _method: String,
+    _start: std::time::Instant,
 }
 
 /// 启动 gRPC 服务器
@@ -232,7 +232,15 @@ pub async fn start_grpc_server_with_config(
     db: CoreTexDB,
     config: GrpcConfig,
 ) -> Result<()> {
-    let service = CoretexService::new(db);
+    start_grpc_server_shared(Arc::new(RwLock::new(db)), config).await
+}
+
+/// 启动共享 DB 句柄的 gRPC 服务器（与 REST/WebSocket 共用同一实例）
+pub async fn start_grpc_server_shared(
+    db: Arc<RwLock<CoreTexDB>>,
+    config: GrpcConfig,
+) -> Result<()> {
+    let service = CoretexService::from_shared(db);
 
     // 认证服务
     let auth = Arc::new(AuthService::new());
@@ -289,8 +297,6 @@ pub async fn start_grpc_server_with_config(
         }
     }
 
-    let shutdown_timeout = Duration::from_secs(config.graceful_shutdown_timeout_secs);
-
     let server_future = server
         .add_service(intercepted)
         .serve_with_shutdown(config.addr, async {
@@ -316,9 +322,10 @@ pub async fn start_grpc_server_with_config(
         });
     }
 
-    tokio::time::timeout(shutdown_timeout, server_future)
-        .await
-        .map_err(|_| crate::coretex_core::CoreTexError::Internal("gRPC server shutdown timeout".to_string()))??;
+    // `serve_with_shutdown` only returns after the shutdown signal (ctrl_c)
+    // or a serve error — do NOT wrap it in a total-lifetime timeout, or the
+    // server would be killed after `graceful_shutdown_timeout_secs`.
+    server_future.await?;
 
     Ok(())
 }

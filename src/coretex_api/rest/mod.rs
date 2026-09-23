@@ -157,6 +157,45 @@ pub struct CollectionStats {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RenameCollectionRequest {
+    pub new_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListVectorsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VectorListItem {
+    pub id: String,
+    pub vector: Vec<f32>,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListVectorsResponse {
+    pub vectors: Vec<VectorListItem>,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpsertVectorsResponse {
+    pub status: String,
+    pub inserted_ids: Vec<String>,
+    pub updated_ids: Vec<String>,
+    pub inserted_count: usize,
+    pub updated_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearCollectionResponse {
+    pub status: String,
+    pub deleted_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
@@ -210,7 +249,15 @@ pub struct LoginResponse {
 pub async fn start_server(config: ApiConfig) -> Result<()> {
     let db = CoreTexDB::with_config(DbConfig::new(&config.data_dir));
     db.init().await.map_err(|e| format!("Failed to init DB: {}", e))?;
+    start_server_with_db(config, Arc::new(RwLock::new(db))).await
+}
 
+/// Start the REST API against an already-initialized shared DB handle.
+/// Lets `coretex server` run REST + gRPC on the same instance.
+pub async fn start_server_with_db(
+    config: ApiConfig,
+    db: Arc<RwLock<CoreTexDB>>,
+) -> Result<()> {
     let auth = Arc::new(AuthService::new());
     let rate_limiter = if config.rate_limit_per_minute > 0 {
         Some(Arc::new(RateLimiter::new(config.rate_limit_per_minute, 60)))
@@ -219,7 +266,7 @@ pub async fn start_server(config: ApiConfig) -> Result<()> {
     };
 
     let state = Arc::new(ApiState {
-        db: Arc::new(RwLock::new(db)),
+        db,
         auth: auth.clone(),
         rate_limiter: rate_limiter.clone(),
         enable_auth: config.enable_auth,
@@ -236,11 +283,18 @@ pub async fn start_server(config: ApiConfig) -> Result<()> {
         .route("/api/collections/:name/stats", get(get_collection_stats))
         .route("/api/collections/:name/vectors", post(insert_vectors))
         .route("/api/collections/:name/vectors", put(update_vectors))
+        .route("/api/collections/:name/vectors", get(list_vectors))
+        .route("/api/collections/:name/vectors/upsert", post(upsert_vectors))
+        .route("/api/collections/:name/vectors/clear", delete(clear_collection))
         .route("/api/collections/:name/vectors/:id", get(get_vector))
         .route("/api/collections/:name/vectors", delete(delete_vectors))
+        .route("/api/collections/:name/rename", put(rename_collection))
         .route("/api/collections/:name/search", post(search))
         .route("/api/collections/:name/batch-search", post(batch_search))
         .route("/api/collections/:name/count", get(get_vectors_count))
+        .route("/api/admin/backup", post(create_backup))
+        .route("/api/admin/restore", post(restore_backup))
+        .route("/api/admin/backup/list", get(list_backups))
         .route("/raft/append_entries", post(raft_append_entries))
         .with_state(state.clone());
 
@@ -776,4 +830,201 @@ async fn batch_search(
         results: all_results,
         execution_time_ms: execution_time,
     }))
+}
+
+async fn list_vectors(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListVectorsQuery>,
+) -> Json<ApiResponse<ListVectorsResponse>> {
+    let db = state.db.read().await;
+
+    match db.list_vectors(&name).await {
+        Ok(all_vectors) => {
+            let total = all_vectors.len();
+            let offset = query.offset.unwrap_or(0);
+            let limit = query.limit.unwrap_or(100).min(10000);
+
+            let paginated: Vec<VectorListItem> = all_vectors
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(id, vector, metadata)| VectorListItem { id, vector, metadata })
+                .collect();
+
+            Json(ApiResponse::success(ListVectorsResponse {
+                vectors: paginated,
+                total,
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+async fn upsert_vectors(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(req): Json<InsertVectorsRequest>,
+) -> Json<ApiResponse<UpsertVectorsResponse>> {
+    let db = state.db.read().await;
+
+    let vectors: Vec<(String, Vec<f32>, serde_json::Value)> = req.vectors
+        .into_iter()
+        .map(|v| (v.id, v.vector, v.metadata.unwrap_or(serde_json::json!({}))))
+        .collect();
+
+    match db.upsert_vectors(&name, vectors).await {
+        Ok((inserted_ids, updated_ids)) => {
+            let inserted_count = inserted_ids.len();
+            let updated_count = updated_ids.len();
+            Json(ApiResponse::success(UpsertVectorsResponse {
+                status: "ok".to_string(),
+                inserted_ids,
+                updated_ids,
+                inserted_count,
+                updated_count,
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+async fn clear_collection(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<ApiResponse<ClearCollectionResponse>> {
+    let db = state.db.read().await;
+
+    match db.clear_collection(&name).await {
+        Ok(deleted_count) => Json(ApiResponse::success(ClearCollectionResponse {
+            status: "ok".to_string(),
+            deleted_count,
+        })),
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+async fn rename_collection(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(req): Json<RenameCollectionRequest>,
+) -> Json<ApiResponse<String>> {
+    let db = state.db.read().await;
+
+    match db.rename_collection(&name, &req.new_name).await {
+        Ok(_) => Json(ApiResponse::success(format!("Collection '{}' renamed to '{}'", name, req.new_name))),
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupResponse {
+    pub status: String,
+    pub backup_name: String,
+    pub file_count: usize,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoreRequest {
+    pub backup_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoreResponse {
+    pub status: String,
+    pub files_restored: usize,
+    pub message: String,
+}
+
+async fn create_backup(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<BackupRequest>,
+) -> Json<ApiResponse<BackupResponse>> {
+    let db = state.db.read().await;
+    let install_root = std::path::Path::new(&db.config.base_dir);
+    let backup_name = req.name.unwrap_or_else(|| {
+        format!("backup_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S"))
+    });
+    let backup_dir = install_root
+        .join("data")
+        .join("backup")
+        .join("full")
+        .join(&backup_name);
+
+    match crate::coretex_cli::data_backup::create(install_root, &backup_dir) {
+        Ok(manifest) => {
+            let total_bytes: u64 = manifest.files.iter().map(|f| f.bytes).sum();
+            Json(ApiResponse::success(BackupResponse {
+                status: "ok".to_string(),
+                backup_name,
+                file_count: manifest.files.len(),
+                total_bytes,
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn restore_backup(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<RestoreRequest>,
+) -> Json<ApiResponse<RestoreResponse>> {
+    let db = state.db.read().await;
+    let install_root = std::path::Path::new(&db.config.base_dir);
+    let backup_dir = install_root
+        .join("data")
+        .join("backup")
+        .join("full")
+        .join(&req.backup_name);
+
+    if !backup_dir.exists() {
+        return Json(ApiResponse::error("Backup not found"));
+    }
+
+    match crate::coretex_cli::data_backup::restore(&backup_dir, install_root) {
+        Ok((manifest, count)) => {
+            Json(ApiResponse::success(RestoreResponse {
+                status: "ok".to_string(),
+                files_restored: count,
+                message: format!("Restored {} files from backup '{}'", count, manifest.created_at),
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn list_backups(
+    State(state): State<Arc<ApiState>>,
+) -> Json<ApiResponse<Vec<String>>> {
+    let db = state.db.read().await;
+    let backups_root = std::path::Path::new(&db.config.base_dir)
+        .join("data")
+        .join("backup");
+
+    if !backups_root.exists() {
+        return Json(ApiResponse::success(Vec::new()));
+    }
+
+    let mut backups = Vec::new();
+    for kind in ["full", "incremental"] {
+        let kind_dir = backups_root.join(kind);
+        if let Ok(entries) = std::fs::read_dir(&kind_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.path().is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        backups.push(format!("{}/{}", kind, name));
+                    }
+                }
+            }
+        }
+    }
+    backups.sort();
+    backups.reverse();
+    Json(ApiResponse::success(backups))
 }

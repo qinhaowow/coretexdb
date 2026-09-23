@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use crate::coretex_embedding::{EmbeddingConfig, DataType};
 
 pub struct StreamingEmbedder {
-    config: EmbeddingConfig,
+    _config: EmbeddingConfig,
     buffer: Arc<RwLock<VecDeque<StreamItem>>>,
     sender: Option<mpsc::Sender<StreamItem>>,
     receiver: Option<mpsc::Receiver<StreamItem>>,
@@ -56,7 +56,7 @@ impl StreamingEmbedder {
         let (sender, receiver) = mpsc::channel(1000);
         let batch_size = config.batch_size;
         Self {
-            config,
+            _config: config,
             buffer: Arc::new(RwLock::new(VecDeque::new())),
             sender: Some(sender),
             receiver: Some(receiver),
@@ -235,7 +235,7 @@ impl BatchedStreamEmbedder {
 }
 
 pub struct WindowedStreamEmbedder {
-    inner: StreamingEmbedder,
+    _inner: StreamingEmbedder,
     window_size: usize,
     window_slide: usize,
 }
@@ -243,7 +243,7 @@ pub struct WindowedStreamEmbedder {
 impl WindowedStreamEmbedder {
     pub fn new(config: EmbeddingConfig, window_size: usize, window_slide: usize) -> Self {
         Self {
-            inner: StreamingEmbedder::new(config),
+            _inner: StreamingEmbedder::new(config),
             window_size,
             window_slide,
         }

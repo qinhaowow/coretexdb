@@ -1,20 +1,89 @@
-//! Text embedding service
+//! Text embedding service with ONNX Runtime support
 
 use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct TextEmbeddingService {
-    model_name: String,
+    _model_name: String,
     dimension: usize,
-    device: String,
+    _device: String,
+}
+
+/// ONNX-based embedding engine (used when `onnx` feature is enabled)
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbeddingEngine {
+    session: ort::Session,
+    dimension: usize,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbeddingEngine {
+    /// Load an ONNX model from file path
+    pub fn new(model_path: &str, dimension: usize) -> Result<Self> {
+        let session = ort::Session::builder()
+            .map_err(|e| format!("Failed to create ONNX session: {}", e))?
+            .commit_from_file(model_path)
+            .map_err(|e| format!("Failed to load ONNX model: {}", e))?;
+
+        Ok(Self {
+            session,
+            dimension,
+        })
+    }
+
+    /// Run inference on a single text input
+    /// Expected input: tokenized input_ids and attention_mask (batch=1, seq_len=128)
+    pub fn embed(&self, input_ids: &[i64], attention_mask: &[i64]) -> Result<Vec<f32>> {
+        let seq_len = input_ids.len();
+
+        // Create input tensors
+        let input_ids_array = ndarray::Array2::from_shape_vec((1, seq_len), input_ids.to_vec())
+            .map_err(|e| format!("Failed to create input_ids tensor: {}", e))?;
+        let attention_mask_array = ndarray::Array2::from_shape_vec((1, seq_len), attention_mask.to_vec())
+            .map_err(|e| format!("Failed to create attention_mask tensor: {}", e))?;
+
+        let inputs = ort::inputs![
+            "input_ids" => input_ids_array,
+            "attention_mask" => attention_mask_array,
+        ].map_err(|e| format!("Failed to create ONNX inputs: {}", e))?;
+
+        let outputs = self.session.run(inputs)
+            .map_err(|e| format!("ONNX inference failed: {}", e))?;
+
+        // Extract output (assuming last_hidden_state or pooled_output)
+        if let Some(output) = outputs.first() {
+            let tensor = output.try_extract_tensor::<f32>()
+                .map_err(|e| format!("Failed to extract output tensor: {}", e))?;
+            let slice = tensor.as_slice().unwrap_or(&[]);
+            let mut result = slice.to_vec();
+            result.truncate(self.dimension);
+            if result.len() < self.dimension {
+                result.resize(self.dimension, 0.0);
+            }
+            return Ok(result);
+        }
+
+        Err("No output from ONNX model".to_string())
+    }
+
+    /// Run batch inference
+    pub fn embed_batch(&self, batch: &[(Vec<i64>, Vec<i64>)]) -> Result<Vec<Vec<f32>>> {
+        batch.iter()
+            .map(|(ids, mask)| self.embed(ids, mask))
+            .collect()
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
 }
 
 impl TextEmbeddingService {
     pub fn new(model_name: &str, dimension: usize, device: &str) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            _model_name: model_name.to_string(),
             dimension,
-            device: device.to_string(),
+            _device: device.to_string(),
         }
     }
 
@@ -26,6 +95,8 @@ impl TextEmbeddingService {
         )
     }
 
+    /// Embed text using a simple hash-based fallback
+    /// When ONNX is available, use OnnxEmbeddingEngine instead
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let mut embedding = vec![0.0; self.dimension];
         

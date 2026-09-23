@@ -216,14 +216,14 @@ impl IncrementalIndex {
 }
 
 struct BruteForceIndex {
-    dimension: usize,
+    _dimension: usize,
     vectors: HashMap<String, Vec<f32>>,
 }
 
 impl BruteForceIndex {
     fn new(dimension: usize) -> Self {
         Self {
-            dimension,
+            _dimension: dimension,
             vectors: HashMap::new(),
         }
     }
@@ -261,18 +261,18 @@ impl IndexTrait for BruteForceIndex {
 }
 
 struct HnswIndex {
-    dimension: usize,
-    m: usize,
-    ef_construction: usize,
+    _dimension: usize,
+    _m: usize,
+    _ef_construction: usize,
     vectors: HashMap<String, Vec<f32>>,
 }
 
 impl HnswIndex {
     fn new(dimension: usize, m: usize, ef_construction: usize) -> Self {
         Self {
-            dimension,
-            m,
-            ef_construction,
+            _dimension: dimension,
+            _m: m,
+            _ef_construction: ef_construction,
             vectors: HashMap::new(),
         }
     }
@@ -310,16 +310,16 @@ impl IndexTrait for HnswIndex {
 }
 
 struct IvfIndex {
-    dimension: usize,
-    nlist: usize,
+    _dimension: usize,
+    _nlist: usize,
     vectors: HashMap<String, Vec<f32>>,
 }
 
 impl IvfIndex {
-    fn new(dimension: usize, nlist: usize) -> Self {
+    fn new(_dimension: usize, _nlist: usize) -> Self {
         Self {
-            dimension,
-            nlist,
+            _dimension,
+            _nlist,
             vectors: HashMap::new(),
         }
     }
@@ -357,14 +357,14 @@ impl IndexTrait for IvfIndex {
 }
 
 struct PqIndex {
-    dimension: usize,
+    _dimension: usize,
     vectors: HashMap<String, Vec<f32>>,
 }
 
 impl PqIndex {
-    fn new(dimension: usize, _n_subquantizers: usize, _n_bits: usize) -> Self {
+    fn new(_dimension: usize, _n_subquantizers: usize, _n_bits: usize) -> Self {
         Self {
-            dimension,
+            _dimension,
             vectors: HashMap::new(),
         }
     }

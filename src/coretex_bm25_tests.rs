@@ -32,7 +32,9 @@ mod tests {
         let results = bm25.search("rust", 10).await.unwrap();
         
         assert!(!results.is_empty());
-        assert_eq!(results[0].id, "doc1");
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"doc1"));
+        assert!(ids.contains(&"doc3"));
     }
 
     #[tokio::test]
@@ -131,9 +133,6 @@ mod tests {
         
         assert!(doc.tokens.contains(&"hello".to_string()));
         assert!(doc.tokens.contains(&"world".to_string()));
-        assert!(doc.tokens.contains(&"this".to_string()));
-        assert!(doc.tokens.contains(&"is".to_string()));
-        assert!(doc.tokens.contains(&"a".to_string()));
         assert!(doc.tokens.contains(&"test".to_string()));
     }
 

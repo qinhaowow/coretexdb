@@ -1,11 +1,18 @@
 //! Distributed Transactions module for CoreTexDB
 //! Provides two-phase commit and distributed transaction support
 
+pub mod http_rpc;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
+
+pub use http_rpc::{
+    HttpParticipantRpc, HttpLockPeerRpc, RpcHandler, RpcLockState,
+    RpcRequest, RpcResponse, OperationDto, rpc_router,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DistributedTransactionState {

@@ -9,6 +9,8 @@ pub mod embedding_router;
 pub mod streaming;
 
 pub use text_embedding::TextEmbeddingService;
+#[cfg(feature = "onnx")]
+pub use text_embedding::OnnxEmbeddingEngine;
 pub use image_embedding::ImageEmbeddingService;
 pub use audio_embedding::AudioEmbeddingService;
 pub use video_embedding::VideoEmbeddingService;
@@ -27,6 +29,8 @@ pub struct EmbeddingConfig {
     pub pointcloud_model: String,
     pub device: String,
     pub batch_size: usize,
+    /// Path to ONNX model directory (optional, for real inference)
+    pub model_dir: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
@@ -39,6 +43,7 @@ impl Default for EmbeddingConfig {
             pointcloud_model: "pointnet2".to_string(),
             device: "cpu".to_string(),
             batch_size: 32,
+            model_dir: None,
         }
     }
 }

@@ -1032,7 +1032,7 @@ pub struct LockRequest {
 struct LockEntry {
     txn_id: TransactionId,
     mode: LockMode,
-    granted_at: std::time::Instant,
+    _granted_at: std::time::Instant,
 }
 
 /// 死锁信息
@@ -1046,10 +1046,10 @@ pub struct DeadlockInfo {
 /// 锁等待图节点
 #[derive(Debug, Clone)]
 struct WaitsFor {
-    waiting_txn: TransactionId,
+    _waiting_txn: TransactionId,
     holding_txn: TransactionId,
-    resource: String,
-    waiting_since: std::time::Instant,
+    _resource: String,
+    _waiting_since: std::time::Instant,
 }
 
 /// 锁管理器：支持超时和死锁检测
@@ -1124,7 +1124,7 @@ impl LockManager {
         entries.push(LockEntry {
             txn_id,
             mode,
-            granted_at: std::time::Instant::now(),
+            _granted_at: std::time::Instant::now(),
         });
         Ok(())
     }
@@ -1227,10 +1227,10 @@ impl LockManager {
         for entry in entries {
             if entry.txn_id != txn_id {
                 edges.push(WaitsFor {
-                    waiting_txn: txn_id,
+                    _waiting_txn: txn_id,
                     holding_txn: entry.txn_id,
-                    resource: resource.to_string(),
-                    waiting_since,
+                    _resource: resource.to_string(),
+                    _waiting_since: waiting_since,
                 });
             }
         }

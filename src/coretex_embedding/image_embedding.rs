@@ -4,17 +4,17 @@ use crate::coretex_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct ImageEmbeddingService {
-    model_name: String,
+    _model_name: String,
     dimension: usize,
-    device: String,
+    _device: String,
 }
 
 impl ImageEmbeddingService {
     pub fn new(model_name: &str, dimension: usize, device: &str) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            _model_name: model_name.to_string(),
             dimension,
-            device: device.to_string(),
+            _device: device.to_string(),
         }
     }
 
