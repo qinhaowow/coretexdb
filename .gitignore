@@ -4,10 +4,14 @@ target/
 
 # Tools & SDK (do NOT commit build tools)
 protoc/
+protoc-*/
 mingw64/
 x86_64-15.2.0/
 LLVM-*.exe
 rustup-init.exe
+
+# Local release package (built artifacts)
+package/
 
 # Python
 __pycache__/
@@ -92,3 +96,8 @@ coretex_data/
 *.bak
 *.orig
 *.old
+
+# Stray binaries at repo root (only package/ and target/ hold builds)
+/*.exe
+/*.dll
+/*.pdb
