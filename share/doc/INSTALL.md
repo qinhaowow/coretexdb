@@ -13,9 +13,15 @@ sudo /opt/CoreTexDB-V0.2.2/scripts/secure_setup.sh /opt/CoreTexDB-V0.2.2
 export PATH=/opt/CoreTexDB-V0.2.2/bin:$PATH
 ```
 
-## Layout
+## Layout (V0.2.2)
 
-See the install-root tree in the project README §10 / RELEASE_NOTES.md.
+```
+/opt/CoreTexDB-V0.2.2/
+  bin/ lib/ include/ config/ share/ scripts/ systemd/ logrotate/
+  data/{coretex,wal,backup,logs,temp,versions}
+```
+
+See README §1.1 / §10 and RELEASE_NOTES.md for the full tree.
 
 ## Verify
 

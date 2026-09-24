@@ -83,19 +83,33 @@ jobs:
         with:
           arch: x64
 
-      - name: Build release binaries
-        run: cargo build --release --bins --target ${{ matrix.target }}
+      - name: Build release binaries and libraries
+        run: cargo build --release --lib --bins --target ${{ matrix.target }}
 
       - name: Stage package (Unix)
         if: runner.os != 'Windows'
         run: |
           STAGE=CoreTexDB-V0.2.2-${{ matrix.target }}
-          mkdir -p "$STAGE/bin"
+          BD="${{ matrix.bin_dir }}"
+          mkdir -p "$STAGE"/{bin,lib,include,config,share,scripts,systemd,logrotate}
+          mkdir -p "$STAGE"/data/coretex/{collections,indexes/{vector,scalar},metadata,store}
+          mkdir -p "$STAGE"/data/{wal,backup/{full,incremental,snapshots},logs/audit,temp,versions}
           for b in coretex coretexd coretex-cli coretex-migrate coretex-backup coretex-healthcheck; do
-            install -m 755 "${{ matrix.bin_dir }}/$b" "$STAGE/bin/$b"
+            install -m 755 "$BD/$b" "$STAGE/bin/$b"
+          done
+          for lib in libcoretexdb.so libcoretexdb.dylib libcoretexdb.a; do
+            [ -f "$BD/$lib" ] && install -m 755 "$BD/$lib" "$STAGE/lib/$lib" || true
           done
           cp VERSION RELEASE_NOTES.md LICENSE README.md "$STAGE/" 2>/dev/null || true
-          cp -a config scripts systemd logrotate include share "$STAGE/" 2>/dev/null || true
+          cp -a config/. "$STAGE/config/"
+          cp -a scripts/. "$STAGE/scripts/"
+          cp -a systemd/. "$STAGE/systemd/"
+          cp -a logrotate/. "$STAGE/logrotate/"
+          cp -a share/. "$STAGE/share/"
+          cp -a include/. "$STAGE/include/"
+          ln -sfn ../include/coretexdb.h "$STAGE/lib/coretexdb.h"
+          chmod 755 "$STAGE/scripts/"*.sh 2>/dev/null || true
+          find "$STAGE/data" -type d -exec chmod 750 {} +
           tar -czvf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> $GITHUB_ENV
           echo "ASSET_NAME=${STAGE}.tar.gz" >> $GITHUB_ENV
@@ -105,19 +119,33 @@ jobs:
         shell: pwsh
         run: |
           $stage = "CoreTexDB-V0.2.2-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path "$stage\bin" -Force | Out-Null
+          $bd = "${{ matrix.bin_dir }}"
           $bins = @('coretex','coretexd','coretex-cli','coretex-migrate','coretex-backup','coretex-healthcheck')
+          New-Item -ItemType Directory -Path "$stage\bin","$stage\lib","$stage\include","$stage\config","$stage\share","$stage\scripts","$stage\systemd","$stage\logrotate" -Force | Out-Null
+          $dataDirs = @(
+            'data\coretex\collections','data\coretex\indexes\vector','data\coretex\indexes\scalar',
+            'data\coretex\metadata','data\coretex\store',
+            'data\wal','data\backup\full','data\backup\incremental','data\backup\snapshots',
+            'data\logs\audit','data\temp','data\versions'
+          )
+          foreach ($d in $dataDirs) { New-Item -ItemType Directory -Path (Join-Path $stage $d) -Force | Out-Null }
           foreach ($b in $bins) {
-            Copy-Item "${{ matrix.bin_dir }}\$b.exe" "$stage\bin\$b.exe" -Force
-            Copy-Item "${{ matrix.bin_dir }}\$b.exe" "$stage\$b.exe" -Force
+            Copy-Item "$bd\$b.exe" "$stage\bin\$b.exe" -Force
           }
-          Copy-Item "coretexdb.dll" "$stage\coretexdb.dll" -Force -ErrorAction SilentlyContinue
+          foreach ($lib in @('coretexdb.dll','coretexdb.lib','libcoretexdb.a')) {
+            if (Test-Path "$bd\$lib") { Copy-Item "$bd\$lib" "$stage\lib\$lib" -Force }
+            if (Test-Path $lib) { Copy-Item $lib "$stage\lib\$lib" -Force }
+          }
           foreach ($f in @('VERSION','RELEASE_NOTES.md','LICENSE','README.md')) {
             if (Test-Path $f) { Copy-Item $f "$stage\$f" -Force }
           }
-          foreach ($d in @('config','scripts','systemd','logrotate','include','share','lib')) {
-            if (Test-Path $d) { Copy-Item $d "$stage\$d" -Recurse -Force }
+          foreach ($d in @('config','scripts','systemd','logrotate','include','share')) {
+            Copy-Item $d "$stage\$d" -Recurse -Force
           }
+          if (Test-Path "$stage\include\coretexdb.h") {
+            Copy-Item "$stage\include\coretexdb.h" "$stage\lib\coretexdb.h" -Force
+          }
+          Get-ChildItem "$stage\scripts\*.sh" -ErrorAction SilentlyContinue | ForEach-Object { $_.Attributes = $_.Attributes -bor [IO.FileAttributes]::Normal }
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
           "ASSET=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ASSET_NAME=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -158,11 +186,14 @@ jobs:
           generate_release_notes: true
           files: artifacts/**/*
           body: |
-            CoreTexDB V0.2.2 multi-platform packages.
+            CoreTexDB V0.2.2 multi-platform packages (full install-root).
 
             Each archive contains:
-            - `bin/` multi binaries: coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
-            - config / scripts / systemd / include / share
+            - `bin/` coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
+            - `lib/` libcoretexdb / coretexdb (when produced by the toolchain)
+            - `include/` coretexdb.h
+            - `config/` `scripts/` `systemd/` `logrotate/` `share/`
+            - `data/` skeleton: coretex/{collections,indexes,metadata,store}, wal, backup, logs, temp, versions
             - VERSION, README, LICENSE, RELEASE_NOTES
 
             Verify with `*.sha256`.

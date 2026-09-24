@@ -2,12 +2,29 @@
 
 ## Highlights
 
-- Install-root layout (`bin/`, `config/`, `data/coretex/{collections,indexes,metadata,store}`, `data/{wal,backup,logs,temp,versions}`).
+- Full install-root package for V0.2.2: `bin/`, `lib/`, `include/`, `config/`, `share/`, `scripts/`, `systemd/`, `logrotate/`, and `data/` skeleton.
+- Multi binaries: `coretex`, `coretexd`, `coretex-cli`, `coretex-migrate`, `coretex-backup`, `coretex-healthcheck`.
+- Shared/static libs when built: `libcoretexdb.so` / `.dylib` / `.a` / `coretexdb.dll`.
 - WAL segment naming `wal-NNNNNN.log`, strict discovery, max+1 rotation, documented lock order.
 - Atomic create for `metadata/config.toml` and `metadata/auth.json` (temp + rename; never overwrite).
 - `doctor` branches on `wal_enabled` (Plan A).
 - B-C-D-D `.cdb` encrypt/decrypt/info/keygen CLI.
 - Runtime never creates install-root `bin/` or `include/` (install layout only).
+
+## Install-root layout (V0.2.2)
+
+```
+CoreTexDB-V0.2.2/
+  bin/          coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
+  lib/          libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib
+  include/      coretexdb.h
+  config/       coretex.toml, logging.yaml, backup.toml, security.toml, metrics.toml, {dev,staging,prod}/
+  share/        doc/, examples/
+  scripts/      start/stop/status/install/upgrade/uninstall/backup/restore/healthcheck/...
+  systemd/      coretexd.service + timers + tmpfiles
+  logrotate/    coretexd
+  data/         coretex/{collections,indexes,metadata,store}, wal, backup/{full,incremental,snapshots}, logs/audit, temp, versions
+```
 
 ## Data layout (runtime)
 

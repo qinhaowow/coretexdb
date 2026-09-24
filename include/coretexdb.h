@@ -9,7 +9,7 @@ extern "C" {
 
 #define CORETEXDB_VERSION_MAJOR 0
 #define CORETEXDB_VERSION_MINOR 2
-#define CORETEXDB_VERSION_PATCH 1
+#define CORETEXDB_VERSION_PATCH 2
 
 const char* coretexdb_version(void);
 

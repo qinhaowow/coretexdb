@@ -25,13 +25,63 @@
 
 ### 1.1 获取可执行文件
 
-Windows 包内含 `coretex.exe`（无需安装，解压即用）：
+发布包为完整安装根（解压即用，或经 `scripts/install.sh` 装到 `/opt/CoreTexDB-V0.2.2`）：
 
 ```
-CoreTexDB-V0.2.2/
-├── coretex.exe      # 主程序
-└── README.md        # 本手册
+CoreTexDB-V0.2.2/                      # 程序安装根目录
+├── bin/                               # 可执行文件
+│   ├── coretex                        # 主程序 / 多合一 CLI
+│   ├── coretex.exe                    # Windows
+│   ├── coretexd                       # 数据库服务器（Linux）
+│   ├── coretexd.exe                   # 数据库服务器（Windows）
+│   ├── coretex-cli                    # 命令行工具
+│   ├── coretex-migrate                # 数据迁移工具
+│   ├── coretex-backup                 # 备份工具
+│   └── coretex-healthcheck            # 健康检查
+│
+├── lib/                               # 动态/静态库
+│   ├── libcoretexdb.so                # 核心引擎（Linux）
+│   ├── libcoretexdb.dylib             # 核心引擎（macOS）
+│   ├── libcoretexdb.a                 # 静态库（供 C++ 链接）
+│   ├── coretexdb.dll                  # 动态库（Windows）
+│   └── coretexdb.lib                  # 导入库（Windows）
+│
+├── include/                           # C/C++ 头文件
+│   └── coretexdb.h
+│
+├── config/                            # 配置文件
+│   ├── coretex.toml                   # 主配置
+│   ├── logging.yaml                   # 日志配置
+│   ├── backup.toml / security.toml / metrics.toml
+│   └── {dev,staging,prod}/overrides.toml
+│
+├── share/                             # 静态资源
+│   ├── doc/                           # INSTALL / ADMIN_GUIDE / SECURITY
+│   └── examples/                      # rust / cpp 示例
+│
+├── scripts/                           # 管理脚本
+│   ├── start.sh / stop.sh / status.sh
+│   ├── install.sh / upgrade.sh / uninstall.sh
+│   ├── backup.sh / restore.sh
+│   └── healthcheck.sh / secure_setup.sh
+│
+├── systemd/ + logrotate/              # 服务与日志轮转（Linux）
+├── VERSION / README.md / LICENSE / RELEASE_NOTES.md
+│
+└── data/                              # 数据根目录（可通过配置更改）
+    ├── coretex/
+    │   ├── collections/
+    │   ├── indexes/{vector,scalar}/
+    │   ├── metadata/
+    │   └── store/
+    ├── wal/
+    ├── backup/{full,incremental,snapshots}/
+    ├── logs/audit/
+    ├── temp/
+    └── versions/
 ```
+
+Windows 快速验证：解压后执行 `bin\coretex.exe --version`。
 
 ### 1.2 验证安装
 
@@ -585,28 +635,72 @@ coretex crypto decrypt secret.cdb -k 0000000000000000000000000000000000000000000
 `--data-dir` 指向**安装根目录**（如 `CoreTexDB-V0.2.2/`），数据统一落在其下的 `data/`：
 
 ```
-CoreTexDB-V0.2.2/                  # --data-dir（安装根）
-├── bin/                           # 可执行文件
-├── include/                       # 头文件
-└── data/
-    ├── coretex/                   # 数据库主数据
-    │   ├── collections/           # 集合数据
-    │   │   └── <name>/
-    │   │       ├── vectors/       #   <id>.vec
-    │   │       └── metadata/      #   <id>.json
-    │   ├── indexes/
+CoreTexDB-V0.2.2/                      # 程序安装根目录（--data-dir）
+├── bin/                               # 可执行文件
+│   ├── coretexd / coretexd.exe        # 数据库服务器
+│   ├── coretex / coretex.exe          # 主程序
+│   ├── coretex-cli
+│   ├── coretex-migrate
+│   ├── coretex-backup
+│   └── coretex-healthcheck
+│
+├── lib/                               # 动态/静态库
+│   ├── libcoretexdb.so / .dylib / .a
+│   └── coretexdb.dll / coretexdb.lib
+│
+├── include/
+│   └── coretexdb.h                    # C/C++ 头文件
+│
+├── config/
+│   ├── coretex.toml                   # 主配置
+│   ├── logging.yaml                   # 日志配置
+│   └── backup.toml / security.toml / metrics.toml
+│
+├── share/
+│   ├── doc/                           # 文档
+│   └── examples/                      # 示例代码
+│
+├── scripts/
+│   ├── start.sh / stop.sh
+│   ├── backup.sh / restore.sh
+│   └── install.sh / upgrade.sh
+│
+├── systemd/ + logrotate/              # Linux 服务与轮转
+│
+└── data/                              # 数据根目录（可通过配置更改）
+    ├── coretex/                       # 数据库主数据
+    │   ├── collections/               # 集合数据
+    │   │   ├── products/
+    │   │   └── users/
+    │   ├── indexes/                   # 索引数据
     │   │   ├── vector/
     │   │   └── scalar/
-    │   ├── metadata/
-    │   │   └── metadata.json      # 集合定义清单（可读 JSON）
+    │   ├── metadata/                  # 元数据
+    │   │   ├── metadata.json
+    │   │   ├── config.toml
+    │   │   └── auth.json
     │   └── store/
-    │       └── store-000000.log   # 向量数据（二进制追加日志）
-    ├── wal/                       # 预写日志（崩溃恢复）
-    ├── backup/
-    │   ├── full/                  # 全量备份
-    │   └── incremental/           # 增量备份
-    ├── logs/                      # 运行日志
-    └── temp/                      # 临时文件
+    │       └── store-000000.log       # 向量数据（二进制追加日志）
+    │
+    ├── wal/                           # 预写日志
+    │   ├── wal-000001.log
+    │   └── wal-000002.log
+    │
+    ├── backup/                        # 备份目录
+    │   ├── full/                      # 全量备份
+    │   │   └── backup-20260924/
+    │   ├── incremental/               # 增量备份
+    │   │   └── backup-20260924-001/
+    │   └── snapshots/
+    │
+    ├── logs/                          # 运行日志
+    │   ├── coretex.log
+    │   ├── error.log
+    │   ├── slow_query.log
+    │   └── audit/
+    │
+    ├── temp/                          # 临时文件
+    └── versions/                      # 版本快照
 ```
 
 > 查看二进制文件内容请用：
