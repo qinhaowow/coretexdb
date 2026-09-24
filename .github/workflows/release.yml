@@ -21,17 +21,17 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-            bin_dir: target/release
+            bin_dir: target/x86_64-unknown-linux-gnu/release
             exe_suffix: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-            bin_dir: target/release
+            bin_dir: target/x86_64-pc-windows-msvc/release
             exe_suffix: '.exe'
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
-            bin_dir: target/release
+            bin_dir: target/aarch64-apple-darwin/release
             exe_suffix: ''
 
     steps:
