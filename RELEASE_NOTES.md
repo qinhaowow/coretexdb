@@ -1,4 +1,4 @@
-# CoreTexDB V0.2.1 Release Notes
+# CoreTexDB V0.2.2 Release Notes
 
 ## Highlights
 

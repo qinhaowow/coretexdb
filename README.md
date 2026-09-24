@@ -1,4 +1,4 @@
-# CoreTexDB V0.2.1 — 多模态向量数据库 · 操作手册
+# CoreTexDB V0.2.2 — 多模态向量数据库 · 操作手册
 
 > 开发者: qinhaowo@126.com
 > 辅助工具: MiMo v2.5 大语言模型
@@ -28,7 +28,7 @@
 Windows 包内含 `coretex.exe`（无需安装，解压即用）：
 
 ```
-CoreTexDB-V0.2.1/
+CoreTexDB-V0.2.2/
 ├── coretex.exe      # 主程序
 └── README.md        # 本手册
 ```
@@ -582,10 +582,10 @@ coretex crypto decrypt secret.cdb -k 0000000000000000000000000000000000000000000
 
 ## 10. 数据目录结构
 
-`--data-dir` 指向**安装根目录**（如 `CoreTexDB-V0.2.1/`），数据统一落在其下的 `data/`：
+`--data-dir` 指向**安装根目录**（如 `CoreTexDB-V0.2.2/`），数据统一落在其下的 `data/`：
 
 ```
-CoreTexDB-V0.2.1/                  # --data-dir（安装根）
+CoreTexDB-V0.2.2/                  # --data-dir（安装根）
 ├── bin/                           # 可执行文件
 ├── include/                       # 头文件
 └── data/
@@ -697,7 +697,7 @@ netstat -ano | findstr :50051
 
 ## 开发信息
 
-- 版本：V0.2.1
+- 版本：V0.2.2
 - 开发者：qinhaowo@126.com
 - 辅助工具：MiMo v2.5 大语言模型
 - 测试状态：456 通过 / 0 失败

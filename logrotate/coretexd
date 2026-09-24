@@ -1,4 +1,4 @@
-/opt/CoreTexDB-V0.2.1/data/logs/*.log {
+/opt/CoreTexDB-V0.2.2/data/logs/*.log {
     daily
     rotate 14
     missingok
@@ -9,7 +9,7 @@
     su coretex coretex
 }
 
-/opt/CoreTexDB-V0.2.1/data/logs/audit/*.log {
+/opt/CoreTexDB-V0.2.2/data/logs/audit/*.log {
     daily
     rotate 90
     missingok

@@ -1,4 +1,4 @@
-//! CoreTexDB C API (placeholder for V0.2.1 packaging).
+//! CoreTexDB C API (placeholder for V0.2.2 packaging).
 //! Full FFI surface lands with the C bindings module.
 #ifndef CORETEXDB_H
 #define CORETEXDB_H
