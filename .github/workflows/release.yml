@@ -8,70 +8,134 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-release:
     name: Build Release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-            binary: coretex
+            bin_dir: target/release
+            exe_suffix: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-            binary: coretex.exe
+            bin_dir: target/release
+            exe_suffix: '.exe'
           - os: macos-latest
-            target: x86_64-apple-darwin
+            target: aarch64-apple-darwin
             archive: tar.gz
-            binary: coretex
+            bin_dir: target/release
+            exe_suffix: ''
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install protoc (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          choco install protoc -y
-          echo "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
-        run: brew install protobuf
+        run: |
+          brew install protobuf
+          echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
 
-      - name: Build release
-        run: cargo build --release --features full --target ${{ matrix.target }}
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $protocVersion = "25.1"
+          $protocUrl = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip"
+          $zipPath = "$env:RUNNER_TEMP\protoc.zip"
+          $extractPath = "$env:RUNNER_TEMP\protoc"
+          Invoke-WebRequest -Uri $protocUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          echo "$extractPath\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Output "PROTOC=$extractPath\bin\protoc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Create archive (Unix)
+      - name: Activate MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build release binaries
+        run: cargo build --release --bins --target ${{ matrix.target }}
+
+      - name: Stage package (Unix)
         if: runner.os != 'Windows'
         run: |
-          tar -czvf coretex-${{ matrix.target }}.${{ matrix.archive }} -C target/${{ matrix.target }}/release ${{ matrix.binary }}
+          STAGE=CoreTexDB-V0.2.1-${{ matrix.target }}
+          mkdir -p "$STAGE/bin"
+          for b in coretex coretexd coretex-cli coretex-migrate coretex-backup coretex-healthcheck; do
+            install -m 755 "${{ matrix.bin_dir }}/$b" "$STAGE/bin/$b"
+          done
+          cp VERSION RELEASE_NOTES.md LICENSE README.md "$STAGE/" 2>/dev/null || true
+          cp -a config scripts systemd logrotate include share "$STAGE/" 2>/dev/null || true
+          tar -czvf "${STAGE}.tar.gz" "$STAGE"
+          echo "ASSET=${STAGE}.tar.gz" >> $GITHUB_ENV
+          echo "ASSET_NAME=${STAGE}.tar.gz" >> $GITHUB_ENV
 
-      - name: Create archive (Windows)
+      - name: Stage package (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          Compress-Archive -Path "target\${{ matrix.target }}\release\${{ matrix.binary }}" -DestinationPath "coretex-${{ matrix.target }}.${{ matrix.archive }}"
+          $stage = "CoreTexDB-V0.2.1-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path "$stage\bin" -Force | Out-Null
+          $bins = @('coretex','coretexd','coretex-cli','coretex-migrate','coretex-backup','coretex-healthcheck')
+          foreach ($b in $bins) {
+            Copy-Item "${{ matrix.bin_dir }}\$b.exe" "$stage\bin\$b.exe" -Force
+            Copy-Item "${{ matrix.bin_dir }}\$b.exe" "$stage\$b.exe" -Force
+          }
+          Copy-Item "coretexdb.dll" "$stage\coretexdb.dll" -Force -ErrorAction SilentlyContinue
+          foreach ($f in @('VERSION','RELEASE_NOTES.md','LICENSE','README.md')) {
+            if (Test-Path $f) { Copy-Item $f "$stage\$f" -Force }
+          }
+          foreach ($d in @('config','scripts','systemd','logrotate','include','share','lib')) {
+            if (Test-Path $d) { Copy-Item $d "$stage\$d" -Recurse -Force }
+          }
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
+          "ASSET=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ASSET_NAME=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: SHA256 checksum
+        shell: bash
+        run: |
+          if [ -f "$ASSET" ]; then
+            sha256sum "$ASSET" | tee "${ASSET}.sha256"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coretex-${{ matrix.target }}
-          path: coretex-${{ matrix.target }}.${{ matrix.archive }}
+          name: ${{ env.ASSET_NAME }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_NAME }}.sha256
 
   create-release:
     name: Create GitHub Release
@@ -87,10 +151,20 @@ jobs:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
           files: artifacts/**/*
+          body: |
+            CoreTexDB V0.2.1 multi-platform packages.
+
+            Each archive contains:
+            - `bin/` multi binaries: coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
+            - config / scripts / systemd / include / share
+            - VERSION, README, LICENSE, RELEASE_NOTES
+
+            Verify with `*.sha256`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
