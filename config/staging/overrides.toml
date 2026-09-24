@@ -1,0 +1,11 @@
+# Staging overrides (config/staging/overrides.toml)
+
+[server]
+address = "0.0.0.0"
+port = 8080
+
+[wal]
+enabled = true
+
+[logging]
+level = "info"

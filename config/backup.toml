@@ -1,0 +1,18 @@
+# Backup policy (install-root: config/backup.toml)
+
+[full]
+dir = "data/backup/full"
+# retention in days
+retain_days = 30
+
+[incremental]
+dir = "data/backup/incremental"
+retain_days = 7
+
+[snapshots]
+dir = "data/backup/snapshots"
+retain_days = 14
+
+[compress]
+enabled = true
+algorithm = "zstd"

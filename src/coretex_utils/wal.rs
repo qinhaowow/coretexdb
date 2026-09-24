@@ -291,24 +291,27 @@ impl WriteAheadLog {
     }
 
     /// Rotate to a new segment file.
+    ///
+    /// Lock order: `current_size` → `segments` (never reversed).
+    /// Holds `segments` write lock for the entire rotation.
     async fn rotate(&self) -> std::io::Result<()> {
         let _timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros();
 
-        let next_segment = {
-            let segments = self.segments.read().await;
-            let mut max_num = 0u64;
-            for seg in segments.iter() {
-                if let Some(name) = seg.file_name().and_then(|n| n.to_str()) {
-                    if let Some(n) = parse_segment_number(name) {
-                        max_num = max_num.max(n);
-                    }
+        let mut size_guard = self.current_size.write().await;
+        let mut segments = self.segments.write().await;
+
+        let mut max_num = 0u64;
+        for seg in segments.iter() {
+            if let Some(name) = seg.file_name().and_then(|n| n.to_str()) {
+                if let Some(n) = parse_segment_number(name) {
+                    max_num = max_num.max(n);
                 }
             }
-            max_num + 1
-        };
+        }
+        let next_segment = max_num + 1;
         let new_file = self
             .log_dir
             .join(format!("wal-{:06}.log", next_segment));
@@ -316,13 +319,11 @@ impl WriteAheadLog {
         // Create new file
         File::create(&new_file).await?.sync_all().await?;
 
-        {
-            let mut segments = self.segments.write().await;
-            segments.push(new_file.clone());
-        }
+        segments.push(new_file.clone());
+        drop(segments);
 
         *self.current_file.write().await = new_file;
-        *self.current_size.write().await = 0;
+        *size_guard = 0;
 
         Ok(())
     }
@@ -661,6 +662,63 @@ mod tests {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(name, "wal-000001.log");
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_discovery_ignores_old_format() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("wal_000000.log"), b"legacy").unwrap();
+        std::fs::write(dir.path().join("other.log"), b"x").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
+
+        let wal = WriteAheadLog::new(dir.path().to_string_lossy().as_ref());
+        wal.init().await.unwrap();
+
+        assert_eq!(wal.segment_count().await, 1);
+        let name = wal
+            .current_path()
+            .await
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(name, "wal-000001.log");
+        assert!(dir.path().join("wal_000000.log").exists());
+        assert!(dir.path().join("other.log").exists());
+    }
+
+    #[tokio::test]
+    async fn test_segment_numbering_with_gaps() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("wal-000003.log"), b"").unwrap();
+        std::fs::write(dir.path().join("wal-000005.log"), b"").unwrap();
+
+        let wal = WriteAheadLog::new(dir.path().to_string_lossy().as_ref());
+        wal.init().await.unwrap();
+
+        let cur = wal.current_path().await;
+        assert_eq!(cur.file_name().unwrap().to_str().unwrap(), "wal-000005.log");
+
+        wal.rotate().await.unwrap();
+        let cur = wal.current_path().await;
+        assert_eq!(cur.file_name().unwrap().to_str().unwrap(), "wal-000006.log");
+        assert!(dir.path().join("wal-000006.log").exists());
+    }
+
+    #[tokio::test]
+    async fn test_first_segment_naming() {
+        let dir = TempDir::new().unwrap();
+        let wal = WriteAheadLog::new(dir.path().to_string_lossy().as_ref());
+        wal.init().await.unwrap();
+        assert!(dir.path().join("wal-000001.log").is_file());
+        let name = wal
+            .current_path()
+            .await
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(name, "wal-000001.log");
     }
 
     #[tokio::test]

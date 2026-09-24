@@ -185,12 +185,20 @@ fn run_restore(m: &ArgMatches, data_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run the CLI
+/// Run the CLI from process arguments.
 pub fn run_cli() -> Result<()> {
+    run_cli_with_args(std::env::args_os())
+}
+
+/// Run the CLI with an explicit argv (first element is the program name).
+/// Used by install-root `bin/` wrappers that inject a default subcommand.
+pub fn run_cli_with_args<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        run_cli_async().await
-    })
+    rt.block_on(async move { run_cli_async_with(args).await })
 }
 
 /// Extract collection name from `--collection` flag, or fallback to first positional arg.
@@ -204,7 +212,11 @@ fn extract_collection(m: &clap::ArgMatches) -> Option<String> {
         .and_then(|mut vals| vals.next().map(|s| s.to_string()))
 }
 
-async fn run_cli_async() -> Result<()> {
+async fn run_cli_async_with<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let mut cmd = Command::new("coretex")
         .version(env!("CARGO_PKG_VERSION"))
         .about("CoreTexDB command-line interface")
@@ -887,7 +899,7 @@ async fn run_cli_async() -> Result<()> {
             ),
     );
 
-    let matches = cmd.get_matches();
+    let matches = cmd.get_matches_from(args);
 
     // Every subcommand shares one durable database, so changes made by one
     // invocation are visible to the next one.
@@ -2370,16 +2382,20 @@ async fn run_cli_async() -> Result<()> {
                 }
             }
 
-            // 5. WAL directory
+            // 5. WAL directory — Plan A: branch on config.wal_enabled
             print!("  WAL directory...     ");
-            let wal_dir = data_path.join("data").join("wal");
-            if wal_dir.exists() {
+            let wal_enabled = db.read().await.config.wal_enabled;
+            let wal_dir = std::path::Path::new(&db.read().await.config.wal_dir).to_path_buf();
+            if !wal_enabled {
+                println!("OK (disabled by config)");
+                passed += 1;
+            } else if wal_dir.exists() {
                 let wal_entries = std::fs::read_dir(&wal_dir).map(|r| r.count()).unwrap_or(0);
                 println!("OK ({} entries)", wal_entries);
                 passed += 1;
             } else {
-                println!("OK (not enabled)");
-                passed += 1;
+                println!("FAIL (enabled but directory missing: {})", wal_dir.display());
+                failed += 1;
             }
 
             // 6. Disk space

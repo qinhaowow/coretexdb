@@ -1,0 +1,22 @@
+# CoreTexDB base configuration (install-root: config/coretex.toml)
+
+[server]
+# Bind address / port are normally set via CLI flags or environment.
+address = "127.0.0.1"
+port = 8080
+
+[storage]
+# Relative paths are resolved against the install root.
+data_dir = "data/coretex"
+wal_dir = "data/wal"
+backup_dir = "data/backup"
+log_dir = "data/logs"
+temp_dir = "data/temp"
+
+[wal]
+# FileStorage is already a crash-safe log; enable only if a separate WAL is required.
+enabled = false
+max_segment_size = 67108864
+
+[limits]
+max_vectors_per_collection = 1000000

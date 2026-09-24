@@ -754,8 +754,17 @@ mod tests {
     #[test]
     fn test_cdb_file_roundtrip() {
         let key = [0x55u8; 32];
-        let dir = std::env::temp_dir().join("coretex_crypto_test");
-        let _ = fs::create_dir_all(&dir);
+        // Unique dir per process/run: fixed temp paths race when tests run in parallel.
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "coretex_crypto_test_{}_{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
         let input = dir.join("input.txt");
         let encrypted = dir.join("output.cdb");
         let output = dir.join("output.txt");
@@ -783,8 +792,16 @@ mod tests {
         let anchor = TrustAnchor::new("peer1", kp.public_bytes());
         assert!(anchor.verify_fingerprint());
 
-        let dir = std::env::temp_dir().join("coretex_anchor_test");
-        let _ = fs::create_dir_all(&dir);
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "coretex_anchor_test_{}_{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
         let path = dir.join("anchor.json");
         anchor.save(&path).unwrap();
         let loaded = TrustAnchor::load(&path).unwrap();

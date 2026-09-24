@@ -1,0 +1,18 @@
+# Production overrides (config/prod/overrides.toml)
+
+[server]
+address = "0.0.0.0"
+port = 8080
+
+[wal]
+enabled = true
+
+[security]
+# Enable auth in production deployments.
+auth_enabled = true
+
+[logging]
+level = "warn"
+
+[backup]
+# Rely on systemd timer + scripts/backup.sh

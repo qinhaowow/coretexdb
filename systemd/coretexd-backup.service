@@ -1,0 +1,9 @@
+[Unit]
+Description=CoreTexDB backup
+After=coretexd.service
+
+[Service]
+Type=oneshot
+User=coretex
+Group=coretex
+ExecStart=/opt/CoreTexDB-V0.2.1/scripts/backup.sh

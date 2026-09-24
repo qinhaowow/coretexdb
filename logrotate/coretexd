@@ -1,0 +1,21 @@
+/opt/CoreTexDB-V0.2.1/data/logs/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su coretex coretex
+}
+
+/opt/CoreTexDB-V0.2.1/data/logs/audit/*.log {
+    daily
+    rotate 90
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su coretex coretex
+}

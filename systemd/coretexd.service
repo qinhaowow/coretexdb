@@ -1,0 +1,24 @@
+[Unit]
+Description=CoreTexDB database server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coretex
+Group=coretex
+ExecStart=/opt/CoreTexDB-V0.2.1/bin/coretexd --data-dir /opt/CoreTexDB-V0.2.1
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/CoreTexDB-V0.2.1/data
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

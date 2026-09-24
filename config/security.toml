@@ -1,0 +1,22 @@
+# Security (install-root: config/security.toml)
+
+[auth]
+enabled = false
+
+[tls]
+enabled = false
+# cert_path = "config/tls/server.crt"
+# key_path = "config/tls/server.key"
+
+[encryption]
+# AES-256-GCM for .cdb at rest; keys never stored in this file.
+algorithm = "aes-256-gcm"
+
+[audit]
+enabled = true
+path = "data/logs/audit"
+
+[permissions]
+# Expected modes (secure_setup.sh enforces when run as root):
+# bin/lib: 750  config: 640  data: 700  scripts: 750
+enforce = true

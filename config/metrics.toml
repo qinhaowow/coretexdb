@@ -1,0 +1,11 @@
+# Monitoring (install-root: config/metrics.toml)
+
+[metrics]
+enabled = true
+bind = "127.0.0.1:9090"
+path = "/metrics"
+
+[collectors]
+process = true
+wal = true
+storage = true

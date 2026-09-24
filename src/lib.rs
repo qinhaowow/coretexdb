@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 
 pub const DB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// C API: version string for `include/coretexdb.h` consumers.
+/// Pointer remains valid for the lifetime of the process (static).
+#[no_mangle]
+pub extern "C" fn coretexdb_version() -> *const std::os::raw::c_char {
+    static VERSION_C: std::sync::OnceLock<Vec<std::os::raw::c_char>> = std::sync::OnceLock::new();
+    let buf = VERSION_C.get_or_init(|| {
+        let mut v: Vec<std::os::raw::c_char> =
+            DB_VERSION.bytes().map(|b| b as std::os::raw::c_char).collect();
+        v.push(0);
+        v
+    });
+    buf.as_ptr()
+}
+
 pub mod coretex_core; 
 pub mod coretex_storage; 
 pub mod coretex_index; 
@@ -91,7 +105,7 @@ pub use coretex_query::cost_model::{IndexSelector as QueryIndexSelector, CostInp
 pub use coretex_bm25::{BM25Index, BM25Result, HybridQueryEngine, HybridSearchResult, MetadataFilter, FilterCondition}; 
 pub use coretex_api::rest::{start_server, start_server_with_db, ApiConfig};
 pub use coretex_api::graphql::{AppSchema, build_schema}; 
-pub use coretex_cli::run_cli; 
+pub use coretex_cli::{run_cli, run_cli_with_args}; 
 pub use coretex_utils::{
     ClusterManager, ClusterNode, NodeRole, NodeState, Shard,
     cosine_similarity, euclidean_distance, normalize_vector, parse_vector, random_vector,
@@ -444,7 +458,10 @@ impl CoreTexDB {
             self.config.indexes_dir().join("scalar"),
             self.config.backup_full_dir(),
             self.config.backup_incremental_dir(),
+            PathBuf::from(&self.config.backup_dir).join("snapshots"),
             PathBuf::from(&self.config.data_dir).join("store"),
+            PathBuf::from(&self.config.log_dir).join("audit"),
+            PathBuf::from(&self.config.base_dir).join("data").join("versions"),
         ];
         for path in extra {
             if !path.exists() {
@@ -452,6 +469,27 @@ impl CoreTexDB {
             }
         }
 
+        Ok(())
+    }
+
+    /// Atomic create: write to a sibling temp file, fsync, rename over target.
+    /// Does not overwrite an existing target (caller must check `!exists`).
+    fn write_file_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent"))?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        let tmp = parent.join(format!(".{}.{}.tmp", name, std::process::id()));
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(contents.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -473,19 +511,19 @@ impl CoreTexDB {
             let metadata = DatabaseMetadata::default();
             let content = serde_json::to_string_pretty(&metadata)
                 .map_err(CoreTexError::Serialization)?;
-            fs::write(&metadata_path, content)
-                .map_err(CoreTexError::Io)?;
+            Self::write_file_atomic(&metadata_path, &content).map_err(CoreTexError::Io)?;
         }
 
         // Spec: metadata/ must always contain config.toml and auth.json.
+        // Create atomically; never overwrite an existing file.
         let meta_dir = self.config.metadata_dir();
         let config_toml = meta_dir.join("config.toml");
         if !config_toml.exists() {
-            fs::write(&config_toml, "").map_err(CoreTexError::Io)?;
+            Self::write_file_atomic(&config_toml, "").map_err(CoreTexError::Io)?;
         }
         let auth_json = meta_dir.join("auth.json");
         if !auth_json.exists() {
-            fs::write(&auth_json, "{\"users\":{}}").map_err(CoreTexError::Io)?;
+            Self::write_file_atomic(&auth_json, "{\"users\":{}}").map_err(CoreTexError::Io)?;
         }
 
         Ok(())

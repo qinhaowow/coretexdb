@@ -1,0 +1,20 @@
+# Logging (install-root: config/logging.yaml)
+# Consumed by ops tooling; application uses tracing subscribers.
+
+level: info
+format: json
+targets:
+  coretexdb: info
+  hyper: warn
+  tonic: warn
+
+rotation:
+  max_size_mb: 100
+  max_files: 10
+
+# Never log secrets, keys, or raw auth tokens.
+redact:
+  - password
+  - secret
+  - token
+  - private_key
