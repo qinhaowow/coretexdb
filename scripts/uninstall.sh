@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Uninstall: stop service, remove install-root tree (keeps nothing under PREFIX unless -p).
 set -euo pipefail
-PREFIX="${1:-${PREFIX:-/opt/CoreTexDB-V0.2.2}}"
+PREFIX="${1:-${PREFIX:-/opt/CoreTexDB-V0.2.3}}"
 PURGE_DATA=0
 [ "${2:-}" = "-p" ] || [ "${1:-}" = "-p" ] && PURGE_DATA=1
 

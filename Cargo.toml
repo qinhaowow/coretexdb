@@ -1,6 +1,6 @@
 [package]
 name = "coretexdb"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["qinhaowo <qinhaowo@126.com>"]
 description = "CoreTexDB - A multimodal vector database for AI applications, developed with the assistance of the MiMo v2.5 large language model"

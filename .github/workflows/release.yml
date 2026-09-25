@@ -89,7 +89,7 @@ jobs:
       - name: Stage package (Unix)
         if: runner.os != 'Windows'
         run: |
-          STAGE=CoreTexDB-V0.2.2-${{ matrix.target }}
+          STAGE=CoreTexDB-V0.2.3-${{ matrix.target }}
           BD="${{ matrix.bin_dir }}"
           mkdir -p "$STAGE"/{bin,lib,include,config,share,scripts,systemd,logrotate}
           mkdir -p "$STAGE"/data/coretex/{collections,indexes/{vector,scalar},metadata,store}
@@ -118,7 +118,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "CoreTexDB-V0.2.2-${{ matrix.target }}"
+          $stage = "CoreTexDB-V0.2.3-${{ matrix.target }}"
           $bd = "${{ matrix.bin_dir }}"
           $bins = @('coretex','coretexd','coretex-cli','coretex-migrate','coretex-backup','coretex-healthcheck')
           New-Item -ItemType Directory -Path "$stage\bin","$stage\lib","$stage\include","$stage\config","$stage\share","$stage\scripts","$stage\systemd","$stage\logrotate" -Force | Out-Null
@@ -186,7 +186,7 @@ jobs:
           generate_release_notes: true
           files: artifacts/**/*
           body: |
-            CoreTexDB V0.2.2 multi-platform packages (full install-root).
+            CoreTexDB V0.2.3 multi-platform packages (full install-root).
 
             Each archive contains:
             - `bin/` coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck

@@ -1,4 +1,4 @@
-//! CoreTexDB C API (placeholder for V0.2.2 packaging).
+//! CoreTexDB C API (placeholder for V0.2.3 packaging).
 //! Full FFI surface lands with the C bindings module.
 #ifndef CORETEXDB_H
 #define CORETEXDB_H
@@ -9,7 +9,7 @@ extern "C" {
 
 #define CORETEXDB_VERSION_MAJOR 0
 #define CORETEXDB_VERSION_MINOR 2
-#define CORETEXDB_VERSION_PATCH 2
+#define CORETEXDB_VERSION_PATCH 3
 
 const char* coretexdb_version(void);
 

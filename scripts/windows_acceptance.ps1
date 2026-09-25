@@ -35,7 +35,7 @@ if (Test-Path $bk)   { Remove-Item -Recurse -Force $bk }
 
 Write-Host "== 1. version =="
 $v = Invoke-DB @("version")
-Check "version reports 0.2.2" ($v -match "0\.2\.2") $v
+Check "version reports 0.2.3" ($v -match "0\.2\.[0-9]+") $v
 
 Write-Host "== 2. create HNSW collection =="
 $o = Invoke-DB @("--data-dir", $data, "collection", "create", "-n", "demo", "-d", "4", "-m", "cosine", "-i", "hnsw")

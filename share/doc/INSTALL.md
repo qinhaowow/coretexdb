@@ -8,15 +8,15 @@
 ## Install (Linux)
 
 ```bash
-sudo scripts/install.sh /opt/CoreTexDB-V0.2.2
-sudo /opt/CoreTexDB-V0.2.2/scripts/secure_setup.sh /opt/CoreTexDB-V0.2.2
-export PATH=/opt/CoreTexDB-V0.2.2/bin:$PATH
+sudo scripts/install.sh /opt/CoreTexDB-V0.2.3
+sudo /opt/CoreTexDB-V0.2.3/scripts/secure_setup.sh /opt/CoreTexDB-V0.2.3
+export PATH=/opt/CoreTexDB-V0.2.3/bin:$PATH
 ```
 
-## Layout (V0.2.2)
+## Layout (V0.2.3)
 
 ```
-/opt/CoreTexDB-V0.2.2/
+/opt/CoreTexDB-V0.2.3/
   bin/ lib/ include/ config/ share/ scripts/ systemd/ logrotate/
   data/{coretex,wal,backup,logs,temp,versions}
 ```
@@ -26,5 +26,5 @@ See README §1.1 / §10 and RELEASE_NOTES.md for the full tree.
 ## Verify
 
 ```bash
-coretex-healthcheck --data-dir /opt/CoreTexDB-V0.2.2
+coretex-healthcheck --data-dir /opt/CoreTexDB-V0.2.3
 ```

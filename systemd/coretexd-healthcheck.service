@@ -6,4 +6,4 @@ After=coretexd.service
 Type=oneshot
 User=coretex
 Group=coretex
-ExecStart=/opt/CoreTexDB-V0.2.2/scripts/healthcheck.sh
+ExecStart=/opt/CoreTexDB-V0.2.3/scripts/healthcheck.sh

@@ -1,8 +1,8 @@
-# CoreTexDB V0.2.2 Release Notes
+# CoreTexDB V0.2.3 Release Notes
 
 ## Highlights
 
-- Full install-root package for V0.2.2: `bin/`, `lib/`, `include/`, `config/`, `share/`, `scripts/`, `systemd/`, `logrotate/`, and `data/` skeleton.
+- Full install-root package for V0.2.3: `bin/`, `lib/`, `include/`, `config/`, `share/`, `scripts/`, `systemd/`, `logrotate/`, and `data/` skeleton.
 - Multi binaries: `coretex`, `coretexd`, `coretex-cli`, `coretex-migrate`, `coretex-backup`, `coretex-healthcheck`.
 - Shared/static libs when built: `libcoretexdb.so` / `.dylib` / `.a` / `coretexdb.dll`.
 - WAL segment naming `wal-NNNNNN.log`, strict discovery, max+1 rotation, documented lock order.
@@ -11,10 +11,10 @@
 - B-C-D-D `.cdb` encrypt/decrypt/info/keygen CLI.
 - Runtime never creates install-root `bin/` or `include/` (install layout only).
 
-## Install-root layout (V0.2.2)
+## Install-root layout (V0.2.3)
 
 ```
-CoreTexDB-V0.2.2/
+CoreTexDB-V0.2.3/
   bin/          coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
   lib/          libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib
   include/      coretexdb.h
