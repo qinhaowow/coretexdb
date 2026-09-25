@@ -1601,13 +1601,28 @@ where
                 .map_err(|e| format!("Search failed: {}", e))?;
 
             if format == "json" {
-                let json_results: Vec<_> = results.iter().map(|r| {
-                    serde_json::json!({
-                        "id": r.id,
-                        "score": 1.0 - r.distance,
-                        "distance": r.distance,
-                    })
-                }).collect();
+                let json_results = {
+                    let db_guard = db_ref.read().await;
+                    let mut out = Vec::with_capacity(results.len());
+                    for r in &results {
+                        let mut obj = serde_json::json!({
+                            "id": r.id,
+                            "score": 1.0 - r.distance,
+                            "distance": r.distance,
+                        });
+                        // `--with-metadata` must work for JSON too, not only
+                        // for the text renderer.
+                        if with_meta {
+                            if let Ok(Some((_, meta))) =
+                                db_guard.get_vector(&collection, &r.id).await
+                            {
+                                obj["metadata"] = meta;
+                            }
+                        }
+                        out.push(obj);
+                    }
+                    out
+                };
                 println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
             } else {
                 println!("Search results from '{}' (k={}):", collection, k);

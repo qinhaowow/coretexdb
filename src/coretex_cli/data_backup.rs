@@ -181,6 +181,13 @@ pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest
         let current = data_dir.join(dir);
         if current.exists() {
             let keep = safety.join(dir);
+            // `dir` is a path like "data/coretex"; rename() does NOT create
+            // the target's parent, so without this the move always failed
+            // with ENOENT/ERROR_PATH_NOT_FOUND and restore could never run.
+            if let Some(parent) = keep.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+            }
             fs::rename(&current, &keep).map_err(|e| {
                 format!("移开现有 {} 失败: {e}", current.display())
             })?;
@@ -200,4 +207,54 @@ pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest
     }
 
     Ok((manifest, restored))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Regression: restore() used to rename into `.pre-restore-*/data/coretex`
+    /// without creating the parent directory first, so the move always failed
+    /// with ENOENT and `coretex restore` could never run on any platform.
+    #[test]
+    fn create_restore_roundtrip_parks_old_state_and_drops_extra_files() {
+        let dir = TempDir::new().unwrap();
+        let data = dir.path().join("install");
+
+        let coll = data.join("data/coretex/collections/demo");
+        fs::create_dir_all(&coll).unwrap();
+        fs::write(coll.join("v1.json"), "old").unwrap();
+        let wal = data.join("data/wal");
+        fs::create_dir_all(&wal).unwrap();
+        fs::write(wal.join("wal-000001.log"), "w").unwrap();
+
+        let snap = dir.path().join("snap");
+        let manifest = create(&data, &snap).unwrap();
+        assert_eq!(manifest.files.len(), 2, "expected 2 state files");
+
+        // Mutate current state: this extra file must NOT survive the restore.
+        fs::write(coll.join("v2.json"), "born after backup").unwrap();
+
+        let (m2, restored) = restore(&snap, &data).expect("restore must succeed");
+        assert_eq!(restored, 2);
+        assert_eq!(m2.files.len(), 2);
+
+        // Snapshot content is back…
+        assert_eq!(fs::read_to_string(coll.join("v1.json")).unwrap(), "old");
+        // …and the post-backup file is gone (it was parked, not overwritten).
+        assert!(!coll.join("v2.json").exists(), "extra file must not survive restore");
+
+        // Old state was parked under `.pre-restore-<ts>/`.
+        let safety: Vec<_> = fs::read_dir(&data)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".pre-restore-"))
+            .collect();
+        assert_eq!(safety.len(), 1, "expected exactly one .pre-restore dir");
+        assert!(safety[0]
+            .path()
+            .join("data/coretex/collections/demo/v2.json")
+            .exists());
+    }
 }
