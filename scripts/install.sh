@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install CoreTexDB into an install root (PREFIX).
-# Usage: scripts/install.sh [PREFIX]   (default: /opt/CoreTexDB-V0.2.3)
+# Usage: scripts/install.sh [PREFIX]   (default: /opt/CoreTexDB-V0.2.4)
 set -euo pipefail
 
-PREFIX="${1:-/opt/CoreTexDB-V0.2.3}"
+PREFIX="${1:-/opt/CoreTexDB-V0.2.4}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.2.3)"
+VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.2.4)"
 BIN_SRC="${BIN_SRC:-$ROOT/target/release}"
 
 echo "Installing CoreTexDB $VERSION → $PREFIX"

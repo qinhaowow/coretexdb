@@ -19,7 +19,7 @@ scripts/restore.sh data/backup/full <name>
 ```bash
 scripts/healthcheck.sh
 # or
-coretex doctor --data-dir /opt/CoreTexDB-V0.2.3
+coretex doctor --data-dir /opt/CoreTexDB-V0.2.4
 ```
 
 ## WAL

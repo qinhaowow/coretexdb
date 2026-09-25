@@ -6,4 +6,4 @@ After=coretexd.service
 Type=oneshot
 User=coretex
 Group=coretex
-ExecStart=/opt/CoreTexDB-V0.2.3/scripts/backup.sh
+ExecStart=/opt/CoreTexDB-V0.2.4/scripts/backup.sh

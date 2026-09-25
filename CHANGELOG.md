@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+后续变更在此累积，发布时下移为新的版本段。
+
+---
+
+## [0.2.4] - 2026-09-25
+
+Tag: `v0.2.4`
+
 ### Added
 
 - **PQ（乘积量化）索引真正可用**：`pq` 之前存在但每条路径都是坏的——
@@ -78,7 +86,7 @@ Tag: `v0.2.3` → `c14e486`
 
 > 本版本仍为**多二进制**发行（`coretex`、`coretexd`、`coretex-cli`、
 > `coretex-migrate`、`coretex-backup`、`coretex-healthcheck`）；
-> 单二进制分发见 [Unreleased]。
+> 单二进制分发见 [0.2.4]。
 
 ---
 

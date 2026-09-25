@@ -1,4 +1,4 @@
-# CoreTexDB V0.2.3 — 多模态向量数据库 · 操作手册
+# CoreTexDB V0.2.4 — 多模态向量数据库 · 操作手册
 
 [![Build](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml/badge.svg)](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
@@ -52,10 +52,10 @@ B-C-D-D (`.cdb`) encryption, and REST / GraphQL / gRPC / WebSocket interfaces.
 
 ### 1.1 获取可执行文件
 
-发布包为完整安装根（解压即用，或经 `scripts/install.sh` 装到 `/opt/CoreTexDB-V0.2.3`）：
+发布包为完整安装根（解压即用，或经 `scripts/install.sh` 装到 `/opt/CoreTexDB-V0.2.4`）：
 
 ```
-CoreTexDB-V0.2.3/                      # 程序安装根目录
+CoreTexDB-V0.2.4/                      # 程序安装根目录
 ├── bin/                               # 可执行文件
 │   ├── coretex                        # 唯一主程序（Windows: coretex.exe）
 │   └──                                #   子命令 server·backup·doctor·search...
@@ -653,10 +653,10 @@ coretex crypto decrypt secret.cdb -k 0000000000000000000000000000000000000000000
 
 ## 10. 数据目录结构
 
-`--data-dir` 指向**安装根目录**（如 `CoreTexDB-V0.2.3/`），数据统一落在其下的 `data/`：
+`--data-dir` 指向**安装根目录**（如 `CoreTexDB-V0.2.4/`），数据统一落在其下的 `data/`：
 
 ```
-CoreTexDB-V0.2.3/                      # 程序安装根目录（--data-dir）
+CoreTexDB-V0.2.4/                      # 程序安装根目录（--data-dir）
 ├── bin/                               # 可执行文件
 │   └── coretex / coretex.exe          # 唯一主程序（server/backup/doctor/...）
 │
@@ -807,7 +807,7 @@ netstat -ano | findstr :50051
 
 ## 开发信息
 
-- 版本：V0.2.3
+- 版本：V0.2.4
 - 开发者：qinhaowo@126.com
 - 辅助工具：MiMo v2.5 大语言模型
 - 测试状态：485 通过 / 0 失败（`cargo test`）

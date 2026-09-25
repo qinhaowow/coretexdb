@@ -3,7 +3,7 @@
 # Usage: sudo scripts/secure_setup.sh [PREFIX]
 set -euo pipefail
 
-PREFIX="${1:-/opt/CoreTexDB-V0.2.3}"
+PREFIX="${1:-/opt/CoreTexDB-V0.2.4}"
 [ -d "$PREFIX" ] || { echo "missing prefix: $PREFIX" >&2; exit 1; }
 
 # Groups/users are best-effort; fall back to current user if missing.
