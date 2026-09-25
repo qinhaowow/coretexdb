@@ -1,5 +1,11 @@
 # CoreTexDB V0.2.3 Release Notes
 
+> **注意 / Note**：本文描述的是 `v0.2.3` tag 时的**多二进制**发行形态
+> （`coretex`、`coretexd`、`coretex-cli`、`coretex-migrate`、`coretex-backup`、
+> `coretex-healthcheck`）。**此后仓库已改为单二进制分发**：只有 `coretex` 一个
+> 可执行文件，按 `argv[0]`/子命令承担全部角色，5 个壳 `[[bin]]` 已删除。
+> 当前状态见 [`CHANGELOG.md`](CHANGELOG.md) 的 [Unreleased]，用法见 [`README.md`](README.md)。
+
 ## Highlights
 
 - Full install-root package for V0.2.3: `bin/`, `lib/`, `include/`, `config/`, `share/`, `scripts/`, `systemd/`, `logrotate/`, and `data/` skeleton.

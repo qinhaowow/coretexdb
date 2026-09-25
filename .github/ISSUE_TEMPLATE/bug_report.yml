@@ -1,0 +1,75 @@
+name: Bug report
+description: 报告一个可复现的缺陷 / Report a reproducible defect
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢报告！**安全问题请勿在此提交**，见 [SECURITY.md](../../SECURITY.md)。
+        Thanks! For security issues use the private channel in SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么 / What happened
+      description: 实际行为 vs 期望行为，以及你看到的错误信息。
+      placeholder: "执行 `coretex search ...` 时返回空结果，但集合里有 20 条数据。"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 能让别人照着跑出来的最小步骤与命令。
+      render: bash
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      placeholder: "0.2.3 (`coretex --version`) 或 commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境 / Environment
+      description: OS、CPU 架构、安装方式（源码/包/Docker）、features。
+      placeholder: |
+        - OS: Ubuntu 24.04 (WSL2), x86_64
+        - 安装: `cargo install --path . --features full`
+        - features: default
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及模块 / Area
+      options:
+        - 存储 / storage
+        - 数据与恢复 / data (WAL, restore, TTL)
+        - 索引 / index (hnsw, ivf, pq, persist)
+        - REST / GraphQL / WebSocket
+        - gRPC
+        - CLI
+        - 备份与恢复 / backup
+        - 安装与打包 / packaging
+        - 文档 / docs
+        - 其他 / other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 报错 / Logs
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认 / Checklist
+      options:
+        - label: 我已搜索过现有 issue，没有重复
+          required: true
+        - label: 这不是安全漏洞（否则我会走 SECURITY.md 的私下渠道）
+          required: true

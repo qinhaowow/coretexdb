@@ -4,7 +4,7 @@ on:
   push:
     branches: [ master, release/* ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, release/* ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -178,3 +178,71 @@ jobs:
       run: |
         pip install -e .
         python -c "import coretexdb; print('Package installed successfully')"
+
+  examples:
+    # examples/ 是对外可运行的示例，必须一直能编译、能跑通，否则文档就是假的。
+    name: Examples
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
+        echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+
+    - name: Build examples
+      run: cargo build --examples
+
+    - name: Run examples
+      run: |
+        cargo run -q --example quickstart
+        cargo run -q --example filter_search
+        cargo run -q --example persistence
+
+    - name: Build rustdoc
+      run: cargo doc --no-deps
+
+  lint:
+    # 只 gate「deny 级」clippy lint（恒真比较、恒不循环的死循环、坏的 rustdoc 链接等）
+    # 与 rustdoc 能否构建；普通 warning 暂不卡，见 docs/roadmap.md D5。
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
+        echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+
+    - name: clippy (deny-level only)
+      run: cargo clippy --all-targets
+
+    - name: rustdoc
+      run: cargo doc --no-deps
+

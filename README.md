@@ -1,7 +1,34 @@
 # CoreTexDB V0.2.3 — 多模态向量数据库 · 操作手册
 
+[![Build](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml/badge.svg)](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-blue.svg)](https://www.rust-lang.org/)
+![Tests](https://img.shields.io/badge/tests-485%20passed%20%2F%200%20failed-brightgreen)
+
 > 开发者: qinhaowo@126.com
 > 辅助工具: MiMo v2.5 大语言模型
+
+---
+
+**CoreTexDB** is a multimodal vector database written in Rust. It ships as a
+**single `coretex` binary** and provides ANN indexes (`brute_force`, `hnsw`,
+`ivf`, `pq`), WAL-backed durability with last-write-wins recovery, index
+persistence with checksum-verified load-or-rebuild, TTL, metadata filtering,
+B-C-D-D (`.cdb`) encryption, and REST / GraphQL / gRPC / WebSocket interfaces.
+
+源码仓库：[GitHub](https://github.com/qinhaowow/coretexdb) ·
+[Gitee 镜像](https://gitee.com/HaoqinOW/coretexdb)
+
+### 快速入口 / Quick links
+
+| 想做什么 | 去哪里 |
+| --- | --- |
+| 30 秒跑起来 | [`cargo run --example quickstart`](examples/quickstart.rs) |
+| 过滤搜索、持久化示例 | [`examples/`](examples/) |
+| 了解分层、数据流与锁顺序 | [`docs/architecture.md`](docs/architecture.md) |
+| 参与开发 / 找活干 | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`docs/roadmap.md`](docs/roadmap.md) |
+| 变更历史 | [`CHANGELOG.md`](CHANGELOG.md) |
+| 报告安全漏洞（勿开 issue） | [`SECURITY.md`](SECURITY.md) |
 
 ---
 
@@ -783,4 +810,10 @@ netstat -ano | findstr :50051
 - 版本：V0.2.3
 - 开发者：qinhaowo@126.com
 - 辅助工具：MiMo v2.5 大语言模型
-- 测试状态：456 通过 / 0 失败
+- 测试状态：485 通过 / 0 失败（`cargo test`）
+- 许可证：[AGPL-3.0](LICENSE)
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md) · 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 架构与设计：[docs/architecture.md](docs/architecture.md) · 路线图：[docs/roadmap.md](docs/roadmap.md)
+- 变更日志：[CHANGELOG.md](CHANGELOG.md) · 发布说明：[RELEASE_NOTES.md](RELEASE_NOTES.md)
+
+> 本会话记忆文件 `AGENTS.md` / `CLAUDE.md` 供自动化工具使用，不是面向贡献者的文档。

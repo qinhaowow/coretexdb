@@ -6,8 +6,8 @@ authors = ["qinhaowo <qinhaowo@126.com>"]
 description = "CoreTexDB - A multimodal vector database for AI applications, developed with the assistance of the MiMo v2.5 large language model"
 license = "AGPL-3.0"
 readme = "README.md"
-homepage = "https://github.com/cerebros/CoretexDB"
-repository = "https://github.com/cerebros/CoretexDB"
+homepage = "https://github.com/qinhaowow/coretexdb"
+repository = "https://github.com/qinhaowow/coretexdb"
 keywords = ["vector-database", "ai", "embedding", "similarity-search"]
 categories = ["database", "science", "machine-learning"]
 

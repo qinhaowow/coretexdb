@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞 / Security vulnerability
+    url: https://github.com/qinhaowow/coretexdb/security/advisories/new
+    about: 请勿公开提交 issue，走私下报告渠道（见 SECURITY.md）。
+  - name: 使用问题 / Usage questions
+    url: https://github.com/qinhaowow/coretexdb/blob/master/README.md#11-常见问题排查
+    about: 安装、CLI、API 用法等提问前请先读 FAQ；仍未解决再开 issue。
+  - name: 中文操作手册 / Chinese operator manual
+    url: https://github.com/qinhaowow/coretexdb/blob/master/README.md
+    about: 安装、服务器模式、CLI、REST/GraphQL/gRPC、SQL 的完整说明。
