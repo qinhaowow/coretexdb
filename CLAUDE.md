@@ -6,22 +6,24 @@
 
 | 项 | 值 |
 |----|-----|
-| 版本 | **0.2.3**（`VERSION` / `Cargo.toml` / `Cargo.lock` 一致） |
-| 工作分支 | `release/v0.2.1-base` |
-| 最新 commit | `a52f20e` — 修复 HNSW 锁序/回滚测试；其后「索引持久化接线」待提交 |
-| tag | `v0.2.3` → `c14e486`（已在远端，release.yml `v*` 触发）；旧 `v0.2.2` → `e12b6f6` 保留 |
-| 工作区 | 已推送至 `a52f20e`；本地有「索引持久化接线」未提交改动（等测试绿后提交） |
+| 版本 | **0.2.4**（`VERSION` / `Cargo.toml` / `Cargo.lock` / `RELEASE_NOTES.md` 一致） |
+| 工作分支 | `release/v0.2.1-base`（默认分支仍 `master`） |
+| 最新 commit | `f0032b1` — `chore(release): bump version to V0.2.4`（已推送）；其后 A3 过滤搜索待提交 |
+| tag | `v0.2.4` → `53292cd`（指向 `f0032b1`，已推远端，release.yml `v*` 触发）；历史 `v0.2.3`→`c14e486`、`v0.2.2`→`e12b6f6` |
+| 工作区 | 推送至 `f0032b1`；本地 A3 改动（`src/coretex_data/mod.rs` + `tests/filtered_search.rs` + 本文件）待提交 |
 
 ### 近期完成（2026-09-25，均已推送）
-1. 核心引擎 P0/P1 修复 12 项：WAL fsync、sync_writes→fsync、写路径不吞错、WAL 恢复 `collection:id`、事务 active 泄漏、HNSW 锁序、purge_expired、update 补 storage、restore.sh 参数、gRPC include 生成码等（commit `4b508fc`）
-2. Windows 验收发现并修复 2 bug（commit `7c68885`）：restore 前未建父目录致全平台从未工作；`search --with-metadata` 在 `--format json` 被忽略
-3. 版本全线 0.2.2 → 0.2.3（18 文件，commit `c14e486`），tag `v0.2.3` 已打
-4. **单文件分发**：`src/main.rs` argv[0] 分发——coretex.exe 改名/硬链接即变 coretexd/backup/healthcheck 角色（commit `836969d`）
-5. **单 bin 化**：Cargo.toml 删 5 个壳 `[[bin]]`、删 `src/bin/*.rs`、scripts/systemd/release.yml/README 全改为 `coretex server/backup/doctor` 用法；编译只产一个 `coretex.exe`（commit `72442bf`）
-6. **4 项审查问题修复**：HNSW remove/clear/save_to_file 锁序补齐（vectors→entry_point→graph）+ remove 提升最高层节点为 entry point + search_layer 容忍孤儿邻居；`recover_from_wal` 改 last-write-wins 聚合；`purge_expired` 按已知集合名最长前缀解析 key；`coretex-backup` 只看 argv[1]；restore 失败回滚已移开目录（commit `ecb0ccf`，测试修正 `a52f20e`）
-7. **索引持久化接线（本次，待提交）**：`VectorIndex::persist` + `IndexManager::load_index`/`persist_index`；原子写（temp+fsync+rename+目录 fsync）+ 内容校验和（`vectors_checksum`）防陈旧索引；`DataManager::restore_from_storage` 两阶段（填内存→命中校验和则加载索引，否则重建）；`CoreTexDB::save_indexes`；CLI `coretex index save|list`；只支持 hnsw/ivf/pq（brute_force/scalar 无需落盘）
+1. **PQ 真量化索引**（`d3f78c7`）：clone_box 共享 Arc、`layout_for` 自适应维度、惰性 `maybe_train`、码本 `decode`、`IndexType::PQ` 接线
+2. **开源项目整备**（`1881474` fix + `a2f19bb` chore(oss)）：
+   - 修复 5 处未编译/未检查缺陷：`.gitignore` 根锚定 `/coretex_data/`、`benches/vector_index.rs` 从未编译、Python 包名/CLI 用法过时、5 个 deny 级 clippy、坏 doc 链接
+   - 治理文档：`CONTRIBUTING.md` `SECURITY.md` `CODE_OF_CONDUCT.md` `CHANGELOG.md` `.editorconfig` `rustfmt.toml` issue 表单×3 PR 模板
+   - CI 新增 `lint`（clippy deny 级 + rustdoc）与 `examples`（编译+实跑）job，PR 触发补 `release/*`
+   - `examples/{quickstart,filter_search,persistence}.rs` 本地实跑验证；`Cargo.toml` repository 改 `github.com/qinhaowow/coretexdb`
+3. **V0.2.4 发布**（`f0032b1` + tag `v0.2.4`）：17 文件 35 处版本号、`RELEASE_NOTES.md` 重写、`CHANGELOG.md` `[0.2.4] - 2026-09-25`、`SECURITY.md` 版本表
+4. **A3 过滤搜索性能（本次，待提交）**：`search_filtered` 三路径——候选 ≤ `max(256, k*16)` 或无索引走精确扫描；宽过滤让 ANN 索引过采样提案再过滤+同一距离函数重算；存活提案 < k 回退精确扫描（**过滤永远不能让查询变短**）。锁序 data.read → 索引内部，候选借引用不 clone。测试 `tests/filtered_search.rs` 6 例（含"提案全被拒绝必须回退拿满 k"回归）
+5. （0.2.3 时代）索引持久化接线：`VectorIndex::persist` + `IndexManager::load_index`、原子写+校验和防陈旧索引、`restore_from_storage` 两阶段、CLI `coretex index save|list`
 - Windows 验收：`E:\Ubuntn24042\wintest` 脚本 `windows_acceptance.ps1 -Root <dir>`，**19/19 全绿**（0.2.3 单 exe 构建）
-- Linux 测试历史基线：432 unit + 26 + 11 + 3 index_persistence 全绿
+- Linux 测试基线：**491** 全绿（485 + A3 新增 6）；clippy `--all-targets` 0 error；rustdoc 0 warning
 
 ### 之前完成（V0.2.2 发布线）
 1. `release.yml`：多 bin + `--target` 正确产物路径 + sha256 + GitHub Release
@@ -47,12 +49,12 @@
 
 ## 架构速查
 
-### 安装根（V0.2.2）
+### 安装根（V0.2.4）
 ```
-CoreTexDB-V0.2.2/
-  bin/     coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
-  lib/     libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib, coretexdb.h → include
-  include/ coretexdb.h
+CoreTexDB-V0.2.4/
+  bin/     coretex（单二进制，argv[0] 分发：改名/硬链接即变 coretexd|backup|healthcheck）
+  lib/     libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib（crate-type: rlib+cdylib+staticlib）
+  include/ coretexdb.h（**占位**，真实 FFI 在路线图 B1）
   config/  coretex.toml, logging.yaml, backup/security/metrics + dev|staging|prod
   share/   doc/, examples/
   scripts/ start/stop/install/upgrade/backup/...
@@ -61,8 +63,7 @@ CoreTexDB-V0.2.2/
 ```
 
 ### Cargo bins
-`coretex`, `coretexd`, `coretex-cli`, `coretex-migrate`, `coretex-backup`, `coretex-healthcheck`  
-crate-type: `rlib, cdylib, staticlib`  
+单 `[[bin]] coretex`（`src/main.rs` 按 argv[0] 分发子命令：`server/backup/doctor/...`）  
 默认 features: `tokio, serde, compression, metrics`（`full` 含 rocksdb/onnx 等，CI 用默认）
 
 ### 版本号来源
@@ -78,12 +79,12 @@ crate-type: `rlib, cdylib, staticlib`
 
 ## 下次可能任务
 
-- [ ] **提交本轮核心引擎修复**（等用户明确说 commit/push；注意 `?? CLAUDE.md AGENTS.md`）
-- [ ] 确认 Actions 是否 green / 修 release 失败（需用户贴日志或看网页）
-- [ ] 是否把分支改名 `release/v0.2.2`（现仍叫 `v0.2.1-base`）
-- [ ] 真实 `coretexdb.h` FFI（当前是 placeholder）
-- [ ] 遗留 P2：`insert_vectors` 持 `data.write()` 跨 storage IO（锁内 IO）；事务 abort 无 undo 回滚；`FileStorage` TTL 是否持久化待查
-- [ ] 用户若说「推送」：再 commit/push/tag，确认无 `??` 临时文件
+- [ ] **A3 提交推送**（等全量测试绿 → `bash /home/qh/commit_a3.sh` → SSH443 push）；roadmap 登记 A3 完成 → **阶段 A 收口**
+- [ ] 阶段 B：完整 C FFI（`coretexdb.h` + cbindgen + C 示例 + 测试）、hybrid/BM25/rerank 接入 search 与 CLI/REST
+- [ ] 确认 Actions 是否 green（tag `v0.2.4` 触发 release.yml；GitHub HTTPS 被墙，需用户看网页）
+- [ ] 是否把分支改名 `release/v0.2.4`（现仍叫 `v0.2.1-base`）
+- [ ] 遗留：约 100 个 clippy warning（D5）；`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；Python 无 `pyproject.toml`；Python 类名 `CortexDB*`→`CoreTexDB*`（B7，破坏性）
+- [ ] 系统级能力空白：复制/分片/Pub-Sub/快照
 
 ## Git 身份
 

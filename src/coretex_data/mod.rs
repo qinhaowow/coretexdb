@@ -44,6 +44,17 @@ fn index_name_for(collection: &str) -> String {
     format!("{}_index", collection)
 }
 
+/// A filtered query only asks the ANN index to propose candidates once the
+/// filter matches at least this many vectors. Below it an exact scan over the
+/// matches is cheaper (and always exact); above it the scan would cost
+/// O(n*d) while the index can propose a bounded number of vectors to rank.
+const FILTERED_ANN_MIN_CANDIDATES: usize = 256;
+
+/// How many proposals to ask the index for, relative to `k`. A selective
+/// filter rejects proposals, so the index is over-sampled; if fewer than `k`
+/// proposals survive, the exact scan takes over.
+const FILTERED_ANN_OVERSAMPLE: usize = 16;
+
 /// Stable, filesystem-safe index file name for a collection. A short hash of
 /// the original name is appended so distinct collections can never collide
 /// (e.g. `a/b` and `a_b` both sanitise to `a_b`).
@@ -903,13 +914,14 @@ impl DataManager {
     ) -> Result<Vec<SearchResult>> {
         let schema = self.get_collection(collection).await?;
 
-        // A filtered query is answered by an exact scan. Asking the index for
-        // only its top `k` candidates and then filtering would return fewer
-        // than `k` matches even when more exist, because a selective filter can
-        // reject every candidate the index returned.
+        // A selective filter must be applied before ranking, otherwise the
+        // index's top `k` can all be rejected and a query comes back short even
+        // though matches exist. `search_filtered` keeps that guarantee while
+        // still letting the index do the work when the filter matches most of
+        // the collection (where an exact scan would cost O(n*d)).
         if let Some(filter) = filter {
             return self
-                .search_scan(collection, &query, k, Some(&filter), &schema.distance_metric)
+                .search_filtered(collection, &query, k, &filter, &schema.distance_metric)
                 .await;
         }
 
@@ -959,6 +971,125 @@ impl DataManager {
         });
         results.truncate(k);
         Ok(results)
+    }
+
+    /// Filtered k-NN: preselect on metadata, then either rank the matches
+    /// exactly or let the ANN index propose them.
+    ///
+    /// Correctness rule: **a filter may never be the reason a query comes back
+    /// short.** The filter is evaluated before any distance is computed, and
+    /// whenever fewer than `k` index proposals survive it, an exact scan over
+    /// the matches takes over.
+    ///
+    /// Cost: one pass over the map for the metadata test (unavoidable without
+    /// an inverted index), then distances for at most `min(|matches|, proposals)`
+    /// vectors instead of all `n` when the filter matches most of the
+    /// collection.
+    async fn search_filtered(
+        &self,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+        filter: &serde_json::Value,
+        metric: &DistanceMetric,
+    ) -> Result<Vec<SearchResult>> {
+        let proposals =
+            FILTERED_ANN_MIN_CANDIDATES.max(k.saturating_mul(FILTERED_ANN_OVERSAMPLE));
+
+        // Take the index handle *before* taking the data read lock, so the
+        // index manager's lock is never taken while holding data (lock order:
+        // data.read -> index internals).
+        let index = match self.index_manager.get_index(&index_name_for(collection)).await {
+            Ok(Some(index)) => Some(index),
+            _ => None,
+        };
+
+        let data = self.data.read().await;
+        let collection_data = data
+            .get(collection)
+            .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
+
+        // One pass: decide membership and remember the matching vectors. No
+        // distance is computed yet, because the cheap path may not need them.
+        let matched: Vec<(&String, &Vec<f32>)> = collection_data
+            .iter()
+            .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
+            .map(|(id, record)| (id, &record.vector))
+            .collect();
+
+        let index = match index {
+            Some(index) if matched.len() > proposals => index,
+            // Few candidates (or no index at all): an exact scan over the
+            // matches is both cheaper and exact.
+            _ => return Ok(Self::rank_exact(matched, query, k, metric)),
+        };
+
+        // Wide filter: ask the index to propose candidates. The data read lock
+        // is held across this call on purpose; nothing in the index path
+        // acquires the data lock, so it cannot deadlock and it keeps the
+        // candidate references valid.
+        let raw = match index.search(query, proposals).await {
+            Ok(raw) => raw,
+            // An index that cannot answer must not change the result.
+            Err(_) => return Ok(Self::rank_exact(matched, query, k, metric)),
+        };
+
+        let members: std::collections::HashMap<&str, &Vec<f32>> = matched
+            .iter()
+            .map(|(id, vector)| (id.as_str(), *vector))
+            .collect();
+
+        let mut hits: Vec<SearchResult> = raw
+            .into_iter()
+            .filter_map(|hit| {
+                // Keep only proposals the filter accepts, and recompute their
+                // distance so proposed and scanned results are ranked by the
+                // very same function.
+                let vector = members.get(hit.id.as_str()).copied()?;
+                Some(SearchResult {
+                    distance: Self::distance(metric, query, vector),
+                    id: hit.id,
+                })
+            })
+            .collect();
+
+        if hits.len() >= k {
+            hits.sort_by(|a, b| {
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            hits.truncate(k);
+            return Ok(hits);
+        }
+
+        // The proposals were mostly rejected by the filter: rank the matches
+        // exactly so the caller still gets `k` results whenever `k` exist.
+        Ok(Self::rank_exact(matched, query, k, metric))
+    }
+
+    /// Exact ranking of a preselected candidate set: a distance is computed
+    /// only for the candidates, then the closest `k` are returned.
+    fn rank_exact(
+        candidates: Vec<(&String, &Vec<f32>)>,
+        query: &[f32],
+        k: usize,
+        metric: &DistanceMetric,
+    ) -> Vec<SearchResult> {
+        let mut results: Vec<SearchResult> = candidates
+            .into_iter()
+            .map(|(id, vector)| SearchResult {
+                id: id.clone(),
+                distance: Self::distance(metric, query, vector),
+            })
+            .collect();
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(k);
+        results
     }
 
     /// Distance between two vectors under `metric`. Lower is always better, so
