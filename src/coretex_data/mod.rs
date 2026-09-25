@@ -44,6 +44,27 @@ fn index_name_for(collection: &str) -> String {
     format!("{}_index", collection)
 }
 
+/// Stable, filesystem-safe index file name for a collection. A short hash of
+/// the original name is appended so distinct collections can never collide
+/// (e.g. `a/b` and `a_b` both sanitise to `a_b`).
+fn index_file_name(collection: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    collection.hash(&mut hasher);
+    let safe: String = collection
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    format!("{}-{:016x}.json", safe, hasher.finish())
+}
+
 /// The default index is exact, so out-of-the-box results are always correct.
 /// The approximate indexes (`hnsw`, `ivf`) must be requested explicitly, and
 /// are documented as approximate.
@@ -88,6 +109,9 @@ pub struct DataManager {
     transaction_manager: Arc<TransactionManager>,
     lakehouse: Option<Arc<VectorLakehouse>>,
     wal: OnceLock<Arc<WriteAheadLog>>,
+    /// Directory holding per-collection index files (`<data>/indexes/vector`).
+    /// `None` disables index persistence (tests, memory-only configs).
+    indexes_dir: Option<std::path::PathBuf>,
 }
 
 impl DataManager {
@@ -104,6 +128,7 @@ impl DataManager {
             transaction_manager: Arc::new(TransactionManager::new()),
             lakehouse: None,
             wal: OnceLock::new(),
+            indexes_dir: None,
         }
     }
 
@@ -121,6 +146,7 @@ impl DataManager {
             transaction_manager,
             lakehouse: None,
             wal: OnceLock::new(),
+            indexes_dir: None,
         }
     }
 
@@ -139,6 +165,7 @@ impl DataManager {
             transaction_manager: Arc::new(TransactionManager::new()),
             lakehouse: None,
             wal: OnceLock::new(),
+            indexes_dir: None,
         }
     }
 
@@ -159,6 +186,7 @@ impl DataManager {
             transaction_manager,
             lakehouse,
             wal: OnceLock::new(),
+            indexes_dir: None,
         }
     }
 
@@ -176,6 +204,14 @@ impl DataManager {
     /// to the WAL before being applied to the storage engine.
     pub fn with_wal(self, wal: Arc<WriteAheadLog>) -> Self {
         let _ = self.wal.set(wal);
+        self
+    }
+
+    /// Set where persisted index files are read/written. Enables load-on-init
+    /// and `save_indexes`, letting an expensive ANN index survive a restart
+    /// instead of being rebuilt from storage every time.
+    pub fn with_indexes_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.indexes_dir = Some(dir);
         self
     }
 
@@ -427,7 +463,8 @@ impl DataManager {
             storage.list().await?
         };
 
-        // Index name and in-memory map for each collection, resolved once.
+        // Phase 1: rebuild the in-memory map from the durable log. The index is
+        // deliberately NOT touched here; phase 2 decides load-vs-rebuild.
         let mut restored = 0usize;
         for key in keys {
             let Some(schema) = schemas
@@ -452,18 +489,93 @@ impl DataManager {
                 continue;
             };
 
-            let index_name = index_name_for(collection);
-            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-                let _ = index.add(id, &vector).await;
-            }
-
             let mut data = self.data.write().await;
             if let Some(collection_data) = data.get_mut(collection) {
                 collection_data.insert(id.to_string(), VectorRecord { vector, metadata });
                 restored += 1;
             }
         }
+
+        // Phase 2: for each collection, install a persisted index whose checksum
+        // matches the data just loaded; otherwise rebuild it from the map. An
+        // index file that is stale (data changed since it was written) fails the
+        // checksum and is transparently ignored.
+        for schema in schemas {
+            let collection = schema.name.as_str();
+            let pairs: Vec<(String, Vec<f32>)> = {
+                let data = self.data.read().await;
+                match data.get(collection) {
+                    Some(collection_data) => collection_data
+                        .iter()
+                        .map(|(id, record)| (id.clone(), record.vector.clone()))
+                        .collect(),
+                    None => continue,
+                }
+            };
+
+            let index_type = schema
+                .indexes
+                .first()
+                .map(|i| index_type_name(&i.index_type))
+                .unwrap_or(DEFAULT_INDEX_TYPE);
+            let metric = metric_name(&schema.distance_metric);
+            let index_name = index_name_for(collection);
+
+            if let Some(ref dir) = self.indexes_dir {
+                let path = dir.join(index_file_name(collection));
+                let checksum = crate::coretex_index::vectors_checksum(&pairs);
+                if self
+                    .index_manager
+                    .load_index(&index_name, index_type, metric, &path, &checksum)
+                    .await?
+                {
+                    continue;
+                }
+            }
+
+            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                for (id, vector) in &pairs {
+                    let _ = index.add(id, vector).await;
+                }
+            }
+        }
+
         Ok(restored)
+    }
+
+    /// Persist every collection's index into `indexes_dir`. Returns how many
+    /// index files were written; index types without on-disk support
+    /// (`brute_force`, `scalar`) are skipped.
+    pub async fn save_indexes(&self) -> Result<usize> {
+        let Some(ref dir) = self.indexes_dir else {
+            return Ok(0);
+        };
+
+        let mut saved = 0usize;
+        for collection in self.get_collection_names().await {
+            let pairs: Vec<(String, Vec<f32>)> = {
+                let data = self.data.read().await;
+                match data.get(&collection) {
+                    Some(collection_data) => collection_data
+                        .iter()
+                        .map(|(id, record)| (id.clone(), record.vector.clone()))
+                        .collect(),
+                    None => continue,
+                }
+            };
+
+            let checksum = crate::coretex_index::vectors_checksum(&pairs);
+            let index_name = index_name_for(&collection);
+            let path = dir.join(index_file_name(&collection));
+            if self
+                .index_manager
+                .persist_index(&index_name, &path, &checksum)
+                .await?
+            {
+                saved += 1;
+            }
+        }
+        Ok(saved)
     }
 
     /// Create a collection backed by the default index, which is exact.
@@ -1174,31 +1286,22 @@ impl DataManager {
     }
 
     pub async fn purge_expired(&self) -> Result<usize> {
-        // Snapshot keys before and after the storage purge so entries that
-        // actually expired can be removed from the in-memory map and index
-        // (previously a no-op retain that left ghost vectors).
-        let before = {
+        // Ask storage which keys have elapsed *before* purging — afterwards the
+        // TTL bookkeeping is gone. `storage.list()` cannot be used for this: it
+        // already hides expired keys, so a before/after diff detects nothing and
+        // the in-memory map and index kept ghost vectors.
+        let expired = {
             let storage = self.storage.read().await;
-            storage.list().await?
+            storage.expired_keys().await?
         };
+
         let purged = {
             let storage = self.storage.read().await;
             storage.purge_expired().await
                 .map_err(|e| CoreTexError::StorageError(e.to_string()))?
         };
-        let after = {
-            let storage = self.storage.read().await;
-            storage.list().await?
-        };
 
-        let after_set: std::collections::HashSet<&str> =
-            after.iter().map(|s| s.as_str()).collect();
-        let removed_keys: Vec<&String> = before
-            .iter()
-            .filter(|k| !after_set.contains(k.as_str()))
-            .collect();
-
-        if !removed_keys.is_empty() {
+        if !expired.is_empty() {
             // Resolve `collection:id` against the *known* collection names
             // rather than splitting on the first ':' — ids may legitimately
             // contain ':' (e.g. "ns:user:1"), which would pick the wrong
@@ -1206,7 +1309,7 @@ impl DataManager {
             let known: Vec<String> = self.collections.read().await.keys().cloned().collect();
 
             let mut data = self.data.write().await;
-            for storage_key in removed_keys {
+            for storage_key in &expired {
                 let Some((collection, id)) = Self::split_storage_key(storage_key, &known) else {
                     log::warn!("purge_expired: cannot resolve storage key {}", storage_key);
                     continue;

@@ -183,7 +183,7 @@ pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest
     // 记录每一步已完成的 "移开" 操作，失败时按相反顺序还原。
     let mut parked: Vec<(PathBuf, PathBuf)> = Vec::new();
 
-    let mut rollback = |parked: &mut Vec<(PathBuf, PathBuf)>, safety: &Path| {
+    let rollback = |parked: &mut Vec<(PathBuf, PathBuf)>, safety: &Path| {
         for (current, keep) in parked.drain(..).rev() {
             if keep.exists() {
                 // A partial restore may have recreated `current`; clear it

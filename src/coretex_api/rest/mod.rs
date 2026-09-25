@@ -287,11 +287,16 @@ pub async fn start_server_with_db(
         .route("/api/collections/:name/vectors/upsert", post(upsert_vectors))
         .route("/api/collections/:name/vectors/clear", delete(clear_collection))
         .route("/api/collections/:name/vectors/:id", get(get_vector))
+        .route(
+            "/api/collections/:name/vectors/:id/ttl",
+            put(set_vector_ttl).delete(remove_vector_ttl),
+        )
         .route("/api/collections/:name/vectors", delete(delete_vectors))
         .route("/api/collections/:name/rename", put(rename_collection))
         .route("/api/collections/:name/search", post(search))
         .route("/api/collections/:name/batch-search", post(batch_search))
         .route("/api/collections/:name/count", get(get_vectors_count))
+        .route("/api/admin/purge-expired", post(purge_expired))
         .route("/api/admin/backup", post(create_backup))
         .route("/api/admin/restore", post(restore_backup))
         .route("/api/admin/backup/list", get(list_backups))
@@ -857,6 +862,42 @@ async fn list_vectors(
                 total,
             }))
         }
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetTtlRequest {
+    pub seconds: u64,
+}
+
+async fn set_vector_ttl(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<SetTtlRequest>,
+) -> Json<ApiResponse<()>> {
+    let db = state.db.read().await;
+    match db.set_vector_ttl(&name, &id, req.seconds).await {
+        Ok(()) => Json(ApiResponse::success(())),
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+async fn remove_vector_ttl(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+) -> Json<ApiResponse<()>> {
+    let db = state.db.read().await;
+    match db.remove_vector_ttl(&name, &id).await {
+        Ok(()) => Json(ApiResponse::success(())),
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+async fn purge_expired(State(state): State<Arc<ApiState>>) -> Json<ApiResponse<usize>> {
+    let db = state.db.read().await;
+    match db.purge_expired().await {
+        Ok(n) => Json(ApiResponse::success(n)),
         Err(e) => Json(ApiResponse::error(&e.to_string())),
     }
 }

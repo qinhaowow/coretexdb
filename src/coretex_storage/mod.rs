@@ -47,6 +47,15 @@ pub trait StorageEngine: Send + Sync {
     /// Get remaining TTL for a key (None if no TTL set)
     async fn get_ttl(&self, id: &str) -> Result<Option<u64>>;
 
+    /// Keys whose TTL has already elapsed (raw storage keys).
+    ///
+    /// `list()` hides expired keys, so a before/after diff around a purge
+    /// cannot see them; this is what lets the in-memory view and indexes be
+    /// cleaned up alongside the storage purge.
+    async fn expired_keys(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     /// Purge all expired entries. Returns the number of purged entries.
     async fn purge_expired(&self) -> Result<usize>;
 }
@@ -124,6 +133,16 @@ impl StorageEngine for MemoryStorage {
         } else {
             Ok(None)
         }
+    }
+
+    async fn expired_keys(&self) -> Result<Vec<String>> {
+        let ttl_map = self.ttl_map.read().await;
+        let now = std::time::Instant::now();
+        Ok(ttl_map
+            .iter()
+            .filter(|(_, expiry)| **expiry <= now)
+            .map(|(k, _)| k.clone())
+            .collect())
     }
 
     async fn purge_expired(&self) -> Result<usize> {

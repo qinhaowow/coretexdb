@@ -220,3 +220,101 @@ async fn test_index_manager() {
     let index = manager.get_index("test-index").await.unwrap();
     assert!(index.is_none());
 }
+
+/// A persisted HNSW index must round-trip: the loaded index answers the same
+/// query and reports the same checksum-bound data.
+#[tokio::test]
+async fn test_hnsw_persist_and_load_roundtrip() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("demo.json");
+
+    let index = HNSWIndex::new("cosine");
+    let mut pairs = Vec::new();
+    for i in 0..32u32 {
+        let vector = vec![i as f32, 1.0, 0.0];
+        index.add(&format!("v{i}"), &vector).await.unwrap();
+        pairs.push((format!("v{i}"), vector));
+    }
+    let checksum = vectors_checksum(&pairs);
+
+    assert!(index.persist(&path, &checksum).await.unwrap());
+    assert!(path.exists(), "index file must be written");
+
+    // A fresh manager loads it and gets a working index.
+    let manager = IndexManager::new();
+    manager
+        .create_index("demo_index", "hnsw", "cosine")
+        .await
+        .unwrap();
+    assert!(
+        manager
+            .load_index("demo_index", "hnsw", "cosine", &path, &checksum)
+            .await
+            .unwrap(),
+        "matching checksum must install the persisted index"
+    );
+
+    let loaded = manager.get_index("demo_index").await.unwrap().unwrap();
+    let hits = loaded.search(&[0.0, 1.0, 0.0], 3).await.unwrap();
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].id, "v0");
+}
+
+/// A stale index (data changed after it was written) must be rejected, so the
+/// caller falls back to rebuilding instead of serving incomplete results.
+#[tokio::test]
+async fn test_load_index_rejects_stale_checksum() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("demo.json");
+
+    let index = HNSWIndex::new("cosine");
+    index.add("a", &[1.0, 0.0]).await.unwrap();
+    let written = vectors_checksum(&[("a".to_string(), vec![1.0, 0.0])]);
+    index.persist(&path, &written).await.unwrap();
+
+    let manager = IndexManager::new();
+    manager.create_index("i", "hnsw", "cosine").await.unwrap();
+
+    // Correct checksum loads…
+    assert!(manager
+        .load_index("i", "hnsw", "cosine", &path, &written)
+        .await
+        .unwrap());
+    // …a checksum from a different data set does not.
+    let stale = vectors_checksum(&[("a".to_string(), vec![9.0, 9.0])]);
+    assert_ne!(stale, written);
+    assert!(!manager
+        .load_index("i", "hnsw", "cosine", &path, &stale)
+        .await
+        .unwrap());
+}
+
+/// Type and metric must match too — otherwise a cosine index could be loaded
+/// under a euclidean collection.
+#[tokio::test]
+async fn test_load_index_rejects_type_and_metric_mismatch() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("demo.json");
+
+    let index = HNSWIndex::new("cosine");
+    index.add("a", &[1.0, 0.0]).await.unwrap();
+    let checksum = vectors_checksum(&[("a".to_string(), vec![1.0, 0.0])]);
+    index.persist(&path, &checksum).await.unwrap();
+
+    let manager = IndexManager::new();
+    manager.create_index("i", "hnsw", "cosine").await.unwrap();
+
+    assert!(!manager
+        .load_index("i", "ivf", "cosine", &path, &checksum)
+        .await
+        .unwrap());
+    assert!(!manager
+        .load_index("i", "hnsw", "euclidean", &path, &checksum)
+        .await
+        .unwrap());
+    // Its own type/metric still works.
+    assert!(manager
+        .load_index("i", "hnsw", "cosine", &path, &checksum)
+        .await
+        .unwrap());
+}

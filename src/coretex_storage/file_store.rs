@@ -800,6 +800,18 @@ impl StorageEngine for FileStorage {
         })
     }
 
+    async fn expired_keys(&self) -> Result<Vec<String>> {
+        let guard = self.inner.lock();
+        let inner = guard.as_ref().ok_or(CoreTexError::StorageNotInitialized)?;
+        let now = now_secs();
+        Ok(inner
+            .ttl
+            .iter()
+            .filter(|(_, expiry)| **expiry <= now)
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
     async fn purge_expired(&self) -> Result<usize> {
         let mut guard = self.inner.lock();
         let inner = Self::require_inner(&mut guard)?;

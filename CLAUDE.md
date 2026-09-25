@@ -8,18 +8,20 @@
 |----|-----|
 | 版本 | **0.2.3**（`VERSION` / `Cargo.toml` / `Cargo.lock` 一致） |
 | 工作分支 | `release/v0.2.1-base` |
-| 最新 commit | `836969d` — argv[0] 单文件分发（coretex.exe 多角色）；其后「单 bin 化」改动待提交 |
+| 最新 commit | `a52f20e` — 修复 HNSW 锁序/回滚测试；其后「索引持久化接线」待提交 |
 | tag | `v0.2.3` → `c14e486`（已在远端，release.yml `v*` 触发）；旧 `v0.2.2` → `e12b6f6` 保留 |
-| 工作区 | 已推送至 `836969d`；本地有「删 5 壳 bin」未提交改动（等测试绿后提交） |
+| 工作区 | 已推送至 `a52f20e`；本地有「索引持久化接线」未提交改动（等测试绿后提交） |
 
 ### 近期完成（2026-09-25，均已推送）
 1. 核心引擎 P0/P1 修复 12 项：WAL fsync、sync_writes→fsync、写路径不吞错、WAL 恢复 `collection:id`、事务 active 泄漏、HNSW 锁序、purge_expired、update 补 storage、restore.sh 参数、gRPC include 生成码等（commit `4b508fc`）
 2. Windows 验收发现并修复 2 bug（commit `7c68885`）：restore 前未建父目录致全平台从未工作；`search --with-metadata` 在 `--format json` 被忽略
 3. 版本全线 0.2.2 → 0.2.3（18 文件，commit `c14e486`），tag `v0.2.3` 已打
 4. **单文件分发**：`src/main.rs` argv[0] 分发——coretex.exe 改名/硬链接即变 coretexd/backup/healthcheck 角色（commit `836969d`）
-5. **单 bin 化（本地上次改动，待提交）**：Cargo.toml 删 5 个壳 `[[bin]]`、删 `src/bin/*.rs`、scripts/systemd/release.yml/README 全改为 `coretex server/backup/doctor` 用法；编译只产一个 `coretex.exe`
+5. **单 bin 化**：Cargo.toml 删 5 个壳 `[[bin]]`、删 `src/bin/*.rs`、scripts/systemd/release.yml/README 全改为 `coretex server/backup/doctor` 用法；编译只产一个 `coretex.exe`（commit `72442bf`）
+6. **4 项审查问题修复**：HNSW remove/clear/save_to_file 锁序补齐（vectors→entry_point→graph）+ remove 提升最高层节点为 entry point + search_layer 容忍孤儿邻居；`recover_from_wal` 改 last-write-wins 聚合；`purge_expired` 按已知集合名最长前缀解析 key；`coretex-backup` 只看 argv[1]；restore 失败回滚已移开目录（commit `ecb0ccf`，测试修正 `a52f20e`）
+7. **索引持久化接线（本次，待提交）**：`VectorIndex::persist` + `IndexManager::load_index`/`persist_index`；原子写（temp+fsync+rename+目录 fsync）+ 内容校验和（`vectors_checksum`）防陈旧索引；`DataManager::restore_from_storage` 两阶段（填内存→命中校验和则加载索引，否则重建）；`CoreTexDB::save_indexes`；CLI `coretex index save|list`；只支持 hnsw/ivf/pq（brute_force/scalar 无需落盘）
 - Windows 验收：`E:\Ubuntn24042\wintest` 脚本 `windows_acceptance.ps1 -Root <dir>`，**19/19 全绿**（0.2.3 单 exe 构建）
-- Linux 测试历史基线：424~426 unit + 26 + 11 integration 全绿（P0/P1 12 项修复明细见 commit `4b508fc`）
+- Linux 测试历史基线：432 unit + 26 + 11 + 3 index_persistence 全绿
 
 ### 之前完成（V0.2.2 发布线）
 1. `release.yml`：多 bin + `--target` 正确产物路径 + sha256 + GitHub Release

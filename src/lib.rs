@@ -356,7 +356,14 @@ impl CoreTexDB {
         };
         let storage = Arc::new(RwLock::new(storage));
         let index_manager = Arc::new(IndexManager::new());
-        let data_manager = DataManager::new(storage, index_manager);
+        let data_manager = if config.memory_only {
+            DataManager::new(storage, index_manager)
+        } else {
+            // Enable index persistence: on init a checksum-matching index file
+            // is loaded instead of rebuilding HNSW/IVF/PQ from storage.
+            DataManager::new(storage, index_manager)
+                .with_indexes_dir(config.indexes_dir().join("vector"))
+        };
 
         let persistence = if config.memory_only {
             None
@@ -743,6 +750,35 @@ impl CoreTexDB {
 
     pub async fn get_vectors_count(&self, collection: &str) -> Result<usize> {
         self.data_manager.get_vectors_count(collection).await
+    }
+
+    /// Set a time-to-live (seconds) on one vector. It is removed by
+    /// [`Self::purge_expired`] once the TTL elapses.
+    pub async fn set_vector_ttl(&self, collection: &str, id: &str, ttl_secs: u64) -> Result<()> {
+        self.data_manager.set_ttl(collection, id, ttl_secs).await
+    }
+
+    /// Remove a previously set TTL from one vector.
+    pub async fn remove_vector_ttl(&self, collection: &str, id: &str) -> Result<()> {
+        self.data_manager.remove_ttl(collection, id).await
+    }
+
+    /// Drop every vector whose TTL has expired, from storage, memory and the
+    /// index. Returns how many were removed.
+    pub async fn purge_expired(&self) -> Result<usize> {
+        self.data_manager.purge_expired().await
+    }
+
+    /// Persist the ANN indexes (hnsw/ivf/pq) to `<data>/indexes/vector/` so the
+    /// next `init()` can load them instead of rebuilding from storage.
+    /// Returns the number of index files written.
+    pub async fn save_indexes(&self) -> Result<usize> {
+        self.data_manager.save_indexes().await
+    }
+
+    /// Directory holding persisted per-collection index files.
+    pub fn index_dir(&self) -> std::path::PathBuf {
+        self.config.indexes_dir().join("vector")
     }
 
     pub async fn update_vector(

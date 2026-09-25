@@ -840,6 +840,43 @@ where
     );
 
     cmd = cmd.subcommand(
+        Command::new("index")
+            .about("Manage persisted ANN indexes (hnsw/ivf/pq)")
+            .subcommand_required(true)
+            .subcommand(
+                Command::new("save")
+                    .about("Persist ANN indexes to disk so the next start loads instead of rebuilding"),
+            )
+            .subcommand(
+                Command::new("list")
+                    .about("List persisted index files"),
+            ),
+    );
+
+    cmd = cmd.subcommand(
+        Command::new("ttl")
+            .about("Manage vector time-to-live (expiry)")
+            .subcommand_required(true)
+            .subcommand(
+                Command::new("set")
+                    .about("Set a TTL in seconds on a vector")
+                    .arg(Arg::new("collection").short('c').long("collection").required(true))
+                    .arg(Arg::new("id").short('i').long("id").required(true))
+                    .arg(Arg::new("seconds").short('s').long("seconds").required(true)),
+            )
+            .subcommand(
+                Command::new("remove")
+                    .about("Remove the TTL from a vector")
+                    .arg(Arg::new("collection").short('c').long("collection").required(true))
+                    .arg(Arg::new("id").short('i').long("id").required(true)),
+            )
+            .subcommand(
+                Command::new("purge")
+                    .about("Delete every vector whose TTL has expired"),
+            ),
+    );
+
+    cmd = cmd.subcommand(
         Command::new("dump")
             .about("Dump store/WAL files in readable format")
             .arg(
@@ -2434,6 +2471,67 @@ where
                 println!("Some checks failed. Review the issues above.");
             }
         }
+
+        Some(("index", m)) => match m.subcommand() {
+            Some(("save", _)) => {
+                let dir = db.read().await.index_dir();
+                match db.read().await.save_indexes().await {
+                    Ok(n) if n > 0 => {
+                        println!("Saved {} index file(s) to {}", n, dir.display())
+                    }
+                    Ok(_) => println!(
+                        "Nothing to persist: only hnsw/ivf/pq indexes are written to {} \
+                         (brute_force/scalar rebuild instantly)",
+                        dir.display()
+                    ),
+                    Err(e) => eprintln!("index save failed: {e}"),
+                }
+            }
+            Some(("list", _)) => {
+                let dir = db.read().await.index_dir();
+                let mut found = false;
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        found = true;
+                        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                        println!("  {} ({} bytes)", entry.file_name().to_string_lossy(), bytes);
+                    }
+                }
+                if !found {
+                    println!("  (no persisted indexes in {})", dir.display());
+                }
+            }
+            _ => {}
+        },
+
+        Some(("ttl", m)) => match m.subcommand() {
+            Some(("set", sm)) => {
+                let collection = sm.get_one::<String>("collection").unwrap();
+                let id = sm.get_one::<String>("id").unwrap();
+                let secs: u64 = sm
+                    .get_one::<String>("seconds")
+                    .unwrap()
+                    .parse()
+                    .unwrap_or(0);
+                match db.read().await.set_vector_ttl(collection, id, secs).await {
+                    Ok(()) => println!("TTL set: {secs}s on {collection}:{id}"),
+                    Err(e) => eprintln!("ttl set failed: {e}"),
+                }
+            }
+            Some(("remove", sm)) => {
+                let collection = sm.get_one::<String>("collection").unwrap();
+                let id = sm.get_one::<String>("id").unwrap();
+                match db.read().await.remove_vector_ttl(collection, id).await {
+                    Ok(()) => println!("TTL removed from {collection}:{id}"),
+                    Err(e) => eprintln!("ttl remove failed: {e}"),
+                }
+            }
+            Some(("purge", _)) => match db.read().await.purge_expired().await {
+                Ok(n) => println!("Purged {n} expired vector(s)"),
+                Err(e) => eprintln!("ttl purge failed: {e}"),
+            },
+            _ => {}
+        },
 
         Some(("dump", m)) => {
             let file_type = m.get_one::<String>("type").unwrap();

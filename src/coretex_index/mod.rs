@@ -47,6 +47,13 @@ pub trait VectorIndex: Send + Sync {
     /// Clear the index
     async fn clear(&self) -> Result<()>;
     
+    /// Persist this index to `path`, tagging it with `checksum` so a stale
+    /// index can be rejected instead of silently serving incomplete results.
+    /// Index types without on-disk support leave the default (`Ok(false)`).
+    async fn persist(&self, _path: &std::path::Path, _checksum: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Clone the index into a box
     fn clone_box(&self) -> Box<dyn VectorIndex>;
 }
@@ -178,49 +185,6 @@ impl HNSWIndex {
         }
     }
 
-    pub async fn save_to_file(&self, path: &str) -> Result<()> {
-        use std::io::Write;
-
-        // Lock order: vectors → entry_point → graph (the index-wide hierarchy).
-        let vectors = self.vectors.read().await;
-        let entry_point = self.entry_point.read().await.clone();
-        let graph = self.graph.read().await;
-
-        let serializable = HNSWIndexData {
-            metric: self.metric.clone(),
-            m: self.m,
-            ef_construction: self.ef_construction,
-            ef_search: self.ef_search,
-            max_level: self.max_level,
-            entry_point,
-            vectors: vectors.clone(),
-            graph: graph.clone(),
-        };
-
-        let json = serde_json::to_string(&serializable)?;
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(json.as_bytes())?;
-        Ok(())
-    }
-
-    pub async fn load_from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let data: HNSWIndexData = serde_json::from_str(&content)?;
-
-        let index = Self {
-            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
-            metric: data.metric,
-            m: data.m,
-            ef_construction: data.ef_construction,
-            ef_search: data.ef_search,
-            max_level: data.max_level,
-            entry_point: std::sync::Arc::new(tokio::sync::RwLock::new(data.entry_point)),
-            graph: std::sync::Arc::new(tokio::sync::RwLock::new(data.graph)),
-        };
-
-        Ok(index)
-    }
-
     /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
         metric_distance(&self.metric, a, b)
@@ -326,47 +290,6 @@ impl IVFIndex {
         }
     }
 
-    pub async fn save_to_file(&self, path: &str) -> Result<()> {
-        use std::io::Write;
-
-        let vectors = self.vectors.read().await;
-        let centroids = self.centroids.read().await;
-        let vector_to_cluster = self.vector_to_cluster.read().await;
-
-        let data = IVFIndexData {
-            metric: self.metric.clone(),
-            nlist: self.nlist,
-            nprobe: self.nprobe,
-            centroids: centroids.clone(),
-            vector_to_cluster: vector_to_cluster.clone(),
-            vectors: vectors.clone(),
-        };
-
-        let json = serde_json::to_string(&data)?;
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(json.as_bytes())?;
-        Ok(())
-    }
-
-    pub async fn load_from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let data: IVFIndexData = serde_json::from_str(&content)?;
-
-        // A saved index that already carries centroids does not need a rebuild.
-        let dirty = data.centroids.is_empty();
-        let index = Self {
-            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
-            metric: data.metric,
-            nlist: data.nlist,
-            nprobe: data.nprobe,
-            centroids: std::sync::Arc::new(tokio::sync::RwLock::new(data.centroids)),
-            vector_to_cluster: std::sync::Arc::new(tokio::sync::RwLock::new(data.vector_to_cluster)),
-            dirty: std::sync::Arc::new(AtomicBool::new(dirty)),
-        };
-
-        Ok(index)
-    }
-    
     /// Calculate distance between two vectors
     /// Distance between two vectors under this index's metric.
     fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
@@ -766,6 +689,34 @@ impl VectorIndex for HNSWIndex {
         Ok(())
     }
 
+    async fn persist(&self, path: &std::path::Path, checksum: &str) -> Result<bool> {
+        // Lock order: vectors → entry_point → graph (see `add`).
+        let vectors = self.vectors.read().await;
+        let entry_point = self.entry_point.read().await.clone();
+        let graph = self.graph.read().await;
+
+        let data = HNSWIndexData {
+            metric: self.metric.clone(),
+            m: self.m,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            max_level: self.max_level,
+            entry_point,
+            vectors: vectors.clone(),
+            graph: graph.clone(),
+        };
+        let count = data.vectors.len();
+        write_index_file(
+            path,
+            "hnsw",
+            &self.metric,
+            count,
+            checksum,
+            serde_json::to_value(&data)?,
+        )?;
+        Ok(true)
+    }
+
     fn clone_box(&self) -> Box<dyn VectorIndex> {
         Box::new(self.clone())
     }
@@ -975,6 +926,31 @@ impl VectorIndex for IVFIndex {
         Ok(())
     }
 
+    async fn persist(&self, path: &std::path::Path, checksum: &str) -> Result<bool> {
+        let vectors = self.vectors.read().await;
+        let centroids = self.centroids.read().await;
+        let vector_to_cluster = self.vector_to_cluster.read().await;
+
+        let data = IVFIndexData {
+            metric: self.metric.clone(),
+            nlist: self.nlist,
+            nprobe: self.nprobe,
+            centroids: centroids.clone(),
+            vector_to_cluster: vector_to_cluster.clone(),
+            vectors: vectors.clone(),
+        };
+        let count = data.vectors.len();
+        write_index_file(
+            path,
+            "ivf",
+            &self.metric,
+            count,
+            checksum,
+            serde_json::to_value(&data)?,
+        )?;
+        Ok(true)
+    }
+
     fn clone_box(&self) -> Box<dyn VectorIndex> {
         Box::new(self.clone())
     }
@@ -1065,6 +1041,110 @@ impl VectorIndex for ScalarIndex {
 }
 
 /// Index manager for handling multiple indexes
+/// On-disk envelope for a persisted index.
+///
+/// `checksum` binds the index to the exact set of `(id, vector)` pairs it was
+/// built from. It is recomputed from storage at load time; a mismatch means the
+/// index is stale and must be rebuilt rather than loaded, otherwise search would
+/// silently miss or mis-rank rows.
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedIndex {
+    format: u32,
+    index_type: String,
+    metric: String,
+    count: usize,
+    checksum: String,
+    data: serde_json::Value,
+}
+
+const INDEX_FILE_FORMAT: u32 = 1;
+
+/// Atomically write a persisted index: temp file → fsync → rename → dir fsync.
+/// A crash mid-write leaves either the old file or the new one, never a half.
+fn write_index_file(
+    path: &std::path::Path,
+    index_type: &str,
+    metric: &str,
+    count: usize,
+    checksum: &str,
+    data: serde_json::Value,
+) -> Result<()> {
+    let envelope = PersistedIndex {
+        format: INDEX_FILE_FORMAT,
+        index_type: index_type.to_string(),
+        metric: metric.to_string(),
+        count,
+        checksum: checksum.to_string(),
+        data,
+    };
+    let json = serde_json::to_vec(&envelope)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
+}
+
+/// Read and validate a persisted index. Returns `Ok(None)` when the file is
+/// absent, malformed, of a different type/metric, or its checksum does not
+/// match — every one of which means "rebuild from storage instead".
+fn read_index_file(
+    path: &std::path::Path,
+    index_type: &str,
+    metric: &str,
+    checksum: &str,
+) -> Result<Option<serde_json::Value>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let envelope: PersistedIndex = match serde_json::from_str(&content) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    if envelope.format != INDEX_FILE_FORMAT
+        || envelope.index_type != index_type
+        || envelope.metric != metric
+        || envelope.checksum != checksum
+    {
+        return Ok(None);
+    }
+    Ok(Some(envelope.data))
+}
+
+/// Stable content hash of a collection's `(id, vector)` pairs. Order-insensitive
+/// (ids are sorted) so it depends only on the data, not on iteration order.
+pub fn vectors_checksum(pairs: &[(String, Vec<f32>)]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut sorted: Vec<&(String, Vec<f32>)> = pairs.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = Sha256::new();
+    for (id, vector) in sorted {
+        hasher.update(id.as_bytes());
+        hasher.update([0u8]);
+        for value in vector {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 pub struct IndexManager {
     indexes: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Box<dyn VectorIndex>>>>,
 }
@@ -1107,6 +1187,94 @@ impl IndexManager {
     pub async fn delete_index(&self, name: &str) -> Result<bool> {
         let mut indexes = self.indexes.write().await;
         Ok(indexes.remove(name).is_some())
+    }
+
+    /// Persist the index registered under `name` to `path`, tagged with the
+    /// collection `checksum`. Returns `false` for index types that do not
+    /// support on-disk persistence (`brute_force`, `scalar`) or when unknown.
+    pub async fn persist_index(
+        &self,
+        name: &str,
+        path: &std::path::Path,
+        checksum: &str,
+    ) -> Result<bool> {
+        let index = {
+            let indexes = self.indexes.read().await;
+            indexes.get(name).map(|i| i.clone_box())
+        };
+        match index {
+            Some(index) => index.persist(path, checksum).await,
+            None => Ok(false),
+        }
+    }
+
+    /// Install a persisted index for `name`, replacing the empty placeholder
+    /// created by `create_index`. Returns `true` only when the file exists, its
+    /// type/metric/checksum match, and it deserialises — otherwise the caller
+    /// must rebuild from storage.
+    pub async fn load_index(
+        &self,
+        name: &str,
+        index_type: &str,
+        metric: &str,
+        path: &std::path::Path,
+        checksum: &str,
+    ) -> Result<bool> {
+        let Some(data) = read_index_file(path, index_type, metric, checksum)? else {
+            return Ok(false);
+        };
+
+        let index: Box<dyn VectorIndex> = match index_type {
+            "hnsw" => match serde_json::from_value::<HNSWIndexData>(data) {
+                Ok(d) => Box::new(HNSWIndex {
+                    vectors: std::sync::Arc::new(tokio::sync::RwLock::new(d.vectors)),
+                    metric: d.metric,
+                    m: d.m,
+                    ef_construction: d.ef_construction,
+                    ef_search: d.ef_search,
+                    max_level: d.max_level,
+                    entry_point: std::sync::Arc::new(tokio::sync::RwLock::new(d.entry_point)),
+                    graph: std::sync::Arc::new(tokio::sync::RwLock::new(d.graph)),
+                }),
+                Err(_) => return Ok(false),
+            },
+            "ivf" => match serde_json::from_value::<IVFIndexData>(data) {
+                Ok(d) => {
+                    // A saved index that already carries centroids needs no rebuild.
+                    let dirty = d.centroids.is_empty();
+                    Box::new(IVFIndex {
+                        vectors: std::sync::Arc::new(tokio::sync::RwLock::new(d.vectors)),
+                        metric: d.metric,
+                        nlist: d.nlist,
+                        nprobe: d.nprobe,
+                        centroids: std::sync::Arc::new(tokio::sync::RwLock::new(d.centroids)),
+                        vector_to_cluster: std::sync::Arc::new(
+                            tokio::sync::RwLock::new(d.vector_to_cluster),
+                        ),
+                        dirty: std::sync::Arc::new(AtomicBool::new(dirty)),
+                    })
+                }
+                Err(_) => return Ok(false),
+            },
+            "pq" => match serde_json::from_value::<PQIndexData>(data) {
+                Ok(d) => Box::new(PQIndex {
+                    vectors: std::sync::Arc::new(tokio::sync::RwLock::new(d.vectors)),
+                    original_vectors: std::sync::Arc::new(
+                        tokio::sync::RwLock::new(d.original_vectors),
+                    ),
+                    metric: d.metric,
+                    dimension: d.dimension,
+                    n_subquantizers: d.n_subquantizers,
+                    n_bits: d.n_bits,
+                    codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(d.codebooks)),
+                }),
+                Err(_) => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+
+        self.indexes.write().await.insert(name.to_string(), index);
+        Ok(true)
     }
 }
 
@@ -1164,46 +1332,6 @@ impl PQIndex {
             n_bits,
             codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
-    }
-
-    pub async fn save_to_file(&self, path: &str) -> Result<()> {
-        use std::io::Write;
-
-        let vectors = self.vectors.read().await;
-        let original_vectors = self.original_vectors.read().await;
-        let codebooks = self.codebooks.read().await;
-
-        let data = PQIndexData {
-            metric: self.metric.clone(),
-            dimension: self.dimension,
-            n_subquantizers: self.n_subquantizers,
-            n_bits: self.n_bits,
-            codebooks: codebooks.clone(),
-            vectors: vectors.clone(),
-            original_vectors: original_vectors.clone(),
-        };
-
-        let json = serde_json::to_string(&data)?;
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(json.as_bytes())?;
-        Ok(())
-    }
-
-    pub async fn load_from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let data: PQIndexData = serde_json::from_str(&content)?;
-
-        let index = Self {
-            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.vectors)),
-            original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(data.original_vectors)),
-            metric: data.metric,
-            dimension: data.dimension,
-            n_subquantizers: data.n_subquantizers,
-            n_bits: data.n_bits,
-            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(data.codebooks)),
-        };
-
-        Ok(index)
     }
 
     pub async fn train(&self, training_vectors: &[Vec<f32>]) -> std::result::Result<(), String> {
@@ -1466,6 +1594,32 @@ impl VectorIndex for PQIndex {
         original.clear();
 
         Ok(())
+    }
+
+    async fn persist(&self, path: &std::path::Path, checksum: &str) -> Result<bool> {
+        let vectors = self.vectors.read().await;
+        let original_vectors = self.original_vectors.read().await;
+        let codebooks = self.codebooks.read().await;
+
+        let data = PQIndexData {
+            metric: self.metric.clone(),
+            dimension: self.dimension,
+            n_subquantizers: self.n_subquantizers,
+            n_bits: self.n_bits,
+            codebooks: codebooks.clone(),
+            vectors: vectors.clone(),
+            original_vectors: original_vectors.clone(),
+        };
+        let count = data.vectors.len();
+        write_index_file(
+            path,
+            "pq",
+            &self.metric,
+            count,
+            checksum,
+            serde_json::to_value(&data)?,
+        )?;
+        Ok(true)
     }
 
     fn clone_box(&self) -> Box<dyn VectorIndex> {
