@@ -11,6 +11,7 @@ mod wal_integration_tests {
     use tempfile::TempDir;
 
     use crate::coretex_core::{CollectionSchema, DistanceMetric};
+    use crate::coretex_core::CoreTexError;
     use crate::coretex_data::DataManager;
     use crate::coretex_index::IndexManager;
     use crate::coretex_storage::{MemoryStorage, StorageEngine};
@@ -301,7 +302,14 @@ mod wal_integration_tests {
         dm.recover_from_wal().await.unwrap();
 
         // The final WAL op for "c:k" is a delete → nothing should survive.
-        assert!(dm.get_vector("c", "k").await.unwrap().is_none());
+        // The collection itself is never created by a delete-only replay, so
+        // getting the row is either `Ok(None)` or `CollectionNotFound`; both
+        // mean "absent".
+        match dm.get_vector("c", "k").await {
+            Ok(None) => {}
+            Err(CoreTexError::CollectionNotFound(_)) => {}
+            other => panic!("deleted key must not survive replay: {:?}", other),
+        }
         let keys = storage.read().await.list().await.unwrap();
         assert!(!keys.iter().any(|k| k == "c:k"), "keys = {:?}", keys);
     }
