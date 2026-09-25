@@ -181,9 +181,10 @@ impl HNSWIndex {
     pub async fn save_to_file(&self, path: &str) -> Result<()> {
         use std::io::Write;
 
+        // Lock order: vectors → entry_point → graph (the index-wide hierarchy).
         let vectors = self.vectors.read().await;
-        let graph = self.graph.read().await;
         let entry_point = self.entry_point.read().await.clone();
+        let graph = self.graph.read().await;
 
         let serializable = HNSWIndexData {
             metric: self.metric.clone(),
@@ -255,7 +256,13 @@ impl HNSWIndex {
         let mut results = BinaryHeap::new();
 
         visited.insert(entry_id.to_string());
-        let dist = self.calculate_distance(query, vectors.get(entry_id).unwrap());
+        // Guard against a graph node that has no vector (e.g. a legacy orphan
+        // backlink): `unwrap()` here used to panic and take down the whole
+        // search. A missing entry point just yields no results.
+        let Some(entry_vec) = vectors.get(entry_id) else {
+            return (results, visited);
+        };
+        let dist = self.calculate_distance(query, entry_vec);
         candidates.push(std::cmp::Reverse(SearchResult { id: entry_id.to_string(), distance: dist }));
         results.push(std::cmp::Reverse(SearchResult { id: entry_id.to_string(), distance: dist }));
 
@@ -266,7 +273,11 @@ impl HNSWIndex {
             }
             for neighbor_id in Self::get_neighbors_from(&current.id, layer, graph) {
                 if visited.insert(neighbor_id.clone()) {
-                    let dist = self.calculate_distance(query, vectors.get(&neighbor_id).unwrap());
+                    // Skip dangling neighbors instead of panicking.
+                    let Some(neighbor_vec) = vectors.get(&neighbor_id) else {
+                        continue;
+                    };
+                    let dist = self.calculate_distance(query, neighbor_vec);
                     if dist < furthest || results.len() < ef {
                         candidates.push(std::cmp::Reverse(SearchResult { id: neighbor_id.clone(), distance: dist }));
                         results.push(std::cmp::Reverse(SearchResult { id: neighbor_id.clone(), distance: dist }));
@@ -589,20 +600,48 @@ impl VectorIndex for HNSWIndex {
     }
 
     async fn remove(&self, id: &str) -> Result<bool> {
+        // Lock order: vectors → entry_point → graph (same as add/build/search).
+        // The old version took vectors → graph → entry_point and deadlocked
+        // (AB-BA) against `add`, which holds entry_point while acquiring graph.
         let mut vectors = self.vectors.write().await;
-        vectors.remove(id);
+        let removed = vectors.remove(id).is_some();
+
+        // Snapshot the current entry point while holding the same hierarchy
+        // position as `search`, so removal and search agree on it.
+        let ep_was_self = self
+            .entry_point
+            .read()
+            .await
+            .as_ref()
+            .map(|e| e == id)
+            .unwrap_or(false);
+
         let mut graph = self.graph.write().await;
         graph.remove(id);
+        // Unlink every backlink that still points at `id`; leaving them behind
+        // would make `search_layer` walk into an id that no longer has a vector.
         for levels in graph.values_mut() {
             for layer in levels.iter_mut() {
                 layer.retain(|n| n != id);
             }
         }
-        let mut ep = self.entry_point.write().await;
-        if ep.as_ref().map(|e| e == id).unwrap_or(false) {
-            *ep = graph.keys().next().cloned();
+
+        // If the removed node was the entry point, promote the surviving node
+        // with the highest level — not an arbitrary `keys().next()`. The entry
+        // point must stay the highest-level node or the hierarchy stops being
+        // navigable from the top (the same invariant `add` maintains).
+        if ep_was_self {
+            let new_ep = graph
+                .iter()
+                .max_by_key(|(_, levels)| levels.len())
+                .map(|(node, _)| node.clone());
+            drop(graph);
+            *self.entry_point.write().await = new_ep;
+        } else {
+            drop(graph);
         }
-        Ok(true)
+
+        Ok(removed)
     }
 
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
@@ -712,12 +751,18 @@ impl VectorIndex for HNSWIndex {
     }
 
     async fn clear(&self) -> Result<()> {
+        // Lock order: vectors → entry_point → graph (same as add/build/search/
+        // remove). Take the entry_point lock before graph: clearing entry_point
+        // last would deadlock against `add`, which holds entry_point while
+        // waiting for graph.
         let mut vectors = self.vectors.write().await;
         vectors.clear();
+        {
+            let mut ep = self.entry_point.write().await;
+            *ep = None;
+        }
         let mut graph = self.graph.write().await;
         graph.clear();
-        let mut ep = self.entry_point.write().await;
-        *ep = None;
         Ok(())
     }
 

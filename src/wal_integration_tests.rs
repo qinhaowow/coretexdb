@@ -272,6 +272,40 @@ mod wal_integration_tests {
         }
     }
 
+    /// Replay must collapse to the *final* operation per key (last write wins).
+    /// Insert-then-delete on the same key must leave the key absent, and a
+    /// later delete must not be undone by replaying an earlier insert.
+    #[tokio::test]
+    async fn test_recovery_last_write_wins_for_same_key() {
+        let dir = TempDir::new().unwrap();
+        let wal_path = dir.path().to_string_lossy().to_string();
+
+        {
+            let wal = Arc::new(WriteAheadLog::new(&wal_path));
+            wal.init().await.unwrap();
+            let _ = wal.log_operation(WalEntryType::Insert, "c", "k",
+                serde_json::json!({"vector": [1.0, 0.0], "metadata": {"v": 1}})).await;
+            let _ = wal.log_operation(WalEntryType::Update, "c", "k",
+                serde_json::json!({"vector": [0.0, 1.0], "metadata": {"v": 2}})).await;
+            let _ = wal.log_operation(WalEntryType::Delete, "c", "k",
+                serde_json::json!({"vector": [], "metadata": {}})).await;
+        }
+
+        let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+            Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+        let wal = Arc::new(WriteAheadLog::new(&wal_path));
+        wal.init().await.unwrap();
+        let dm = DataManager::new(Arc::clone(&storage), Arc::new(IndexManager::new()))
+            .with_wal(Arc::clone(&wal));
+
+        dm.recover_from_wal().await.unwrap();
+
+        // The final WAL op for "c:k" is a delete → nothing should survive.
+        assert!(dm.get_vector("c", "k").await.unwrap().is_none());
+        let keys = storage.read().await.list().await.unwrap();
+        assert!(!keys.iter().any(|k| k == "c:k"), "keys = {:?}", keys);
+    }
+
     #[tokio::test]
     async fn test_wal_sequence_continuity_across_restarts() {
         let dir = TempDir::new().unwrap();

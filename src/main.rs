@@ -39,15 +39,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             args.extend(argv[1..].iter().cloned());
         }
         "coretex-backup" => {
-            // 壳逻辑：未显式给出 backup/restore 子命令时默认注入 backup
-            let rest = &argv[1..];
-            let has_sub = rest
-                .iter()
-                .any(|a| a.to_string_lossy() == "backup" || a.to_string_lossy() == "restore");
-            if !has_sub {
+            // Shell semantics: when the first argument is not already the
+            // `backup` or `restore` subcommand, default to `backup`. Checking
+            // only "is the word present anywhere" mis-fires on flag values
+            // (e.g. `--output backup`), so inspect argv[1] specifically.
+            let explicit = argv
+                .get(1)
+                .map(|a| {
+                    let s = a.to_string_lossy();
+                    s == "backup" || s == "restore"
+                })
+                .unwrap_or(false);
+            if !explicit {
                 args.push("backup".into());
             }
-            args.extend(rest.iter().cloned());
+            args.extend(argv[1..].iter().cloned());
         }
         "coretex-healthcheck" => {
             args.push("doctor".into());

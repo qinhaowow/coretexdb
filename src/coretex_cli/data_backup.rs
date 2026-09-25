@@ -164,6 +164,9 @@ pub fn verify(snapshot_dir: &Path) -> Result<SnapshotManifest, String> {
 ///
 /// 现有状态会被**整体移开**到 `data_dir/.pre-restore-<时间戳>/`，而不是原地覆盖：
 /// 逐个文件覆盖的话，当前多出来的日志分片会残留下来，重放时把已删除的向量"复活"。
+///
+/// 整个过程是"尽力回滚"的：只要中途任何一步失败，就把已经移开的目录原样移回，
+/// 避免出现"旧状态已移走、新状态还没拷"的半空数据库。
 pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest, usize), String> {
     let manifest = verify(snapshot_dir)?;
 
@@ -177,20 +180,48 @@ pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest
     ));
     fs::create_dir_all(&safety).map_err(|e| format!("创建 {} 失败: {e}", safety.display()))?;
 
+    // 记录每一步已完成的 "移开" 操作，失败时按相反顺序还原。
+    let mut parked: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    let mut rollback = |parked: &mut Vec<(PathBuf, PathBuf)>, safety: &Path| {
+        for (current, keep) in parked.drain(..).rev() {
+            if keep.exists() {
+                // A partial restore may have recreated `current`; clear it
+                // first or the rename below would fail and leave the DB in
+                // the half-restored state we are trying to undo.
+                if current.exists() {
+                    let _ = if current.is_dir() {
+                        fs::remove_dir_all(&current)
+                    } else {
+                        fs::remove_file(&current)
+                    };
+                }
+                if let Some(parent) = current.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::rename(&keep, &current);
+            }
+        }
+        let _ = fs::remove_dir_all(safety);
+    };
+
     for dir in STATEFUL_DIRS {
         let current = data_dir.join(dir);
         if current.exists() {
             let keep = safety.join(dir);
-            // `dir` is a path like "data/coretex"; rename() does NOT create
-            // the target's parent, so without this the move always failed
-            // with ENOENT/ERROR_PATH_NOT_FOUND and restore could never run.
+            // `dir` 形如 "data/coretex"；rename() 不会创建目标的父目录，
+            // 不先建目录会以 ENOENT/ERROR_PATH_NOT_FOUND 失败。
             if let Some(parent) = keep.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+                if let Err(e) = fs::create_dir_all(parent) {
+                    rollback(&mut parked, &safety);
+                    return Err(format!("创建 {} 失败: {e}", parent.display()));
+                }
             }
-            fs::rename(&current, &keep).map_err(|e| {
-                format!("移开现有 {} 失败: {e}", current.display())
-            })?;
+            if let Err(e) = fs::rename(&current, &keep) {
+                rollback(&mut parked, &safety);
+                return Err(format!("移开现有 {} 失败: {e}", current.display()));
+            }
+            parked.push((current, keep));
         }
     }
 
@@ -199,13 +230,19 @@ pub fn restore(snapshot_dir: &Path, data_dir: &Path) -> Result<(SnapshotManifest
         let src = snapshot_dir.join(&file.path);
         let dst = data_dir.join(&file.path);
         if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+            if let Err(e) = fs::create_dir_all(parent) {
+                rollback(&mut parked, &safety);
+                return Err(format!("创建 {} 失败: {e}", parent.display()));
+            }
         }
-        fs::copy(&src, &dst).map_err(|e| format!("恢复 {} 失败: {e}", file.path))?;
+        if let Err(e) = fs::copy(&src, &dst) {
+            rollback(&mut parked, &safety);
+            return Err(format!("恢复 {} 失败: {e}", file.path));
+        }
         restored += 1;
     }
 
+    // 成功：保留停靠目录供人工核对，不做清理。
     Ok((manifest, restored))
 }
 
@@ -256,5 +293,60 @@ mod tests {
             .path()
             .join("data/coretex/collections/demo/v2.json")
             .exists());
+    }
+
+    /// Regression: the "park then copy" sequence had no rollback, so a failure
+    /// after the state was moved away left the database half-empty. A failed
+    /// restore must put the moved directories back and drop the parked dir.
+    #[test]
+    fn restore_failure_rolls_back_parked_state() {
+        let dir = TempDir::new().unwrap();
+        let data = dir.path().join("install");
+
+        // Current state that will be parked.
+        let coll = data.join("data/coretex/collections/demo");
+        fs::create_dir_all(&coll).unwrap();
+        fs::write(coll.join("v1.json"), "old").unwrap();
+        let wal = data.join("data/wal");
+        fs::create_dir_all(&wal).unwrap();
+        fs::write(wal.join("wal-000001.log"), "w").unwrap();
+
+        let snap = dir.path().join("snap");
+        create(&data, &snap).unwrap();
+
+        // Add a valid snapshot file whose *destination* parent is a plain file:
+        // the copy step must then fail after both state dirs were parked.
+        let extra = b"new";
+        fs::create_dir_all(snap.join("blocked")).unwrap();
+        fs::write(snap.join("blocked/nested.json"), extra).unwrap();
+        let mut manifest = verify(&snap).unwrap();
+        manifest.files.push(SnapshotFile {
+            path: "blocked/nested.json".to_string(),
+            bytes: extra.len() as u64,
+            sha256: sha256_hex(extra),
+        });
+        fs::write(
+            snap.join(MANIFEST),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // `blocked` is a file, so `create_dir_all(data/blocked)` must fail.
+        fs::write(data.join("blocked"), "i am a file").unwrap();
+
+        let err = restore(&snap, &data).expect_err("restore must fail");
+        assert!(err.contains("失败"), "unexpected error: {err}");
+
+        // Rollback: the original state directories are back in place.
+        assert!(coll.join("v1.json").exists(), "parked collection must be restored");
+        assert!(wal.join("wal-000001.log").exists(), "parked wal must be restored");
+
+        // The parked directory was removed, so only the original lives on.
+        let leftover: Vec<_> = fs::read_dir(&data)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".pre-restore-"))
+            .collect();
+        assert!(leftover.is_empty(), "rollback must drop the .pre-restore dir");
     }
 }

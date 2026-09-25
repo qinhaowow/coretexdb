@@ -240,15 +240,52 @@ impl DataManager {
         let mut replayed = 0u64;
         let mut skipped = 0u64;
 
+        // Collapse the WAL to the *final* operation per `collection:id`. The
+        // WAL is append-only, so replaying every entry in order and applying it
+        // one by one made the outcome depend on coincidences (e.g. Insert then
+        // Delete then a failed Delete left the row in memory). Last-write-wins
+        // is the correct semantics for a replay.
+        let mut order: Vec<String> = Vec::new();
+        let mut final_ops: std::collections::HashMap<
+            String,
+            (WalEntryType, String, String, Vec<f32>, serde_json::Value),
+        > = std::collections::HashMap::new();
         for (entry_type, collection, key, vector, metadata) in &entries {
+            if !matches!(
+                entry_type,
+                WalEntryType::Insert | WalEntryType::Update | WalEntryType::Delete
+            ) {
+                continue;
+            }
+            let storage_key = format!("{}:{}", collection, key);
+            if final_ops
+                .insert(
+                    storage_key.clone(),
+                    (
+                        *entry_type,
+                        collection.clone(),
+                        key.clone(),
+                        vector.clone(),
+                        metadata.clone(),
+                    ),
+                )
+                .is_none()
+            {
+                order.push(storage_key);
+            }
+        }
+
+        for storage_key in &order {
+            let (entry_type, collection, key, vector, metadata) =
+                match final_ops.get(storage_key) {
+                    Some(v) => v,
+                    None => continue,
+                };
             match entry_type {
                 WalEntryType::Insert | WalEntryType::Update => {
-                    // Storage uses the `collection:id` key space (same as the
-                    // write path); the WAL stores only the bare id.
-                    let storage_key = format!("{}:{}", collection, key);
                     {
                         let storage = self.storage.read().await;
-                        if let Err(e) = storage.store(&storage_key, vector, metadata).await {
+                        if let Err(e) = storage.store(storage_key, vector, metadata).await {
                             log::warn!("WAL replay store failed for {}: {}", storage_key, e);
                             skipped += 1;
                             continue;
@@ -287,26 +324,27 @@ impl DataManager {
                     replayed += 1;
                 }
                 WalEntryType::Delete => {
-                    let storage_key = format!("{}:{}", collection, key);
-                    let storage = self.storage.read().await;
-                    match storage.delete(&storage_key).await {
-                        Ok(_) => {
-                            drop(storage);
-                            let index_name = index_name_for(collection);
-                            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-                                let _ = index.remove(key).await;
-                            }
-                            let mut data = self.data.write().await;
-                            if let Some(collection_data) = data.get_mut(collection.as_str()) {
-                                collection_data.remove(key);
-                            }
-                            replayed += 1;
-                        }
-                        Err(e) => {
+                    {
+                        let storage = self.storage.read().await;
+                        if let Err(e) = storage.delete(storage_key).await {
+                            // A delete of something absent is not a failure.
                             log::warn!("WAL replay delete failed for {}: {}", storage_key, e);
                             skipped += 1;
+                            continue;
                         }
                     }
+                    // Always drop from memory/index after a successful delete,
+                    // so a prior Insert of the same key in this replay pass
+                    // cannot survive.
+                    let index_name = index_name_for(collection);
+                    if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                        let _ = index.remove(key).await;
+                    }
+                    let mut data = self.data.write().await;
+                    if let Some(collection_data) = data.get_mut(collection.as_str()) {
+                        collection_data.remove(key);
+                    }
+                    replayed += 1;
                 }
                 _ => {}
             }
@@ -1155,16 +1193,22 @@ impl DataManager {
 
         let after_set: std::collections::HashSet<&str> =
             after.iter().map(|s| s.as_str()).collect();
-        let removed_keys: Vec<String> = before
+        let removed_keys: Vec<&String> = before
             .iter()
             .filter(|k| !after_set.contains(k.as_str()))
-            .cloned()
             .collect();
 
         if !removed_keys.is_empty() {
+            // Resolve `collection:id` against the *known* collection names
+            // rather than splitting on the first ':' — ids may legitimately
+            // contain ':' (e.g. "ns:user:1"), which would pick the wrong
+            // collection. Longest prefix wins.
+            let known: Vec<String> = self.collections.read().await.keys().cloned().collect();
+
             let mut data = self.data.write().await;
-            for storage_key in &removed_keys {
-                let Some((collection, id)) = storage_key.split_once(':') else {
+            for storage_key in removed_keys {
+                let Some((collection, id)) = Self::split_storage_key(storage_key, &known) else {
+                    log::warn!("purge_expired: cannot resolve storage key {}", storage_key);
                     continue;
                 };
                 let index_name = index_name_for(collection);
@@ -1178,6 +1222,23 @@ impl DataManager {
         }
 
         Ok(purged)
+    }
+
+    /// Split a storage key (`collection:id`) into its parts using the known
+    /// collection names, preferring the longest matching prefix so ids that
+    /// contain ':' are attributed to the right collection.
+    fn split_storage_key<'a>(key: &'a str, known: &'a [String]) -> Option<(&'a str, &'a str)> {
+        let mut best: Option<(&str, &str)> = None;
+        for name in known {
+            let prefix = format!("{}:", name);
+            if let Some(id) = key.strip_prefix(prefix.as_str()) {
+                match best {
+                    Some((prev, _)) if prev.len() >= name.len() => {}
+                    _ => best = Some((name.as_str(), id)),
+                }
+            }
+        }
+        best
     }
 
     pub async fn get_shard_for_key(&self, key: &str, total_shards: usize) -> usize {
@@ -1767,6 +1828,24 @@ mod tests {
 
         let collections = dm.list_collections().await.unwrap();
         assert!(collections.contains(&"test".to_string()));
+    }
+
+    /// Ids may themselves contain ':' — resolving a storage key by splitting on
+    /// the first ':' would attribute the row to the wrong collection.
+    #[test]
+    fn test_split_storage_key_handles_colons_in_id() {
+        let known = vec!["demo".to_string(), "demo:ns".to_string()];
+
+        // Longest matching prefix wins.
+        assert_eq!(
+            DataManager::split_storage_key("demo:ns:user:1", &known),
+            Some(("demo:ns", "user:1"))
+        );
+        assert_eq!(
+            DataManager::split_storage_key("demo:plain", &known),
+            Some(("demo", "plain"))
+        );
+        assert_eq!(DataManager::split_storage_key("other:x", &known), None);
     }
 
     #[tokio::test]

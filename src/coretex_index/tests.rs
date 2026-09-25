@@ -65,6 +65,89 @@ async fn test_hnsw_index() {
     index.clear().await.unwrap();
 }
 
+/// Regression: `remove` used to promote an arbitrary `graph.keys().next()` to
+/// entry point. The entry point must remain the *highest-level* node, otherwise
+/// the hierarchy stops being navigable from the top.
+#[tokio::test]
+async fn test_hnsw_remove_reassigns_highest_level_entry_point() {
+    let index = HNSWIndex::new("cosine");
+    for i in 0..64 {
+        let angle = i as f32 * 0.1;
+        index
+            .add(&format!("v{i}"), &[angle.cos(), angle.sin(), 0.0])
+            .await
+            .unwrap();
+    }
+
+    let old_ep = index.entry_point.read().await.clone();
+    let old_ep = old_ep.expect("entry point set after inserts");
+
+    index.remove(&old_ep).await.unwrap();
+
+    let new_ep = index.entry_point.read().await.clone();
+    let graph = index.graph.read().await;
+    if let Some(ep) = new_ep {
+        assert_ne!(ep, old_ep, "removed entry point must not stay selected");
+        let ep_level = graph.get(&ep).map(|l| l.len()).unwrap_or(0);
+        let max_level = graph.values().map(|l| l.len()).max().unwrap_or(0);
+        assert_eq!(ep_level, max_level, "entry point must stay the highest-level node");
+    }
+}
+
+/// Regression: `search_layer` used to `unwrap()` the vector for a graph
+/// neighbour, so a single dangling backlink panicked the whole search.
+#[tokio::test]
+async fn test_hnsw_search_tolerates_orphan_graph_neighbor() {
+    let index = HNSWIndex::new("cosine");
+    index.add("a", &[1.0, 0.0, 0.0]).await.unwrap();
+    index.add("b", &[0.0, 1.0, 0.0]).await.unwrap();
+
+    // Simulate a legacy orphan: a backlink to an id with no vector.
+    {
+        let mut vectors = index.vectors.write().await;
+        vectors.remove("b");
+    }
+
+    // Must not panic.
+    let _ = index.search(&[1.0, 0.0, 0.0], 5).await.unwrap();
+}
+
+/// Concurrent add/remove/search must not deadlock (AB-BA between the
+/// `vectors → entry_point → graph` and the old `vectors → graph → entry_point`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_hnsw_concurrent_add_remove_no_deadlock() {
+    use std::sync::Arc;
+    let index = Arc::new(HNSWIndex::new("cosine"));
+    for i in 0..16 {
+        index.add(&format!("seed{i}"), &[i as f32, 1.0, 0.0]).await.unwrap();
+    }
+
+    let idx = index.clone();
+    let writer = tokio::spawn(async move {
+        for i in 0..200 {
+            idx.add(&format!("x{i}"), &[i as f32, 0.0, 1.0]).await.unwrap();
+        }
+    });
+    let idx = index.clone();
+    let remover = tokio::spawn(async move {
+        for i in 0..200 {
+            let _ = idx.remove(&format!("seed{}", i % 16)).await;
+        }
+    });
+    let idx = index.clone();
+    let searcher = tokio::spawn(async move {
+        for _ in 0..200 {
+            let _ = idx.search(&[1.0, 1.0, 0.0], 5).await;
+        }
+    });
+
+    // Reaching the joins means every lock pair progressed; a deadlock would
+    // hang the test (caught by the harness timeout) instead.
+    writer.await.unwrap();
+    remover.await.unwrap();
+    searcher.await.unwrap();
+}
+
 #[tokio::test]
 async fn test_ivf_index() {
     // Create a new IVF index
