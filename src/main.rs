@@ -3,7 +3,7 @@
 //! Command-line interface for CoreTexDB.
 //! Provides commands for database operations, server management, and administration.
 //!
-//! 单文件分发：本二进制根据**自身文件名**（argv[0]）自动分发，因此把
+//! 单文件分发：本二进制根据**自身文件名**（`argv[0]`）自动分发，因此把
 //! `coretex.exe` 改名（或建硬链接）为 `coretexd.exe` / `coretex-backup.exe` /
 //! `coretex-healthcheck.exe` / `coretex-migrate.exe` / `coretex-cli.exe`
 //! 即等价于对应程序，无需真的存在第二个可执行文件。

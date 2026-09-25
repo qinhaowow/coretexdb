@@ -379,6 +379,12 @@ use crate::coretex_core::Result;
         }).await.unwrap();
         
         let stats = embedder.stats().await;
-        assert!(stats.buffer_size >= 0);
+        // batch_size = 2 且恰好压入 2 条：缓冲不可能超过批量上限，
+        // 超过就说明分批失效了。
+        assert!(
+            stats.buffer_size <= 2,
+            "buffer_size {} 不应超过 batch_size 2",
+            stats.buffer_size
+        );
     }
 }

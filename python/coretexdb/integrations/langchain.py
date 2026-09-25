@@ -41,7 +41,7 @@ class CortexDBVectorStore:
         if not LANGCHAIN_AVAILABLE:
             raise ImportError(
                 "LangChain integration requires langchain to be installed. "
-                "Please install it with: pip install 'cortexdb[langchain]'"
+                "Please install it with: pip install 'coretexdb[langchain]'"
             )
         
         self.client = client
@@ -197,7 +197,7 @@ class CortexDBVectorStore:
         if not LANGCHAIN_AVAILABLE:
             raise ImportError(
                 "LangChain integration requires langchain to be installed. "
-                "Please install it with: pip install 'cortexdb[langchain]'"
+                "Please install it with: pip install 'coretexdb[langchain]'"
             )
             
         if client_kwargs is None:

@@ -1,6 +1,6 @@
-//! Vector indexing benchmarks for CortexDB
+//! Vector indexing benchmarks for CoreTexDB
 
-use cortexdb::coretex_index::{BruteForceIndex, HNSWIndex, VectorIndex};
+use coretexdb::coretex_index::{BruteForceIndex, HNSWIndex, VectorIndex};
 use rand::Rng;
 use std::time::Instant;
 
@@ -29,7 +29,7 @@ async fn benchmark_brute_force(dim: usize, n_vectors: usize, n_queries: usize, k
 
     // Build index
     let start = Instant::now();
-    let index = BruteForceIndex::new("cosine".to_string());
+    let index = BruteForceIndex::new("cosine");
     for (id, vector) in &vectors {
         let _ = index.add(id, vector).await;
     }
@@ -58,7 +58,7 @@ async fn benchmark_hnsw(dim: usize, n_vectors: usize, n_queries: usize, k: usize
 
     // Build index
     let start = Instant::now();
-    let index = HNSWIndex::new("cosine".to_string(), 16, 100, 50, 10);
+    let index = HNSWIndex::new("cosine");
     for (id, vector) in &vectors {
         let _ = index.add(id, vector).await;
     }
@@ -87,7 +87,7 @@ async fn main() {
     let n_queries = 1000;
     let k = 10;
 
-    println!("CortexDB Vector Index Benchmarks");
+    println!("CoreTexDB Vector Index Benchmarks");
     println!("=================================");
 
     benchmark_brute_force(dim, n_vectors, n_queries, k).await;

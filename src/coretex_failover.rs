@@ -817,10 +817,6 @@ impl RaftLog {
         let mut committed = Vec::new();
         let current = self.entries.len() as u64;
         let target = commit_index.min(current.saturating_sub(1));
-        while (self.entries.len() as u64) <= target {
-            // 等待更多条目
-            break;
-        }
         let upper = (target + 1) as usize;
         if upper > self.entries.len() {
             return committed;

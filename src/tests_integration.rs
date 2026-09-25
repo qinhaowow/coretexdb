@@ -1688,6 +1688,8 @@ async fn test_e2e_empty_result_graceful() {
     }
 }
 
+// 3.14 是随便取的样本值，不是想表示 π。
+#[allow(clippy::approx_constant)]
 #[tokio::test]
 async fn test_e2e_type_handling() {
     let executor = SQLExecutor::new();

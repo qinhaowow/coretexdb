@@ -76,8 +76,13 @@ mod tests {
         
         let txn_id = manager.begin_transaction(IsolationLevel::Snapshot).await.unwrap();
         let snapshot_id = manager.create_snapshot(txn_id).await.unwrap();
-        
-        assert!(snapshot_id >= 0);
+
+        // 快照刚创建，必须能被立刻取到。
+        assert!(
+            manager.get_snapshot(snapshot_id).await.is_some(),
+            "刚创建的快照 {} 应该能查询到",
+            snapshot_id
+        );
     }
 
     #[tokio::test]

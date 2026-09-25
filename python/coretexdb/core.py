@@ -26,10 +26,10 @@ class CortexDB:
 
     Example:
     --------
-    import cortexdb
+    import coretexdb
     import numpy as np
 
-    db = cortexdb.CortexDB("localhost", port=5000)
+    db = coretexdb.CortexDB("localhost", port=5000)
 
     db.create_collection("my_vectors", dimension=128)
 

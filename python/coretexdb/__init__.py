@@ -13,11 +13,11 @@ A multimodal vector database for AI applications, providing:
 
 Example usage:
 --------------
-import cortexdb
+import coretexdb
 import numpy as np
 
 # Initialize database
-db = cortexdb.CortexDB("data")
+db = coretexdb.CortexDB("data")
 
 # Insert vectors
 vectors = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])

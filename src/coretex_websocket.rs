@@ -983,7 +983,7 @@ mod tests {
         }).await;
         // broadcast_to_collection 当前为 0（因为发送是给所有订阅者）
         // 实际发送会通过 event_sender.send 完成
-        assert!(count >= 0);
+        assert_eq!(count, 0, "本测试未注册订阅者，应匹配到 0 个订阅者");
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ Test script to verify the CortexDB Python package structure
 import sys
 import os
 
-# Add the parent directory to the path so we can import cortexdb
+# Add the parent directory to the path so we can import coretexdb
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 def test_imports():
@@ -15,23 +15,23 @@ def test_imports():
     
     # Test main imports
     try:
-        import cortexdb
-        print("✓ cortexdb imported successfully")
+        import coretexdb
+        print("✓ coretexdb imported successfully")
     except ImportError as e:
-        print(f"✗ Failed to import cortexdb: {e}")
+        print(f"✗ Failed to import coretexdb: {e}")
         return False
     
     # Test version
     try:
-        version = cortexdb.__version__
-        print(f"✓ cortexdb version: {version}")
+        version = coretexdb.__version__
+        print(f"✓ coretexdb version: {version}")
     except AttributeError as e:
         print(f"✗ Failed to get version: {e}")
         return False
     
     # Test core classes
     try:
-        from cortexdb import CortexDB
+        from coretexdb import CortexDB
         print("✓ CortexDB imported successfully")
     except ImportError as e:
         print(f"✗ Failed to import CortexDB: {e}")
@@ -39,7 +39,7 @@ def test_imports():
     
     # Test client classes
     try:
-        from cortexdb import CortexDBClient, AsyncCortexDBClient
+        from coretexdb import CortexDBClient, AsyncCortexDBClient
         print("✓ CortexDBClient and AsyncCortexDBClient imported successfully")
     except ImportError as e:
         print(f"✗ Failed to import clients: {e}")
@@ -47,24 +47,24 @@ def test_imports():
     
     # Test integrations module
     try:
-        from cortexdb import integrations
+        from coretexdb import integrations
         print("✓ integrations module imported successfully")
         
         # Test integration classes only if available
         try:
-            from cortexdb.integrations import CortexDBVectorStore
+            from coretexdb.integrations import CortexDBVectorStore
             print("✓ CortexDBVectorStore imported successfully")
         except ImportError:
             print("⚠ CortexDBVectorStore not available (langchain not installed)")
         
         try:
-            from cortexdb.integrations import HuggingFaceEmbeddingAdapter
+            from coretexdb.integrations import HuggingFaceEmbeddingAdapter
             print("✓ HuggingFaceEmbeddingAdapter imported successfully")
         except ImportError:
             print("⚠ HuggingFaceEmbeddingAdapter not available (transformers/torch not installed)")
         
         try:
-            from cortexdb.integrations import OpenAIEmbeddingAdapter
+            from coretexdb.integrations import OpenAIEmbeddingAdapter
             print("✓ OpenAIEmbeddingAdapter imported successfully")
         except ImportError:
             print("⚠ OpenAIEmbeddingAdapter not available (openai not installed)")
@@ -75,12 +75,12 @@ def test_imports():
     
     # Test protocol
     try:
-        from cortexdb import protocol
+        from coretexdb import protocol
         print("✓ protocol imported successfully")
         
         # Test protocol classes
         try:
-            from cortexdb.protocol import (
+            from coretexdb.protocol import (
                 CollectionConfig,
                 VectorInsert,
                 SearchQuery,
