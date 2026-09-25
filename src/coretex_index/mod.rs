@@ -1166,7 +1166,7 @@ impl IndexManager {
             "hnsw" => Box::new(HNSWIndex::new(metric)),
             "ivf" => Box::new(IVFIndex::new(metric)),
             "scalar" => Box::new(ScalarIndex::new()),
-            "pq" => Box::new(PQIndex::new(metric, 128, 16, 8)),
+            "pq" => Box::new(PQIndex::new(metric)),
             _ => Box::new(BruteForceIndex::new(metric)),
         };
         
@@ -1263,10 +1263,12 @@ impl IndexManager {
                         tokio::sync::RwLock::new(d.original_vectors),
                     ),
                     metric: d.metric,
-                    dimension: d.dimension,
-                    n_subquantizers: d.n_subquantizers,
-                    n_bits: d.n_bits,
-                    codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(d.codebooks)),
+                    training: std::sync::Arc::new(tokio::sync::RwLock::new(PqTraining {
+                        dimension: d.dimension,
+                        n_subquantizers: d.n_subquantizers,
+                        n_bits: d.n_bits,
+                        codebooks: d.codebooks,
+                    })),
                 }),
                 Err(_) => return Ok(false),
             },
@@ -1278,15 +1280,51 @@ impl IndexManager {
     }
 }
 
+/// Everything training establishes about a PQ index.
+///
+/// It lives behind an `Arc` shared by every `clone_box()`, because the previous
+/// `clone_box` hand-built a *fresh empty* index — so every read and write made
+/// through `IndexManager::get_index()` was invisible to everyone else.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PqTraining {
+    /// Vector dimension. `0` until the first training run infers it.
+    dimension: usize,
+    /// Number of equal sub-vectors the vector is split into; one codebook each.
+    n_subquantizers: usize,
+    /// Code width: each sub-vector is represented by one of `1 << n_bits`
+    /// centroids.
+    n_bits: usize,
+    /// Per-sub-space centroids, `n_subquantizers` codebooks of `1 << n_bits`
+    /// vectors of `dimension / n_subquantizers` floats.
+    codebooks: Vec<Vec<Vec<f32>>>,
+}
+
+/// Product Quantization index: splits a vector into `n_subquantizers`
+/// sub-vectors and replaces each with the index of its nearest centroid, so a
+/// vector costs `n_subquantizers` bytes instead of `dimension * 4`.
+///
+/// Raw vectors are held only until the codebooks exist; from then on the index
+/// keeps codes alone and searches by decoding them — that is the compression
+/// PQ is for. Until enough samples arrive to train, search falls back to an
+/// exact scan of the buffered vectors, so results are correct either way.
+#[derive(Clone)]
 pub struct PQIndex {
+    /// Quantized codes, `n_subquantizers` bytes per vector, keyed by id.
     vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>>,
+    /// Raw vectors waiting for training; drained into `vectors` by the first
+    /// training run.
     original_vectors: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<f32>>>>,
     metric: String,
-    dimension: usize,
-    n_subquantizers: usize,
-    n_bits: usize,
-    codebooks: std::sync::Arc<tokio::sync::RwLock<Vec<Vec<Vec<f32>>>>>,
+    training: std::sync::Arc<tokio::sync::RwLock<PqTraining>>,
 }
+
+/// Sub-vector count assumed before the layout is derived from real vectors.
+const PQ_DEFAULT_SUBQUANTIZERS: usize = 16;
+/// Code width assumed before training; 256 centroids per sub-space.
+const PQ_DEFAULT_BITS: usize = 8;
+/// Samples required before a lazy training run. Below this the index still
+/// answers correctly, just by an exact scan instead of decoding codes.
+const PQ_MIN_TRAIN_SAMPLES: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HNSWIndexData {
@@ -1322,51 +1360,135 @@ struct PQIndexData {
 }
 
 impl PQIndex {
-    pub fn new(metric: &str, dimension: usize, n_subquantizers: usize, n_bits: usize) -> Self {
+    /// Create an empty index.
+    ///
+    /// The dimension and the codebooks are *not* constructor arguments: they
+    /// are established by the first training run. The previous constructor
+    /// hardcoded `dimension = 128`, which could not match the collection it was
+    /// created for, so `encode_vector` sliced out of range on any other width.
+    pub fn new(metric: &str) -> Self {
         Self {
             vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             metric: metric.to_string(),
-            dimension,
-            n_subquantizers,
-            n_bits,
-            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            training: std::sync::Arc::new(tokio::sync::RwLock::new(PqTraining {
+                dimension: 0,
+                n_subquantizers: PQ_DEFAULT_SUBQUANTIZERS,
+                n_bits: PQ_DEFAULT_BITS,
+                codebooks: Vec::new(),
+            })),
         }
     }
 
+    /// Largest sub-vector count (≤ [`PQ_DEFAULT_SUBQUANTIZERS`]) that divides
+    /// `dimension`, so every sub-space has the same length. Prime dimensions
+    /// fall back to 1 (one centroid index for the whole vector).
+    fn layout_for(dimension: usize) -> usize {
+        let mut n = PQ_DEFAULT_SUBQUANTIZERS.min(dimension).max(1);
+        while n > 1 && dimension % n != 0 {
+            n -= 1;
+        }
+        n
+    }
+
+    /// Train the codebooks on `training_vectors`.
+    ///
+    /// Both the dimension and the sub-vector split are derived from the samples
+    /// rather than fixed, so the index adapts to whatever width the collection
+    /// uses (384, 768, 1536, …).
     pub async fn train(&self, training_vectors: &[Vec<f32>]) -> std::result::Result<(), String> {
         if training_vectors.is_empty() {
             return Err("No training vectors provided".to_string());
         }
 
-        let sub_dim = self.dimension / self.n_subquantizers;
+        let dimension = training_vectors[0].len();
+        if dimension == 0 {
+            return Err("Cannot train on zero-length vectors".to_string());
+        }
+        if training_vectors.iter().any(|v| v.len() != dimension) {
+            return Err("Training vectors have mixed dimensions".to_string());
+        }
+
+        let n_subquantizers = Self::layout_for(dimension);
+        let sub_dim = dimension / n_subquantizers;
         if sub_dim == 0 {
             return Err("Too many subquantizers for the vector dimension".to_string());
         }
 
-        let mut codebooks = Vec::new();
-
-        for i in 0..self.n_subquantizers {
+        let n_bits = PQ_DEFAULT_BITS;
+        let mut codebooks = Vec::with_capacity(n_subquantizers);
+        for i in 0..n_subquantizers {
             let start = i * sub_dim;
-            let end = if i == self.n_subquantizers - 1 {
-                self.dimension
-            } else {
-                start + sub_dim
-            };
+            let end = if i == n_subquantizers - 1 { dimension } else { start + sub_dim };
 
             let mut sub_vectors: Vec<Vec<f32>> = training_vectors
                 .iter()
                 .map(|v| v[start..end].to_vec())
                 .collect();
 
-            let n_centroids = 1 << self.n_bits;
-            let codebook = Self::kmeans(&mut sub_vectors, n_centroids);
+            // `kmeans` clamps k to the sample count, so few samples simply
+            // yield fewer centroids — the codes stay valid either way.
+            let codebook = Self::kmeans(&mut sub_vectors, 1 << PQ_DEFAULT_BITS);
+            if codebook.is_empty() {
+                return Err("Training produced an empty codebook".to_string());
+            }
             codebooks.push(codebook);
         }
 
-        let mut cb = self.codebooks.write().await;
-        *cb = codebooks;
+        *self.training.write().await = PqTraining {
+            dimension,
+            n_subquantizers,
+            n_bits,
+            codebooks,
+        };
 
+        Ok(())
+    }
+
+    /// Train lazily once enough raw vectors are buffered, then swap the codes
+    /// in for them.
+    ///
+    /// Nothing ever called `train()` explicitly, yet the old index refused
+    /// every `add` and `search` with "Index not trained" — this is what makes
+    /// the index usable without a separate training step.
+    async fn maybe_train(&self) -> Result<()> {
+        let untrained = { self.training.read().await.codebooks.is_empty() };
+        if !untrained {
+            return Ok(());
+        }
+
+        let samples: Vec<Vec<f32>> = {
+            let buffer = self.original_vectors.read().await;
+            buffer.values().cloned().collect()
+        };
+        if samples.len() < PQ_MIN_TRAIN_SAMPLES {
+            return Ok(());
+        }
+
+        self.train(&samples)
+            .await
+            .map_err(|e| CoreTexError::IndexError(format!("pq training failed: {e}")))?;
+
+        // Lock order is `training → original_vectors → vectors`, matching
+        // `persist`, so neither can deadlock against the other.
+        let codes = {
+            let training = self.training.read().await;
+            let mut buffer = self.original_vectors.write().await;
+            if buffer.is_empty() {
+                return Ok(());
+            }
+            let mut codes: Vec<(String, Vec<u8>)> = Vec::with_capacity(buffer.len());
+            for (id, vector) in buffer.iter() {
+                codes.push((id.clone(), self.encode_vector(vector, &training)));
+            }
+            buffer.clear();
+            codes
+        };
+
+        let mut vectors = self.vectors.write().await;
+        for (id, code) in codes {
+            vectors.insert(id, code);
+        }
         Ok(())
     }
 
@@ -1432,45 +1554,37 @@ impl PQIndex {
         centroids
     }
 
-    pub async fn add(&self, id: String, vector: Vec<f32>) -> std::result::Result<(), String> {
-        if vector.len() != self.dimension {
-            return Err(format!("Vector dimension {} does not match index dimension {}", vector.len(), self.dimension));
-        }
+    /// Map a vector to its `n_subquantizers` centroid indices, one byte each.
+    fn encode_vector(&self, vector: &[f32], training: &PqTraining) -> Vec<u8> {
+        let n = training.n_subquantizers.max(1);
+        let sub_dim = training.dimension / n;
+        let mut code = Vec::with_capacity(n);
 
-        let codebook = self.codebooks.read().await;
-        if codebook.is_empty() {
-            return Err("Index not trained. Call train() first.".to_string());
-        }
-
-        let code = self.encode_vector(&vector, &codebook);
-
-        let mut vectors = self.vectors.write().await;
-        vectors.insert(id.clone(), code);
-
-        let mut original = self.original_vectors.write().await;
-        original.insert(id, vector);
-
-        Ok(())
-    }
-
-    fn encode_vector(&self, vector: &[f32], codebook: &[Vec<Vec<f32>>]) -> Vec<u8> {
-        let sub_dim = self.dimension / self.n_subquantizers;
-        let mut code = Vec::with_capacity(self.n_subquantizers);
-
-        for (i, sub_codebook) in codebook.iter().enumerate() {
+        for i in 0..n {
             let start = i * sub_dim;
-            let end = if i == self.n_subquantizers - 1 {
-                self.dimension
-            } else {
-                start + sub_dim
+            let end = if i == n - 1 { training.dimension } else { start + sub_dim };
+
+            // A vector shorter than the layout, or a missing/empty codebook,
+            // still yields a byte — a partially trained index must round-trip
+            // instead of panicking on an out-of-range slice.
+            let sub_vector = match vector.get(start..end) {
+                Some(v) => v,
+                None => {
+                    code.push(0);
+                    continue;
+                }
+            };
+            let codebook = match training.codebooks.get(i) {
+                Some(cb) if !cb.is_empty() => cb,
+                _ => {
+                    code.push(0);
+                    continue;
+                }
             };
 
-            let sub_vector = &vector[start..end];
-
             let mut min_dist = f32::MAX;
-            let mut best_idx = 0u8;
-
-            for (j, centroid) in sub_codebook.iter().enumerate() {
+            let mut best_idx = 0usize;
+            for (j, centroid) in codebook.iter().enumerate() {
                 let dist: f32 = sub_vector
                     .iter()
                     .zip(centroid.iter())
@@ -1480,40 +1594,43 @@ impl PQIndex {
 
                 if dist < min_dist {
                     min_dist = dist;
-                    best_idx = j as u8;
+                    best_idx = j;
                 }
             }
 
-            code.push(best_idx);
+            code.push(best_idx as u8);
         }
 
         code
     }
 
-    pub async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
-        let codebook = self.codebooks.read().await;
-        if codebook.is_empty() {
-            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
+    /// Rebuild a full-size vector from its code by concatenating the chosen
+    /// centroids.
+    ///
+    /// Searching this way — instead of from stored originals — is what lets the
+    /// index drop the raw vectors and actually stay compact.
+    fn decode(code: &[u8], training: &PqTraining) -> Vec<f32> {
+        let n = training.n_subquantizers.max(1);
+        let sub_dim = training.dimension / n;
+        let mut out = Vec::with_capacity(training.dimension);
+
+        for i in 0..n {
+            let centroid = match (code.get(i).map(|b| *b as usize), training.codebooks.get(i)) {
+                (Some(idx), Some(cb)) => cb.get(idx),
+                _ => None,
+            };
+
+            match centroid {
+                Some(c) => out.extend_from_slice(c),
+                None => out.extend(std::iter::repeat(0.0).take(sub_dim)),
+            }
         }
 
-        let _query_code = self.encode_vector(query, &codebook);
-        let original = self.original_vectors.read().await;
-
-        let mut results: Vec<SearchResult> = original
-            .iter()
-            .map(|(id, orig)| {
-                let dist = self.calculate_distance(query, orig);
-                SearchResult {
-                    id: id.clone(),
-                    distance: dist,
-                }
-            })
-            .collect();
-
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
-        results.truncate(k);
-
-        Ok(results)
+        out.truncate(training.dimension);
+        while out.len() < training.dimension {
+            out.push(0.0);
+        }
+        out
     }
 
     /// Distance between two vectors under this index's metric.
@@ -1521,62 +1638,97 @@ impl PQIndex {
         metric_distance(&self.metric, a, b)
     }
 
-    pub fn compression_ratio(&self) -> f32 {
-        let original_size = self.dimension * 4;
-        let compressed_size = self.n_subquantizers;
-        original_size as f32 / compressed_size as f32
+    /// Bytes one raw f32 vector costs versus its code. `0.0` before training.
+    pub async fn compression_ratio(&self) -> f32 {
+        let training = self.training.read().await;
+        if training.dimension == 0 || training.n_subquantizers == 0 {
+            return 0.0;
+        }
+        (training.dimension * 4) as f32 / training.n_subquantizers as f32
     }
 }
 
 #[async_trait]
 impl VectorIndex for PQIndex {
     async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
-        let codebook = self.codebooks.read().await;
-        if codebook.is_empty() {
-            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
+        let untrained = self.training.read().await.codebooks.is_empty();
+        if untrained {
+            // Buffer the raw vector; `maybe_train` codes it once enough have
+            // arrived. The previous index refused this outright, so every
+            // write to a `pq` collection failed with "Index not trained".
+            self.original_vectors
+                .write()
+                .await
+                .insert(id.to_string(), vector.to_vec());
+            return self.maybe_train().await;
         }
 
-        let code = self.encode_vector(vector, &codebook);
+        let training = self.training.read().await;
+        if vector.len() != training.dimension {
+            return Err(CoreTexError::IndexError(format!(
+                "vector dimension {} does not match index dimension {}",
+                vector.len(),
+                training.dimension
+            )));
+        }
+        let code = self.encode_vector(vector, &training);
+        drop(training);
 
-        let mut vectors = self.vectors.write().await;
-        vectors.insert(id.to_string(), code);
-
-        let mut original = self.original_vectors.write().await;
-        original.insert(id.to_string(), vector.to_vec());
-
+        self.vectors.write().await.insert(id.to_string(), code);
         Ok(())
     }
 
     async fn remove(&self, id: &str) -> Result<bool> {
-        let mut vectors = self.vectors.write().await;
-        let removed_vectors = vectors.remove(id).is_some();
-
-        let mut original = self.original_vectors.write().await;
-        let removed_original = original.remove(id).is_some();
+        let removed_vectors = self.vectors.write().await.remove(id).is_some();
+        let removed_original = self.original_vectors.write().await.remove(id).is_some();
 
         Ok(removed_vectors || removed_original)
     }
 
     async fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>> {
-        let codebook = self.codebooks.read().await;
-        if codebook.is_empty() {
-            return Err(CoreTexError::IndexError("Index not trained. Call train() first.".to_string()));
+        self.maybe_train().await?;
+
+        let training = self.training.read().await;
+        if training.codebooks.is_empty() {
+            // Too few samples to build codebooks: scan the buffered vectors
+            // exactly, so results do not depend on whether training happened.
+            drop(training);
+            let raw = self.original_vectors.read().await;
+
+            let mut results: Vec<SearchResult> = raw
+                .iter()
+                .map(|(id, vector)| SearchResult {
+                    id: id.clone(),
+                    distance: self.calculate_distance(query, vector),
+                })
+                .collect();
+            results.sort_by(|a, b| {
+                a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            results.truncate(k);
+            return Ok(results);
         }
 
-        let original = self.original_vectors.read().await;
+        if query.len() != training.dimension {
+            return Err(CoreTexError::IndexError(format!(
+                "query dimension {} does not match index dimension {}",
+                query.len(),
+                training.dimension
+            )));
+        }
 
-        let mut results: Vec<SearchResult> = original
-            .iter()
-            .map(|(id, orig)| {
-                let dist = self.calculate_distance(query, orig);
-                SearchResult {
-                    id: id.clone(),
-                    distance: dist,
-                }
-            })
-            .collect();
-
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        let vectors = self.vectors.read().await;
+        let mut results = Vec::with_capacity(vectors.len());
+        for (id, code) in vectors.iter() {
+            let decoded = Self::decode(code, &training);
+            results.push(SearchResult {
+                id: id.clone(),
+                distance: self.calculate_distance(query, &decoded),
+            });
+        }
+        results.sort_by(|a, b| {
+            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(k);
 
         Ok(results)
@@ -1587,30 +1739,31 @@ impl VectorIndex for PQIndex {
     }
 
     async fn clear(&self) -> Result<()> {
-        let mut vectors = self.vectors.write().await;
-        vectors.clear();
-
-        let mut original = self.original_vectors.write().await;
-        original.clear();
+        self.original_vectors.write().await.clear();
+        self.vectors.write().await.clear();
 
         Ok(())
     }
 
     async fn persist(&self, path: &std::path::Path, checksum: &str) -> Result<bool> {
-        let vectors = self.vectors.read().await;
+        let training = self.training.read().await;
         let original_vectors = self.original_vectors.read().await;
-        let codebooks = self.codebooks.read().await;
+        let vectors = self.vectors.read().await;
 
         let data = PQIndexData {
             metric: self.metric.clone(),
-            dimension: self.dimension,
-            n_subquantizers: self.n_subquantizers,
-            n_bits: self.n_bits,
-            codebooks: codebooks.clone(),
+            dimension: training.dimension,
+            n_subquantizers: training.n_subquantizers,
+            n_bits: training.n_bits,
+            codebooks: training.codebooks.clone(),
             vectors: vectors.clone(),
             original_vectors: original_vectors.clone(),
         };
-        let count = data.vectors.len();
+        drop(vectors);
+        drop(original_vectors);
+        drop(training);
+
+        let count = data.vectors.len() + data.original_vectors.len();
         write_index_file(
             path,
             "pq",
@@ -1623,15 +1776,11 @@ impl VectorIndex for PQIndex {
     }
 
     fn clone_box(&self) -> Box<dyn VectorIndex> {
-        Box::new(Self {
-            vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            original_vectors: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            metric: self.metric.clone(),
-            dimension: self.dimension,
-            n_subquantizers: self.n_subquantizers,
-            n_bits: self.n_bits,
-            codebooks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
-        })
+        // Shares the maps and the training state, exactly like the other index
+        // types: `get_index()` hands out a handle to the *same* index. The
+        // previous implementation built a fresh empty one, so everything
+        // written through `get_index()` was silently invisible.
+        Box::new(self.clone())
     }
 }
 

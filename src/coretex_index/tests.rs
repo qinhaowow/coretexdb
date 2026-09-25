@@ -318,3 +318,130 @@ async fn test_load_index_rejects_type_and_metric_mismatch() {
         .await
         .unwrap());
 }
+
+/// Regression: `PQIndex::clone_box` used to hand back a *fresh empty* index,
+/// so every vector written through `IndexManager::get_index()` was invisible
+/// to the next reader — a `pq` collection returned nothing.
+#[tokio::test]
+async fn test_pq_shares_state_through_get_index() {
+    let manager = IndexManager::new();
+    manager.create_index("pq", "pq", "cosine").await.unwrap();
+
+    {
+        let writer = manager.get_index("pq").await.unwrap().unwrap();
+        writer.add("a", &[1.0, 0.0, 0.0]).await.unwrap();
+    }
+
+    let reader = manager.get_index("pq").await.unwrap().unwrap();
+    let hits = reader.search(&[1.0, 0.0, 0.0], 5).await.unwrap();
+    assert_eq!(hits.len(), 1, "a write through one handle must be visible to the next");
+    assert_eq!(hits[0].id, "a");
+}
+
+/// Below the training threshold the index scans its buffered vectors exactly,
+/// so results never depend on whether codebooks exist yet.
+#[tokio::test]
+async fn test_pq_search_before_training_is_exact() {
+    let index = PQIndex::new("cosine");
+
+    index.add("a", &[1.0, 0.0]).await.unwrap();
+    index.add("b", &[0.0, 1.0]).await.unwrap();
+    index.add("c", &[1.0, 1.0]).await.unwrap();
+
+    let hits = index.search(&[0.0, 1.0], 3).await.unwrap();
+    assert_eq!(hits.len(), 3, "every buffered vector is still searchable");
+    assert_eq!(hits[0].id, "b");
+    assert!(
+        index.training.read().await.codebooks.is_empty(),
+        "three samples must not have trained yet"
+    );
+}
+
+/// Once enough vectors arrive the index trains on its own, drops the raw
+/// vectors and keeps codes — the compression PQ exists for — while still
+/// returning the right neighbour.
+#[tokio::test]
+async fn test_pq_trains_lazily_and_compresses() {
+    let index = PQIndex::new("cosine");
+
+    let mut query = Vec::new();
+    for i in 0..24u32 {
+        let vector = vec![i as f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        if i == 7 {
+            query = vector.clone();
+        }
+        index.add(&format!("v{i}"), &vector).await.unwrap();
+    }
+
+    assert!(
+        index.original_vectors.read().await.is_empty(),
+        "training must drain the raw buffer"
+    );
+    assert_eq!(index.vectors.read().await.len(), 24, "codes must replace the vectors");
+
+    // 8 dims / 8 sub-vectors: 4 bytes per code where a raw f32 vector needs 32.
+    assert_eq!(index.compression_ratio().await, 4.0);
+
+    let hits = index.search(&query, 3).await.unwrap();
+    assert_eq!(hits.len(), 3);
+    assert_eq!(hits[0].id, "v7", "decoded codes must still find the exact match");
+}
+
+/// The sub-vector count is derived from the dimension, never assumed: every
+/// split must divide the vector width, or the sub-space slices would drift.
+#[test]
+fn test_pq_layout_always_divides_the_dimension() {
+    for dimension in 1..=300usize {
+        let n = PQIndex::layout_for(dimension);
+        assert!((1..=PQ_DEFAULT_SUBQUANTIZERS).contains(&n));
+        assert_eq!(dimension % n, 0, "layout {n} must divide dimension {dimension}");
+    }
+}
+
+/// A trained, compressed index must survive persistence and answer the same
+/// query after loading — this exercises the `pq` arm of `load_index`.
+#[tokio::test]
+async fn test_pq_persist_and_load_roundtrip() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("pq.json");
+
+    let index = PQIndex::new("cosine");
+    let mut pairs = Vec::new();
+    let mut query = Vec::new();
+    for i in 0..24u32 {
+        let vector = vec![i as f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        if i == 5 {
+            query = vector.clone();
+        }
+        index.add(&format!("v{i}"), &vector).await.unwrap();
+        pairs.push((format!("v{i}"), vector));
+    }
+    assert!(
+        index.original_vectors.read().await.is_empty(),
+        "training must have run before we persist"
+    );
+    let checksum = vectors_checksum(&pairs);
+
+    assert!(index.persist(&path, &checksum).await.unwrap());
+
+    let manager = IndexManager::new();
+    manager.create_index("i", "pq", "cosine").await.unwrap();
+    assert!(
+        manager
+            .load_index("i", "pq", "cosine", &path, &checksum)
+            .await
+            .unwrap(),
+        "a matching checksum must install the persisted pq index"
+    );
+
+    let loaded = manager.get_index("i").await.unwrap().unwrap();
+    let hits = loaded.search(&query, 3).await.unwrap();
+    assert_eq!(hits.first().map(|h| h.id.as_str()), Some("v5"));
+
+    // A different data set's checksum must still be rejected.
+    let stale = vectors_checksum(&[("a".to_string(), vec![9.0; 8])]);
+    assert!(!manager
+        .load_index("i", "pq", "cosine", &path, &stale)
+        .await
+        .unwrap());
+}

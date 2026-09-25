@@ -121,6 +121,8 @@ pub enum IndexType {
     HNSW, 
     IVF, 
     Scalar, 
+    /// Product Quantization: lossy compression of the vectors themselves.
+    PQ, 
 } 
 
 /// Error type for CoreTexDB 

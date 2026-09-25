@@ -301,7 +301,7 @@ where
                         Arg::new("index")
                             .short('i')
                             .long("index")
-                            .help("Index type: brute_force (exact, default), hnsw, ivf, scalar")
+                            .help("Index type: brute_force (exact, default), hnsw, ivf, scalar, pq (compressed)")
                             .default_value(crate::coretex_data::DEFAULT_INDEX_TYPE),
                     ),
             )

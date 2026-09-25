@@ -85,6 +85,7 @@ fn parse_index_type(raw: &str) -> (IndexType, &'static str) {
         "hnsw" => (IndexType::HNSW, "hnsw"),
         "ivf" => (IndexType::IVF, "ivf"),
         "scalar" => (IndexType::Scalar, "scalar"),
+        "pq" => (IndexType::PQ, "pq"),
         _ => (IndexType::BruteForce, "brute_force"),
     }
 }
@@ -96,6 +97,7 @@ pub(crate) fn index_type_name(index_type: &IndexType) -> &'static str {
         IndexType::HNSW => "hnsw",
         IndexType::IVF => "ivf",
         IndexType::Scalar => "scalar",
+        IndexType::PQ => "pq",
     }
 }
 
