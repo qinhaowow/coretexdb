@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         "coretex-migrate" => {
             println!("coretex-migrate {}", env!("CARGO_PKG_VERSION"));
-            println!("Migration entrypoint: use 'coretex-cli dump/restore' for store/WAL moves.");
+            println!("Migration entrypoint: use 'coretex dump/restore' for store/WAL moves.");
             println!("See share/doc/INSTALL.md for upgrade procedure.");
             return Ok(());
         }

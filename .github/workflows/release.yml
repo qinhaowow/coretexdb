@@ -94,7 +94,7 @@ jobs:
           mkdir -p "$STAGE"/{bin,lib,include,config,share,scripts,systemd,logrotate}
           mkdir -p "$STAGE"/data/coretex/{collections,indexes/{vector,scalar},metadata,store}
           mkdir -p "$STAGE"/data/{wal,backup/{full,incremental,snapshots},logs/audit,temp,versions}
-          for b in coretex coretexd coretex-cli coretex-migrate coretex-backup coretex-healthcheck; do
+          for b in coretex; do
             install -m 755 "$BD/$b" "$STAGE/bin/$b"
           done
           for lib in libcoretexdb.so libcoretexdb.dylib libcoretexdb.a; do
@@ -120,7 +120,7 @@ jobs:
         run: |
           $stage = "CoreTexDB-V0.2.3-${{ matrix.target }}"
           $bd = "${{ matrix.bin_dir }}"
-          $bins = @('coretex','coretexd','coretex-cli','coretex-migrate','coretex-backup','coretex-healthcheck')
+          $bins = @('coretex')
           New-Item -ItemType Directory -Path "$stage\bin","$stage\lib","$stage\include","$stage\config","$stage\share","$stage\scripts","$stage\systemd","$stage\logrotate" -Force | Out-Null
           $dataDirs = @(
             'data\coretex\collections','data\coretex\indexes\vector','data\coretex\indexes\scalar',
@@ -189,7 +189,7 @@ jobs:
             CoreTexDB V0.2.3 multi-platform packages (full install-root).
 
             Each archive contains:
-            - `bin/` coretex, coretexd, coretex-cli, coretex-migrate, coretex-backup, coretex-healthcheck
+            - `bin/` coretex (single entrypoint: server / backup / restore / doctor / dump)
             - `lib/` libcoretexdb / coretexdb (when produced by the toolchain)
             - `include/` coretexdb.h
             - `config/` `scripts/` `systemd/` `logrotate/` `share/`

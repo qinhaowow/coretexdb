@@ -26,5 +26,5 @@ See README §1.1 / §10 and RELEASE_NOTES.md for the full tree.
 ## Verify
 
 ```bash
-coretex-healthcheck --data-dir /opt/CoreTexDB-V0.2.3
+coretex doctor --data-dir /opt/CoreTexDB-V0.2.3
 ```

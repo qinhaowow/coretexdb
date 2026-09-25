@@ -6,27 +6,20 @@
 
 | 项 | 值 |
 |----|-----|
-| 版本 | **0.2.2**（`VERSION` / `Cargo.toml` / `Cargo.lock` 一致） |
+| 版本 | **0.2.3**（`VERSION` / `Cargo.toml` / `Cargo.lock` 一致） |
 | 工作分支 | `release/v0.2.1-base` |
-| 最新 commit | `e12b6f6` — package full install-root into V0.2.2 |
-| tag | `v0.2.2` → `e12b6f6`（已在远端） |
-| 工作区 | **有未提交改动**（核心引擎持久化修复 + `CLAUDE.md`/`AGENTS.md`）；**用户要求：暂时不要再推送 GitHub** |
+| 最新 commit | `836969d` — argv[0] 单文件分发（coretex.exe 多角色）；其后「单 bin 化」改动待提交 |
+| tag | `v0.2.3` → `c14e486`（已在远端，release.yml `v*` 触发）；旧 `v0.2.2` → `e12b6f6` 保留 |
+| 工作区 | 已推送至 `836969d`；本地有「删 5 壳 bin」未提交改动（等测试绿后提交） |
 
-### 近期完成（2026-09-25 核心引擎 P0/P1 修复，未提交）
-1. WAL fsync：`coretex_utils/wal.rs` append 后 `sync_all()`（原只 flush）
-2. `DbConfig::sync_writes`（默认 true）→ `FileStorage::with_fsync`；`save_metadata` 改为 temp+fsync+rename+目录 fsync
-3. 写路径不再吞错：`insert_vectors`/`delete_vectors`/`update_vector` 去掉 `let _ =`，改为 WAL→storage→内存→索引 顺序并 `?` 传播
-4. WAL 恢复修复（`recover_from_wal`）：storage key 用 `collection:id`（原裸 id 对不上）；重放进内存 map + 索引（原只进 storage 不可见）；manifest 丢失时自动重建 collection
-5. `RecoveryManager::recover` 同步改 `collection:id` 前缀
-6. 事务：`commit`/`abort` 从 `active_transactions` 移除（原泄漏致 active_count 恒增）；`abort` 增加非 Active 状态校验；解掉 `tests/tests_integration_v2.rs` 的 `#[ignore]`
-7. HNSW 锁序统一 `vectors → entry_point → graph`：`add`/`build` 原先持 graph 再取 vectors 与 search AB-BA 死锁
-8. `purge_expired`：真正同步清理内存 map + 索引（原 `retain(|_,_| true)` 空操作）
-9. `update_vector` 补 storage.store（原更新只进内存，重启丢失）
-10. `scripts/restore.sh`：`--output`→`--input` 并补 `--force`（原参数 CLI 不认）
-11. gRPC 生成代码改 `include!(concat!(env!("OUT_DIR"), "/coretex.rs"))`（原 `src/coretex_generated.rs` 无任何生成步骤，新 checkout 必挂）；`build.rs` protoc 缺失时快速报错
-12. 新增回归测试 `wal_integration_tests::test_recover_from_wal_restores_memory_and_index`
-- 测试：`cargo test` **424 unit + 26 + 11 integration 全绿，0 failed 0 ignored**（unit 全量约 467s）
-- 本地缓存已清重编过；WSL 有 `/usr/bin/protoc`
+### 近期完成（2026-09-25，均已推送）
+1. 核心引擎 P0/P1 修复 12 项：WAL fsync、sync_writes→fsync、写路径不吞错、WAL 恢复 `collection:id`、事务 active 泄漏、HNSW 锁序、purge_expired、update 补 storage、restore.sh 参数、gRPC include 生成码等（commit `4b508fc`）
+2. Windows 验收发现并修复 2 bug（commit `7c68885`）：restore 前未建父目录致全平台从未工作；`search --with-metadata` 在 `--format json` 被忽略
+3. 版本全线 0.2.2 → 0.2.3（18 文件，commit `c14e486`），tag `v0.2.3` 已打
+4. **单文件分发**：`src/main.rs` argv[0] 分发——coretex.exe 改名/硬链接即变 coretexd/backup/healthcheck 角色（commit `836969d`）
+5. **单 bin 化（本地上次改动，待提交）**：Cargo.toml 删 5 个壳 `[[bin]]`、删 `src/bin/*.rs`、scripts/systemd/release.yml/README 全改为 `coretex server/backup/doctor` 用法；编译只产一个 `coretex.exe`
+- Windows 验收：`E:\Ubuntn24042\wintest` 脚本 `windows_acceptance.ps1 -Root <dir>`，**19/19 全绿**（0.2.3 单 exe 构建）
+- Linux 测试历史基线：424~426 unit + 26 + 11 integration 全绿（P0/P1 12 项修复明细见 commit `4b508fc`）
 
 ### 之前完成（V0.2.2 发布线）
 1. `release.yml`：多 bin + `--target` 正确产物路径 + sha256 + GitHub Release

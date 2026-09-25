@@ -8,6 +8,6 @@ set -euo pipefail
 PREFIX="${PREFIX:-$(cd "$(dirname "$0")/.." && pwd)}"
 OUT="${1:?backup parent dir}"
 NAME="${2:?backup name}"
-BIN="$PREFIX/bin/coretex-backup"
-[ -x "$BIN" ] || BIN="$PREFIX/bin/coretex"
+BIN="$PREFIX/bin/coretex"
+[ -x "$BIN" ] || BIN="$PREFIX/bin/coretex.exe"
 exec "$BIN" restore --data-dir "$PREFIX" --input "$OUT" --name "$NAME" --force

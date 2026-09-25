@@ -22,26 +22,6 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 name = "coretex"
 path = "src/main.rs"
 
-[[bin]]
-name = "coretexd"
-path = "src/bin/coretexd.rs"
-
-[[bin]]
-name = "coretex-cli"
-path = "src/bin/coretex_cli.rs"
-
-[[bin]]
-name = "coretex-migrate"
-path = "src/bin/coretex_migrate.rs"
-
-[[bin]]
-name = "coretex-backup"
-path = "src/bin/coretex_backup.rs"
-
-[[bin]]
-name = "coretex-healthcheck"
-path = "src/bin/coretex_healthcheck.rs"
-
 [features]
 default = ["tokio", "serde", "compression", "metrics"]
 python = ["dep:pyo3", "dep:pyo3-asyncio"]

@@ -26,7 +26,7 @@ chmod 755 "$PREFIX/scripts/"*.sh 2>/dev/null || true
 ln -sfn ../include/coretexdb.h "$PREFIX/lib/coretexdb.h"
 
 # Binaries
-for b in coretexd coretex-cli coretex-migrate coretex-backup coretex-healthcheck coretex; do
+for b in coretex; do
   if [ -x "$BIN_SRC/$b" ]; then
     install -m 750 "$BIN_SRC/$b" "$PREFIX/bin/$b"
   elif [ -x "$BIN_SRC/$b.exe" ]; then

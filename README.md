@@ -30,14 +30,8 @@
 ```
 CoreTexDB-V0.2.3/                      # 程序安装根目录
 ├── bin/                               # 可执行文件
-│   ├── coretex                        # 主程序 / 多合一 CLI
-│   ├── coretex.exe                    # Windows
-│   ├── coretexd                       # 数据库服务器（Linux）
-│   ├── coretexd.exe                   # 数据库服务器（Windows）
-│   ├── coretex-cli                    # 命令行工具
-│   ├── coretex-migrate                # 数据迁移工具
-│   ├── coretex-backup                 # 备份工具
-│   └── coretex-healthcheck            # 健康检查
+│   ├── coretex                        # 唯一主程序（Windows: coretex.exe）
+│   └──                                #   子命令 server·backup·doctor·search...
 │
 ├── lib/                               # 动态/静态库
 │   ├── libcoretexdb.so                # 核心引擎（Linux）
@@ -637,12 +631,7 @@ coretex crypto decrypt secret.cdb -k 0000000000000000000000000000000000000000000
 ```
 CoreTexDB-V0.2.3/                      # 程序安装根目录（--data-dir）
 ├── bin/                               # 可执行文件
-│   ├── coretexd / coretexd.exe        # 数据库服务器
-│   ├── coretex / coretex.exe          # 主程序
-│   ├── coretex-cli
-│   ├── coretex-migrate
-│   ├── coretex-backup
-│   └── coretex-healthcheck
+│   └── coretex / coretex.exe          # 唯一主程序（server/backup/doctor/...）
 │
 ├── lib/                               # 动态/静态库
 │   ├── libcoretexdb.so / .dylib / .a

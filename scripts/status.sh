@@ -5,7 +5,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet coretexd.
   echo "active (systemd)"
   exit 0
 fi
-if pgrep -x coretexd >/dev/null 2>&1 || pgrep -f "coretexd .*${PREFIX}" >/dev/null 2>&1; then
+if pgrep -f "coretex server .*${PREFIX}" >/dev/null 2>&1; then
   echo "active (process)"
   exit 0
 fi
