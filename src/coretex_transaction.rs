@@ -197,6 +197,9 @@ impl TransactionManager {
         }
 
         transaction.state = TransactionState::Committed;
+        // Terminal state: drop it so active_count()/conflict scans only see
+        // live transactions (it also bounds the map's growth).
+        active.remove(&txn_id);
 
         Ok(())
     }
@@ -206,6 +209,12 @@ impl TransactionManager {
         
         let transaction = active.get_mut(&txn_id)
             .ok_or(TransactionError::TransactionNotFound(txn_id))?;
+
+        if transaction.state != TransactionState::Active {
+            return Err(TransactionError::InvalidTransactionState(
+                "Transaction is not active".to_string()
+            ));
+        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -224,6 +233,7 @@ impl TransactionManager {
         }
 
         transaction.state = TransactionState::Aborted;
+        active.remove(&txn_id);
 
         Ok(())
     }

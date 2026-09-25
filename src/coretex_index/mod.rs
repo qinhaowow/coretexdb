@@ -517,13 +517,18 @@ impl VectorIndex for BruteForceIndex {
 #[async_trait]
 impl VectorIndex for HNSWIndex {
     async fn add(&self, id: &str, vector: &[f32]) -> Result<()> {
-        let mut vectors = self.vectors.write().await;
-        vectors.insert(id.to_string(), vector.to_vec());
-        drop(vectors);
+        {
+            let mut vectors = self.vectors.write().await;
+            vectors.insert(id.to_string(), vector.to_vec());
+        }
 
+        // Lock order: vectors → entry_point → graph (same as search/remove/
+        // clear). Taking graph first and vectors later inverted the order and
+        // deadlocked against concurrent searches.
         let level = self.random_level();
-        let mut graph = self.graph.write().await;
         let entry_point = self.entry_point.read().await.clone();
+        let vectors_read = self.vectors.read().await;
+        let mut graph = self.graph.write().await;
 
         // Highest level present *before* this insert, used by the entry-point
         // rule below.
@@ -535,7 +540,6 @@ impl VectorIndex for HNSWIndex {
 
         let mut node_levels = vec![Vec::new(); level + 1];
         if let Some(ref ep) = entry_point {
-            let vectors_read = self.vectors.read().await;
             let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
 
             for l in (0..=level.min(top_level)).rev() {
@@ -569,13 +573,15 @@ impl VectorIndex for HNSWIndex {
         }
 
         graph.insert(id.to_string(), node_levels);
+        let update_ep = entry_point.is_none() || level > top_most_level;
         drop(graph);
+        drop(vectors_read);
 
         // The entry point must be the node with the highest level. This used to
         // compare against `map(|_| 0)`, making the condition `level > 0`, so any
         // node above level 0 took over the entry point and the hierarchy became
         // unnavigable from the top.
-        if entry_point.is_none() || level > top_most_level {
+        if update_ep {
             *self.entry_point.write().await = Some(id.to_string());
         }
 
@@ -642,8 +648,10 @@ impl VectorIndex for HNSWIndex {
             };
             if let Some(vec) = vector {
                 let level = self.random_level();
-                let mut graph = self.graph.write().await;
+                // Lock order: vectors → entry_point → graph (see `add`).
                 let entry_point = self.entry_point.read().await.clone();
+                let vectors_read = self.vectors.read().await;
+                let mut graph = self.graph.write().await;
 
                 // Highest level present *before* this insert.
                 let top_most_level = graph
@@ -653,8 +661,8 @@ impl VectorIndex for HNSWIndex {
                     .unwrap_or(0);
 
                 let mut node_levels = vec![Vec::new(); level + 1];
+                let update_ep = entry_point.is_none() || level > top_most_level;
                 if let Some(ref ep) = entry_point {
-                    let vectors_read = self.vectors.read().await;
                     let top_level = graph.get(ep).map(|l| l.len().saturating_sub(1)).unwrap_or(0);
 
                     for l in (0..=level.min(top_level)).rev() {
@@ -686,13 +694,15 @@ impl VectorIndex for HNSWIndex {
                 }
 
                 graph.insert(id.clone(), node_levels);
+                drop(graph);
+                drop(vectors_read);
 
                 // The entry point must be the node with the highest level.
                 // This used to compare against `map(|_| 0)`, making the
                 // condition `level > 0`, so any node above level 0 took over
                 // the entry point and the hierarchy stopped being navigable
                 // from the top.
-                if entry_point.is_none() || level > top_most_level {
+                if update_ep {
                     *self.entry_point.write().await = Some(id.clone());
                 }
             }

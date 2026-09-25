@@ -131,7 +131,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Pre-existing: tx_aware_insert doesn't clean up active_count
     async fn test_data_manager_tx_aware_insert() {
         let storage: Box<dyn coretexdb::coretex_storage::StorageEngine> = Box::new(MemoryStorage::new());
         let index_manager = Arc::new(IndexManager::new());

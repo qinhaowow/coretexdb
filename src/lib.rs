@@ -224,6 +224,13 @@ pub struct DbConfig {
     pub create_dirs_on_init: bool,
     pub wal_enabled: bool,
     pub wal_max_segment_size: u64,
+    /// fsync every storage write (power-loss durability). Default true.
+    #[serde(default = "default_sync_writes")]
+    pub sync_writes: bool,
+}
+
+fn default_sync_writes() -> bool {
+    true
 }
 
 impl DbConfig {
@@ -244,6 +251,7 @@ impl DbConfig {
             // separate WAL would only be a second, redundant journal.
             wal_enabled: false,
             wal_max_segment_size: 64 * 1024 * 1024, // 64 MB
+            sync_writes: true,
         }
     }
 
@@ -339,7 +347,12 @@ impl CoreTexDB {
         let storage: Box<dyn StorageEngine> = if config.memory_only {
             Box::new(MemoryStorage::new())
         } else {
-            Box::new(FileStorage::new(FileStorage::store_path(&config.data_dir)))
+            Box::new(
+                FileStorage::new(FileStorage::store_path(&config.data_dir))
+                    // Durable by default: survive power loss, not just process
+                    // crashes. Opt out via `DbConfig::sync_writes = false`.
+                    .with_fsync(config.sync_writes),
+            )
         };
         let storage = Arc::new(RwLock::new(storage));
         let index_manager = Arc::new(IndexManager::new());
@@ -560,8 +573,21 @@ impl CoreTexDB {
         let content = serde_json::to_string_pretty(metadata)
             .map_err(CoreTexError::Serialization)?;
 
-        fs::write(&temp_path, content).map_err(CoreTexError::Io)?;
+        // fsync the temp file before rename so a crash cannot publish a
+        // half-written manifest; then fsync the directory so the rename
+        // itself is durable.
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&temp_path).map_err(CoreTexError::Io)?;
+            f.write_all(content.as_bytes()).map_err(CoreTexError::Io)?;
+            f.sync_all().map_err(CoreTexError::Io)?;
+        }
         fs::rename(&temp_path, &metadata_path).map_err(CoreTexError::Io)?;
+        if let Some(parent) = metadata_path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         Ok(())
     }
 

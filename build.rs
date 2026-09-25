@@ -29,10 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed=src/coretex_grpc/");
         println!("cargo:rerun-if-env-changed=PROTOC");
     } else {
-        eprintln!("warning: protoc not found, skipping gRPC code generation");
-        println!("cargo:warning=protoc not found, skipping gRPC code generation");
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-env-changed=PROTOC");
+        // The gRPC service include!s $OUT_DIR/coretex.rs, so skipping codegen
+        // here just produces a cryptic missing-file error later. Fail fast.
+        return Err("protoc not found: install protobuf-compiler (or set PROTOC) to build the gRPC service".into());
     }
 
     Ok(())

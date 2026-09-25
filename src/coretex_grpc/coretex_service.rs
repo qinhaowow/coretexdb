@@ -7,8 +7,10 @@ use async_trait::async_trait;
 
 use crate::CoreTexDB;
 
-// Include generated tonic/prost code
-include!("../coretex_generated.rs");
+// Include generated tonic/prost code. build.rs runs tonic_build and writes
+// coretex.rs into OUT_DIR; the old src/coretex_generated.rs copy was not
+// produced by any build step and broke fresh checkouts.
+include!(concat!(env!("OUT_DIR"), "/coretex.rs"));
 
 pub struct CoretexService {
     db: Arc<RwLock<CoreTexDB>>,
@@ -27,7 +29,7 @@ impl CoretexService {
     }
 }
 
-// Generated code included via include!("../coretex_generated.rs") above
+// Generated code included via include!(concat!(env!("OUT_DIR"), ...)) above
 
 #[async_trait]
 impl self::coretex_service_server::CoretexService for CoretexService {

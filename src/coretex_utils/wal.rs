@@ -262,6 +262,9 @@ impl WriteAheadLog {
 
         file.write_all(&line).await?;
         file.flush().await?;
+        // Durability contract: fsync before returning so a power loss cannot
+        // drop an acknowledged WAL entry.
+        file.sync_all().await?;
 
         // Update tracking
         {
@@ -565,14 +568,16 @@ impl RecoveryManager {
             .map_err(crate::coretex_core::CoreTexError::Io)?;
 
         let mut replayed = 0u64;
-        for (entry_type, _collection, key, vector, metadata) in &entries {
+        for (entry_type, collection, key, vector, metadata) in &entries {
+            // Storage keys are namespaced `collection:id`, matching the write path.
+            let storage_key = format!("{}:{}", collection, key);
             match entry_type {
                 WalEntryType::Insert | WalEntryType::Update => {
-                    storage.store(key, vector, metadata).await?;
+                    storage.store(&storage_key, vector, metadata).await?;
                     replayed += 1;
                 }
                 WalEntryType::Delete => {
-                    let _ = storage.delete(key).await;
+                    let _ = storage.delete(&storage_key).await;
                     replayed += 1;
                 }
                 _ => {}

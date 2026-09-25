@@ -152,6 +152,56 @@ mod wal_integration_tests {
         }
     }
 
+    /// recover_from_wal must repopulate the in-memory map and the index, and
+    /// must use the `collection:id` storage key space. Regression test: WAL
+    /// replay used the bare id as the storage key and only wrote to storage,
+    /// so replayed rows were invisible until (and unless) a full restore ran.
+    #[tokio::test]
+    async fn test_recover_from_wal_restores_memory_and_index() {
+        let dir = TempDir::new().unwrap();
+
+        // Storage survives the "crash"; only DataManager/index state is lost.
+        let storage: Arc<RwLock<Box<dyn StorageEngine>>> =
+            Arc::new(RwLock::new(Box::new(MemoryStorage::new())));
+        let wal = Arc::new(WriteAheadLog::new(dir.path().to_string_lossy().as_ref()));
+        wal.init().await.unwrap();
+
+        // Phase 1: create + insert, then crash.
+        {
+            let dm = DataManager::new(Arc::clone(&storage), Arc::new(IndexManager::new()))
+                .with_wal(Arc::clone(&wal));
+            dm.create_collection("users", 4, "cosine").await.unwrap();
+            dm.insert_vectors("users", vec![
+                ("u1".into(), vec![1.0, 0.0, 0.0, 0.0], serde_json::json!({"n": "a"})),
+                ("u2".into(), vec![0.0, 1.0, 0.0, 0.0], serde_json::json!({"n": "b"})),
+            ]).await.unwrap();
+        }
+
+        // Phase 2: fresh in-memory state, same durable storage + WAL.
+        let dm = DataManager::new(Arc::clone(&storage), Arc::new(IndexManager::new()))
+            .with_wal(Arc::clone(&wal));
+        let replay = dm.recover_from_wal().await.unwrap();
+        assert!(replay.replayed >= 2, "replayed = {}", replay.replayed);
+
+        // Collection was rebuilt from the WAL (manifest may be gone too).
+        assert!(dm.collection_exists("users").await);
+
+        // In-memory visibility without any restart.
+        let rec = dm.get_vector("users", "u1").await.unwrap();
+        assert!(rec.is_some(), "WAL replay must repopulate the in-memory map");
+        assert_eq!(rec.unwrap().metadata["n"], "a");
+
+        // Index visibility: search must hit the replayed vector.
+        let hits = dm.search("users", vec![1.0, 0.0, 0.0, 0.0], 2, None).await.unwrap();
+        assert!(!hits.is_empty(), "WAL replay must repopulate the index");
+        assert_eq!(hits[0].id, "u1");
+
+        // Storage key space matches the write path: `collection:id`.
+        let keys = storage.read().await.list().await.unwrap();
+        assert!(keys.iter().any(|k| k == "users:u1"), "keys = {:?}", keys);
+        assert!(!keys.iter().any(|k| k == "u1"), "bare-id key leaked: {:?}", keys);
+    }
+
     #[tokio::test]
     async fn test_recovery_skips_rolled_back_transactions() {
         let dir = TempDir::new().unwrap();

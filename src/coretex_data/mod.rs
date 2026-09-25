@@ -240,23 +240,73 @@ impl DataManager {
         let mut replayed = 0u64;
         let mut skipped = 0u64;
 
-        for (entry_type, _collection, key, vector, metadata) in &entries {
+        for (entry_type, collection, key, vector, metadata) in &entries {
             match entry_type {
                 WalEntryType::Insert | WalEntryType::Update => {
-                    // Write directly to storage
+                    // Storage uses the `collection:id` key space (same as the
+                    // write path); the WAL stores only the bare id.
+                    let storage_key = format!("{}:{}", collection, key);
+                    {
+                        let storage = self.storage.read().await;
+                        if let Err(e) = storage.store(&storage_key, vector, metadata).await {
+                            log::warn!("WAL replay store failed for {}: {}", storage_key, e);
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+
+                    // Apply to the in-memory map and index so the replayed row
+                    // is visible without a restart, and so the next
+                    // `restore_from_storage` does not overwrite it. If the
+                    // manifest was lost, rebuild the collection from the WAL
+                    // instead of dropping the row.
+                    if !self.collection_exists(collection).await {
+                        let _ = self
+                            .create_collection_with_index(
+                                collection,
+                                vector.len(),
+                                "cosine",
+                                DEFAULT_INDEX_TYPE,
+                            )
+                            .await;
+                    }
+                    let index_name = index_name_for(collection);
+                    if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                        let _ = index.add(key, vector).await;
+                    }
+                    let mut data = self.data.write().await;
+                    if let Some(collection_data) = data.get_mut(collection.as_str()) {
+                        collection_data.insert(
+                            key.clone(),
+                            VectorRecord {
+                                vector: vector.clone(),
+                                metadata: metadata.clone(),
+                            },
+                        );
+                    }
+                    replayed += 1;
+                }
+                WalEntryType::Delete => {
+                    let storage_key = format!("{}:{}", collection, key);
                     let storage = self.storage.read().await;
-                    match storage.store(key, vector, metadata).await {
-                        Ok(()) => replayed += 1,
+                    match storage.delete(&storage_key).await {
+                        Ok(_) => {
+                            drop(storage);
+                            let index_name = index_name_for(collection);
+                            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                                let _ = index.remove(key).await;
+                            }
+                            let mut data = self.data.write().await;
+                            if let Some(collection_data) = data.get_mut(collection.as_str()) {
+                                collection_data.remove(key);
+                            }
+                            replayed += 1;
+                        }
                         Err(e) => {
-                            log::warn!("WAL replay failed for key {}: {}", key, e);
+                            log::warn!("WAL replay delete failed for {}: {}", storage_key, e);
                             skipped += 1;
                         }
                     }
-                }
-                WalEntryType::Delete => {
-                    let storage = self.storage.read().await;
-                    let _ = storage.delete(key).await;
-                    replayed += 1;
                 }
                 _ => {}
             }
@@ -608,22 +658,24 @@ impl DataManager {
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
         let index_name = index_name_for(collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            for (id, vector, _) in &vectors {
-                let _ = index.add(id, vector).await;
-            }
-        }
 
         let mut ids = Vec::new();
         for (id, vector, metadata) in vectors {
-            // WAL log first (durability guarantee)
-            let _ = self.wal_log(
+            // Durable order: WAL → storage → memory → index. Any durable
+            // failure aborts the batch instead of pretending success.
+            self.wal_log(
                 WalEntryType::Insert,
                 collection,
                 &id,
                 &vector,
                 &metadata,
-            ).await;
+            ).await?;
+
+            let storage_key = format!("{}:{}", collection, id);
+            {
+                let storage = self.storage.read().await;
+                storage.store(&storage_key, &vector, &metadata).await?;
+            }
 
             let record = VectorRecord {
                 vector: vector.clone(),
@@ -632,9 +684,9 @@ impl DataManager {
             collection_data.insert(id.clone(), record);
             ids.push(id.clone());
 
-            let storage = self.storage.read().await;
-            let storage_key = format!("{}:{}", collection, id);
-            let _ = storage.store(&storage_key, &vector, &metadata).await;
+            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                let _ = index.add(&id, &vector).await;
+            }
         }
 
         Ok(ids)
@@ -656,30 +708,35 @@ impl DataManager {
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
-        let index_name = index_name_for(collection);
-        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
-            for id in ids {
-                let _ = index.remove(id).await;
-            }
-        }
-
         let mut deleted = 0;
         for id in ids {
-            if collection_data.remove(id).is_some() {
-                // WAL log first
-                let _ = self.wal_log(
-                    WalEntryType::Delete,
-                    collection,
-                    id,
-                    &[],
-                    &serde_json::json!({}),
-                ).await;
-
-                deleted += 1;
-                let storage = self.storage.read().await;
-                let storage_key = format!("{}:{}", collection, id);
-                let _ = storage.delete(&storage_key).await;
+            if !collection_data.contains_key(id) {
+                continue;
             }
+
+            // Durable order: WAL → storage → memory → index.
+            self.wal_log(
+                WalEntryType::Delete,
+                collection,
+                id,
+                &[],
+                &serde_json::json!({}),
+            ).await?;
+
+            let storage_key = format!("{}:{}", collection, id);
+            {
+                let storage = self.storage.read().await;
+                storage.delete(&storage_key).await?;
+            }
+
+            collection_data.remove(id);
+
+            let index_name = index_name_for(collection);
+            if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                let _ = index.remove(id).await;
+            }
+
+            deleted += 1;
         }
 
         Ok(deleted)
@@ -794,14 +851,23 @@ impl DataManager {
 
         let meta = metadata.unwrap_or(serde_json::json!({}));
 
-        // WAL log before applying
-        let _ = self.wal_log(
+        // Durable order: WAL → storage → memory → index.
+        self.wal_log(
             WalEntryType::Update,
             collection,
             id,
             &vector,
             &meta,
-        ).await;
+        ).await?;
+
+        // Without this the new vector only ever lived in memory and in a WAL
+        // that is disabled by default, so an update was silently lost on
+        // restart while a plain insert survived.
+        let storage_key = format!("{}:{}", collection, id);
+        {
+            let storage = self.storage.read().await;
+            storage.store(&storage_key, &vector, &meta).await?;
+        }
 
         collection_data.insert(id.to_string(), VectorRecord {
             vector: vector.clone(),
@@ -812,13 +878,6 @@ impl DataManager {
         if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
             let _ = index.add(id, &vector).await;
         }
-
-        // Without this the new vector only ever lived in memory and in a WAL
-        // that is disabled by default, so an update was silently lost on
-        // restart while a plain insert survived.
-        let storage = self.storage.read().await;
-        let storage_key = format!("{}:{}", collection, id);
-        let _ = storage.store(&storage_key, &vector, &meta).await;
 
         Ok(true)
     }
@@ -1077,13 +1136,45 @@ impl DataManager {
     }
 
     pub async fn purge_expired(&self) -> Result<usize> {
-        let storage = self.storage.read().await;
-        let purged = storage.purge_expired().await
-            .map_err(|e| CoreTexError::StorageError(e.to_string()))?;
+        // Snapshot keys before and after the storage purge so entries that
+        // actually expired can be removed from the in-memory map and index
+        // (previously a no-op retain that left ghost vectors).
+        let before = {
+            let storage = self.storage.read().await;
+            storage.list().await?
+        };
+        let purged = {
+            let storage = self.storage.read().await;
+            storage.purge_expired().await
+                .map_err(|e| CoreTexError::StorageError(e.to_string()))?
+        };
+        let after = {
+            let storage = self.storage.read().await;
+            storage.list().await?
+        };
 
-        let mut data = self.data.write().await;
-        for collection_data in data.values_mut() {
-            collection_data.retain(|_, _| true);
+        let after_set: std::collections::HashSet<&str> =
+            after.iter().map(|s| s.as_str()).collect();
+        let removed_keys: Vec<String> = before
+            .iter()
+            .filter(|k| !after_set.contains(k.as_str()))
+            .cloned()
+            .collect();
+
+        if !removed_keys.is_empty() {
+            let mut data = self.data.write().await;
+            for storage_key in &removed_keys {
+                let Some((collection, id)) = storage_key.split_once(':') else {
+                    continue;
+                };
+                let index_name = index_name_for(collection);
+                if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                    let _ = index.remove(id).await;
+                }
+                if let Some(collection_data) = data.get_mut(collection) {
+                    collection_data.remove(id);
+                }
+            }
         }
 
         Ok(purged)
