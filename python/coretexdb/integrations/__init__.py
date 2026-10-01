@@ -1,10 +1,10 @@
 """
-Integrations for CortexDB Python SDK
+Integrations for CoreTexDB Python SDK
 """
 
 # Handle optional dependencies
 try:
-    from .langchain import CortexDBVectorStore
+    from .langchain import CoreTexDBVectorStore, CortexDBVectorStore
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
@@ -25,7 +25,8 @@ except ImportError:
 __all__ = []
 
 if LANGCHAIN_AVAILABLE:
-    __all__.append("CortexDBVectorStore")
+    __all__.append("CoreTexDBVectorStore")
+    __all__.append("CortexDBVectorStore")  # pre-1.0 alias
 
 if HUGGINGFACE_AVAILABLE:
     __all__.append("HuggingFaceEmbeddingAdapter")

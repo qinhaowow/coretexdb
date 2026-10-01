@@ -1,5 +1,5 @@
 """
-Protocol definitions for CortexDB Python SDK
+Protocol definitions for CoreTexDB Python SDK
 """
 
 from pydantic import BaseModel, Field

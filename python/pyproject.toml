@@ -1,0 +1,35 @@
+# CoreTexDB Python SDK — PEP 621 metadata.
+#
+# setuptools backend on purpose: CI used to `rm pyproject.toml` to keep pip
+# from picking maturin (the Rust-extension builder). This package is pure
+# Python over REST/gRPC, so setuptools keeps `pip install -e .` working with
+# no Rust build step — the CI removal workaround is gone with it.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coretexdb"
+description = "Python SDK for CoreTexDB — multimodal vector database with vector and BM25 hybrid search over REST/gRPC."
+requires-python = ">=3.9"
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "requests",
+    "aiohttp",
+    "pydantic",
+    "grpcio",
+]
+
+[project.optional-dependencies]
+openai = ["openai"]
+huggingface = ["transformers", "torch"]
+langchain = ["langchain"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["coretexdb*"]
+
+# Single source of truth: python/coretexdb/version.py (independent 1.0.x line).
+[tool.setuptools.dynamic]
+version = {attr = "coretexdb.version.__version__"}

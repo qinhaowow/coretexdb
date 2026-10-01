@@ -147,10 +147,6 @@ jobs:
         pip cache purge || true
         rm -rf ~/.cache/pip || true
 
-    - name: Remove pyproject.toml to avoid maturin
-      run: |
-        rm -f repo/python/pyproject.toml
-
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip

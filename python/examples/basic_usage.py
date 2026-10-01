@@ -1,34 +1,34 @@
 """
-CortexDB Python Usage Examples
+CoreTexDB Python Usage Examples
 
-This module demonstrates how to use CortexDB with different connection methods.
+This module demonstrates how to use CoreTexDB with different connection methods.
 """
 
 import numpy as np
 from typing import List, Dict, Any
 
 try:
-    from coretexdb import CortexDBGrpcClient, AsyncCortexDBGrpcClient
+    from coretexdb import CoreTexDBGrpcClient, AsyncCoreTexDBGrpcClient
     GRPC_AVAILABLE = True
 except ImportError:
     GRPC_AVAILABLE = False
 
 try:
-    from coretexdb import CortexDBClient, AsyncCortexDBClient
+    from coretexdb import CoreTexDBClient, AsyncCoreTexDBClient
     HTTP_AVAILABLE = True
 except ImportError:
     HTTP_AVAILABLE = False
 
 
 def example_grpc_client():
-    """Example: Using gRPC client to connect to CortexDB server"""
+    """Example: Using gRPC client to connect to CoreTexDB server"""
     if not GRPC_AVAILABLE:
         print("gRPC client not available. Install with: pip install coretexdb[grpc]")
         return
 
-    print("=== CortexDB gRPC Client Example ===\n")
+    print("=== CoreTexDB gRPC Client Example ===\n")
 
-    with CortexDBGrpcClient(host="localhost", port=50051) as client:
+    with CoreTexDBGrpcClient(host="localhost", port=50051) as client:
         health = client.health_check()
         print(f"Server status: {health['status']}")
         print(f"Server version: {health['version']}\n")
@@ -61,9 +61,9 @@ async def example_async_grpc_client():
         print("gRPC client not available. Install with: pip install coretexdb[grpc]")
         return
 
-    print("\n=== CortexDB Async gRPC Client Example ===\n")
+    print("\n=== CoreTexDB Async gRPC Client Example ===\n")
 
-    async with AsyncCortexDBGrpcClient(host="localhost", port=50051) as client:
+    async with AsyncCoreTexDBGrpcClient(host="localhost", port=50051) as client:
         health = await client.health_check()
         print(f"Server status: {health['status']}")
 
@@ -81,9 +81,9 @@ def example_http_client():
         print("HTTP client not available")
         return
 
-    print("\n=== CortexDB HTTP Client Example ===\n")
+    print("\n=== CoreTexDB HTTP Client Example ===\n")
 
-    client = CortexDBClient(host="localhost", port=8000)
+    client = CoreTexDBClient(host="localhost", port=8000)
 
     client.create_collection("http_collection", dimension=128)
     print("Created collection via HTTP")
@@ -99,18 +99,18 @@ def example_http_client():
 
 def example_local_mode():
     """Example: Using local in-memory mode (no server required)"""
-    print("\n=== CortexDB Local Mode Example ===\n")
+    print("\n=== CoreTexDB Local Mode Example ===\n")
     print("Note: This requires the Rust backend to be compiled as a Python extension")
     print("For now, use the gRPC or HTTP client to connect to a running server\n")
 
-    print("To start a CortexDB server:")
-    print("  cargo run --release --bin coretex-server -- --host 0.0.0.0 --port 50051")
+    print("To start a CoreTexDB server (single binary since v0.2.4):")
+    print("  ./target/release/coretex server    # REST :5000, gRPC :50051")
     print("\nThen connect using the gRPC or HTTP client examples above")
 
 
 def run_all_examples():
     """Run all usage examples"""
-    print("CortexDB Python SDK - Usage Examples")
+    print("CoreTexDB Python SDK - Usage Examples")
     print("=" * 50)
 
     example_grpc_client()

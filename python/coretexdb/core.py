@@ -1,6 +1,6 @@
 """
-Core Python bindings for CortexDB
-This module provides the main Python API for interacting with CortexDB
+Core Python bindings for CoreTexDB
+This module provides the main Python API for interacting with CoreTexDB
 via the REST API server.
 """
 
@@ -16,11 +16,11 @@ except ImportError:
     requests = None
 
 
-class CortexDB:
+class CoreTexDB:
     """
-    Main CortexDB class for Python.
+    Main CoreTexDB class for Python.
 
-    This class communicates with a running CortexDB server via its REST API.
+    This class communicates with a running CoreTexDB server via its REST API.
     For direct Rust-backed access, use the PyO3 bindings (install with
     ``pip install coretexdb[python]``).
 
@@ -29,7 +29,7 @@ class CortexDB:
     import coretexdb
     import numpy as np
 
-    db = coretexdb.CortexDB("localhost", port=5000)
+    db = coretexdb.CoreTexDB("localhost", port=5000)
 
     db.create_collection("my_vectors", dimension=128)
 
@@ -48,11 +48,11 @@ class CortexDB:
         timeout: float = 30.0,
     ):
         """
-        Initialize a new CortexDB instance.
+        Initialize a new CoreTexDB instance.
 
         Args:
-            host: Hostname of the CortexDB server.
-            port: Port of the CortexDB server.
+            host: Hostname of the CoreTexDB server.
+            port: Port of the CoreTexDB server.
             api_key: Optional API key for authentication.
             timeout: HTTP request timeout in seconds.
         """
@@ -78,7 +78,7 @@ class CortexDB:
         data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Make an HTTP request to the CortexDB server.
+        Make an HTTP request to the CoreTexDB server.
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE).
@@ -106,7 +106,7 @@ class CortexDB:
             return response.json()
         except requests.ConnectionError:
             raise ConnectionError(
-                f"Cannot connect to CortexDB server at {self.base_url}. "
+                f"Cannot connect to CoreTexDB server at {self.base_url}. "
                 "Make sure the server is running."
             )
         except requests.HTTPError as exc:
@@ -264,3 +264,8 @@ class CortexDB:
             Dict with 'name', 'dimension', 'metric', 'vector_count' keys.
         """
         return self._request("GET", f"/api/collections/{collection}/stats")
+
+
+# pre-1.0 brand compatibility alias (B7): old name points at the new
+# canonical class; kept importable until 1.0.
+CortexDB = CoreTexDB

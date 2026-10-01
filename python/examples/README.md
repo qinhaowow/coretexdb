@@ -7,10 +7,10 @@ This directory contains examples for using CoreTexDB with Python.
 ### Option 1: Connect to Running Server
 
 ```python
-from coretexdb import CortexDBGrpcClient
+from coretexdb import CoreTexDBGrpcClient
 
 # Connect to a running CoreTexDB server
-with CortexDBGrpcClient(host="localhost", port=50051) as client:
+with CoreTexDBGrpcClient(host="localhost", port=50051) as client:
     # Check server health
     print(client.health_check())
     
@@ -49,10 +49,10 @@ Then connect using the Python client (see Option 1).
 
 | Client | Description |
 |--------|-------------|
-| `CortexDBGrpcClient` | Synchronous gRPC client |
-| `AsyncCortexDBGrpcClient` | Asynchronous gRPC client |
-| `CortexDBClient` | Synchronous HTTP/REST client |
-| `AsyncCortexDBClient` | Async HTTP/REST client |
+| `CoreTexDBGrpcClient` | Synchronous gRPC client |
+| `AsyncCoreTexDBGrpcClient` | Asynchronous gRPC client |
+| `CoreTexDBClient` | Synchronous HTTP/REST client |
+| `AsyncCoreTexDBClient` | Async HTTP/REST client |
 
 ## Environment Variables
 

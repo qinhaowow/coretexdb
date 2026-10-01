@@ -1,5 +1,5 @@
 """
-HuggingFace integration for CortexDB
+HuggingFace integration for CoreTexDB
 """
 
 from typing import List, Optional, Union
@@ -10,7 +10,7 @@ import torch
 
 class HuggingFaceEmbeddingAdapter:
     """
-    Adapter for HuggingFace models to generate embeddings compatible with CortexDB
+    Adapter for HuggingFace models to generate embeddings compatible with CoreTexDB
     """
 
     def __init__(

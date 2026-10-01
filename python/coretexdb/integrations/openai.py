@@ -1,5 +1,5 @@
 """
-OpenAI integration for CortexDB
+OpenAI integration for CoreTexDB
 """
 
 from typing import List, Optional
@@ -8,7 +8,7 @@ import openai
 
 class OpenAIEmbeddingAdapter:
     """
-    Adapter for OpenAI API to generate embeddings compatible with CortexDB
+    Adapter for OpenAI API to generate embeddings compatible with CoreTexDB
     """
 
     def __init__(

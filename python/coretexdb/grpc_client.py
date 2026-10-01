@@ -1,5 +1,5 @@
 """
-CortexDB gRPC Python Client
+CoreTexDB gRPC Python Client
 """
 
 import os
@@ -22,9 +22,9 @@ except ImportError:
         CORETEXDB_PROTOBUF_AVAILABLE = False
 
 
-class CortexDBGrpcClient:
+class CoreTexDBGrpcClient:
     """
-    gRPC client for CortexDB
+    gRPC client for CoreTexDB
     """
 
     def __init__(
@@ -34,7 +34,7 @@ class CortexDBGrpcClient:
         timeout: float = 30.0,
     ):
         """
-        Initialize CortexDB gRPC client
+        Initialize CoreTexDB gRPC client
         """
         if not CORETEXDB_PROTOBUF_AVAILABLE:
             raise ImportError(
@@ -246,9 +246,9 @@ class CortexDBGrpcClient:
         }
 
 
-class AsyncCortexDBGrpcClient:
+class AsyncCoreTexDBGrpcClient:
     """
-    Async gRPC client for CortexDB
+    Async gRPC client for CoreTexDB
     """
 
     def __init__(
@@ -336,3 +336,9 @@ class AsyncCortexDBGrpcClient:
         request = coretexdb_pb2.SearchRequest(collection=collection, query_vector=query_list, k=k)
         response = await self.stub.SearchVectors(request, timeout=self.timeout)
         return [{"id": r.id, "score": r.score, "distance": r.distance} for r in response.results]
+
+
+# pre-1.0 brand compatibility alias (B7): old name points at the new
+# canonical class; kept importable until 1.0.
+CortexDBGrpcClient = CoreTexDBGrpcClient
+AsyncCortexDBGrpcClient = AsyncCoreTexDBGrpcClient

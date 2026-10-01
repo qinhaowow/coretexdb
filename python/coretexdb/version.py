@@ -1,2 +1,2 @@
-# Version information for CortexDB Python package
+# Version information for CoreTexDB Python package
 __version__ = "1.0.12"

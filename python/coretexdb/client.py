@@ -1,5 +1,5 @@
 """
-CortexDB Python Client
+CoreTexDB Python Client
 """
 
 import os
@@ -24,9 +24,9 @@ from .protocol import (
 )
 
 
-class CortexDBClient:
+class CoreTexDBClient:
     """
-    Synchronous client for CortexDB
+    Synchronous client for CoreTexDB
     """
 
     def __init__(
@@ -37,11 +37,11 @@ class CortexDBClient:
         timeout: float = 30.0,
     ):
         """
-        Initialize CortexDB client
+        Initialize CoreTexDB client
 
         Args:
-            host: Hostname of the CortexDB server
-            port: Port of the CortexDB server
+            host: Hostname of the CoreTexDB server
+            port: Port of the CoreTexDB server
             api_key: API key for authentication
             timeout: Request timeout in seconds
         """
@@ -68,7 +68,7 @@ class CortexDBClient:
         data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Make a request to the CortexDB API
+        Make a request to the CoreTexDB API
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE)
@@ -372,9 +372,9 @@ class CortexDBClient:
         return HealthCheckResponse(**response)
 
 
-class AsyncCortexDBClient:
+class AsyncCoreTexDBClient:
     """
-    Asynchronous client for CortexDB
+    Asynchronous client for CoreTexDB
     """
 
     def __init__(
@@ -385,11 +385,11 @@ class AsyncCortexDBClient:
         timeout: float = 30.0,
     ):
         """
-        Initialize asynchronous CortexDB client
+        Initialize asynchronous CoreTexDB client
 
         Args:
-            host: Hostname of the CortexDB server
-            port: Port of the CortexDB server
+            host: Hostname of the CoreTexDB server
+            port: Port of the CoreTexDB server
             api_key: API key for authentication
             timeout: Request timeout in seconds
         """
@@ -416,7 +416,7 @@ class AsyncCortexDBClient:
         data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Make an asynchronous request to the CortexDB API
+        Make an asynchronous request to the CoreTexDB API
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE)
@@ -718,3 +718,8 @@ class AsyncCortexDBClient:
         """
         response = await self._make_request("GET", "/api/health")
         return HealthCheckResponse(**response)
+
+# pre-1.0 brand compatibility alias (B7): old name points at the new
+# canonical class; kept importable until 1.0.
+CortexDBClient = CoreTexDBClient
+AsyncCortexDBClient = AsyncCoreTexDBClient

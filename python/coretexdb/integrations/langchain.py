@@ -1,10 +1,10 @@
 """
-LangChain integration for CortexDB
+LangChain integration for CoreTexDB
 """
 
 from typing import List, Dict, Any, Optional, Iterable, Tuple
 import numpy as np
-from .. import CortexDBClient
+from .. import CoreTexDBClient
 
 # Lazy import for optional langchain dependency
 try:
@@ -16,21 +16,21 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False
 
 
-class CortexDBVectorStore:
-    """LangChain vector store implementation for CortexDB"""
+class CoreTexDBVectorStore:
+    """LangChain vector store implementation for CoreTexDB"""
 
     def __init__(
         self,
-        client: CortexDBClient,
+        client: CoreTexDBClient,
         collection_name: str,
         embedding_function: Any,  # Using Any since Embeddings might not be available
         dimension: Optional[int] = None,
     ):
         """
-        Initialize CortexDB vector store for LangChain
+        Initialize CoreTexDB vector store for LangChain
 
         Args:
-            client: CortexDB client instance
+            client: CoreTexDB client instance
             collection_name: Name of the collection to use
             embedding_function: Embedding function to use
             dimension: Vector dimension (optional, will be inferred if not provided)
@@ -59,7 +59,7 @@ class CortexDBVectorStore:
                     dimension = len(sample_embedding)
                 self.client.create_collection(collection_name, dimension)
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize CortexDB vector store: {e}")
+            raise RuntimeError(f"Failed to initialize CoreTexDB vector store: {e}")
 
     def add_texts(
         self,
@@ -91,7 +91,7 @@ class CortexDBVectorStore:
         for i, (text, metadata) in enumerate(zip(texts, metadatas)):
             metadata["text"] = text
 
-        # Insert into CortexDB
+        # Insert into CoreTexDB
         self.client.insert(self.collection_name, embeddings, metadatas)
 
         # Return ids (currently not supported, will be implemented later)
@@ -119,7 +119,7 @@ class CortexDBVectorStore:
         # Generate embedding for query
         query_embedding = self.embedding_function.embed_query(query)
 
-        # Search in CortexDB
+        # Search in CoreTexDB
         results = self.client.search(self.collection_name, query_embedding, k=k, filter=filter)
 
         # Convert to LangChain Document objects
@@ -154,7 +154,7 @@ class CortexDBVectorStore:
         # Generate embedding for query
         query_embedding = self.embedding_function.embed_query(query)
 
-        # Search in CortexDB
+        # Search in CoreTexDB
         results = self.client.search(self.collection_name, query_embedding, k=k, filter=filter)
 
         # Convert to (Document, score) tuples
@@ -176,9 +176,9 @@ class CortexDBVectorStore:
         collection_name: str = "langchain",
         client_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
-    ) -> "CortexDBVectorStore":
+    ) -> "CoreTexDBVectorStore":
         """
-        Create a CortexDBVectorStore from texts
+        Create a CoreTexDBVectorStore from texts
 
         Args:
             texts: List of texts to add
@@ -189,7 +189,7 @@ class CortexDBVectorStore:
             **kwargs: Additional keyword arguments
 
         Returns:
-            CortexDBVectorStore instance
+            CoreTexDBVectorStore instance
 
         Raises:
             ImportError: If langchain is not installed
@@ -204,7 +204,11 @@ class CortexDBVectorStore:
             client_kwargs = {}
 
         # Initialize client
-        client = CortexDBClient(**client_kwargs)
+        client = CoreTexDBClient(**client_kwargs)
 
         # Create and return vector store
         return cls(client, collection_name, embedding, **kwargs)
+
+# pre-1.0 brand compatibility alias (B7): old name points at the new
+# canonical class; kept importable until 1.0.
+CortexDBVectorStore = CoreTexDBVectorStore
