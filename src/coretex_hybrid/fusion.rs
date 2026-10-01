@@ -66,24 +66,38 @@ impl ScoreFusionEngine {
     }
 
     fn rrf_fusion(&self, results: &[MultiModalResult], k: u32) -> Vec<FusedResult> {
-        let mut score_map: HashMap<String, f32> = HashMap::new();
+        // Reciprocal rank fusion: each result adds 1/(k + rank) to its own id
+        // and contributes *its own* source. Collecting every source in the
+        // batch instead would label each hit with retrievers that never
+        // returned it.
+        let mut score_map: HashMap<String, (f32, Vec<String>)> = HashMap::new();
 
         for result in results {
             let rank = result.rank as f32;
             let rrf_score = 1.0 / (k as f32 + rank);
-            *score_map.entry(result.id.clone()).or_insert(0.0) += rrf_score;
+            let entry = score_map
+                .entry(result.id.clone())
+                .or_insert((0.0, Vec::new()));
+            entry.0 += rrf_score;
+            if !entry.1.contains(&result.source) {
+                entry.1.push(result.source.clone());
+            }
         }
 
         let mut fused: Vec<FusedResult> = score_map
             .into_iter()
-            .map(|(id, score)| FusedResult {
-                id,
-                score,
-                sources: results.iter().map(|r| r.source.clone()).collect(),
-            })
+            .map(|(id, (score, sources))| FusedResult { id, score, sources })
             .collect();
 
-        fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        // Score descending, then id ascending: HashMap iteration order is
+        // random, so without the tie-break equal scores would come out in a
+        // different order on every call.
+        fused.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         fused
     }
 
@@ -307,6 +321,48 @@ mod tests {
         let fused = engine.fuse(&results);
         assert!(!fused.is_empty());
         assert_eq!(fused[0].id, "doc1");
+        // doc1 was returned by both retrievers, doc2 only by text: sources
+        // must be per-hit, not every source in the batch.
+        assert_eq!(fused[0].sources, vec!["vector", "text"]);
+        assert_eq!(fused[1].id, "doc2");
+        assert_eq!(fused[1].sources, vec!["text"]);
+        // 1/61 + 1/61 beats 1/62.
+        assert!(fused[0].score > fused[1].score);
+    }
+
+    /// Equal scores must come back in a stable order (id ascending), no
+    /// matter how the HashMap iterated.
+    #[test]
+    fn test_rrf_tie_is_deterministic() {
+        let engine = ScoreFusionEngine::new(ScoreFusion::RRF { k: 60 });
+        let make = |id: &str, rank: usize| MultiModalResult {
+            id: id.to_string(),
+            score: 0.0,
+            rank,
+            source: "text".to_string(),
+            weight: 1.0,
+            metadata: None,
+        };
+
+        let results = vec![
+            make("b", 3),
+            make("a", 3),
+            make("c", 3),
+            make("a", 3),
+        ];
+
+        let first = engine.fuse(&results);
+        for _ in 0..16 {
+            let again = engine.fuse(&results);
+            let ids: Vec<&str> = again.iter().map(|r| r.id.as_str()).collect();
+            let first_ids: Vec<&str> = first.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(ids, first_ids, "fused order must not depend on hash order");
+        }
+        let ids: Vec<&str> = first.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+        // a appeared twice with the same rank: its reciprocal scores sum.
+        let a = first.iter().find(|r| r.id == "a").unwrap();
+        assert!((a.score - 2.0 / 63.0).abs() < 1e-6);
     }
 
     #[test]

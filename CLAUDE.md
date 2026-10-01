@@ -8,9 +8,9 @@
 |----|-----|
 | 版本 | **0.2.4**（`VERSION` / `Cargo.toml` / `Cargo.lock` / `RELEASE_NOTES.md` 一致） |
 | 工作分支 | `release/v0.2.1-base`（默认分支仍 `master`） |
-| 最新 commit | `f0032b1` — `chore(release): bump version to V0.2.4`（已推送）；其后 A3 过滤搜索待提交 |
+| 最新 commit | `25899d9` — `perf(search): stop filtered queries from degrading to O(n*d)`（已推送）；B2a hybrid search 待提交 |
 | tag | `v0.2.4` → `53292cd`（指向 `f0032b1`，已推远端，release.yml `v*` 触发）；历史 `v0.2.3`→`c14e486`、`v0.2.2`→`e12b6f6` |
-| 工作区 | 推送至 `f0032b1`；本地 A3 改动（`src/coretex_data/mod.rs` + `tests/filtered_search.rs` + 本文件）待提交 |
+| 工作区 | 推送至 `25899d9`；本地 B2a 改动待提交（`src/lib.rs` hybrid_search、`src/coretex_bm25.rs` 批量构建、`src/coretex_data/mod.rs` data_version、`src/coretex_hybrid/fusion.rs` sources 修复、`tests/hybrid_search.rs`） |
 
 ### 近期完成（2026-09-25，均已推送）
 1. **PQ 真量化索引**（`d3f78c7`）：clone_box 共享 Arc、`layout_for` 自适应维度、惰性 `maybe_train`、码本 `decode`、`IndexType::PQ` 接线
@@ -20,8 +20,9 @@
    - CI 新增 `lint`（clippy deny 级 + rustdoc）与 `examples`（编译+实跑）job，PR 触发补 `release/*`
    - `examples/{quickstart,filter_search,persistence}.rs` 本地实跑验证；`Cargo.toml` repository 改 `github.com/qinhaowow/coretexdb`
 3. **V0.2.4 发布**（`f0032b1` + tag `v0.2.4`）：17 文件 35 处版本号、`RELEASE_NOTES.md` 重写、`CHANGELOG.md` `[0.2.4] - 2026-09-25`、`SECURITY.md` 版本表
-4. **A3 过滤搜索性能（本次，待提交）**：`search_filtered` 三路径——候选 ≤ `max(256, k*16)` 或无索引走精确扫描；宽过滤让 ANN 索引过采样提案再过滤+同一距离函数重算；存活提案 < k 回退精确扫描（**过滤永远不能让查询变短**）。锁序 data.read → 索引内部，候选借引用不 clone。测试 `tests/filtered_search.rs` 6 例（含"提案全被拒绝必须回退拿满 k"回归）
-5. （0.2.3 时代）索引持久化接线：`VectorIndex::persist` + `IndexManager::load_index`、原子写+校验和防陈旧索引、`restore_from_storage` 两阶段、CLI `coretex index save|list`
+4. **A3 过滤搜索性能** ✅ `25899d9`：`search_filtered` 三路径——候选 ≤ `max(256, k*16)` 或无索引走精确扫描；宽过滤让 ANN 索引过采样提案再过滤+同一距离函数重算；存活提案 < k 回退精确扫描（**过滤永远不能让查询变短**）。锁序 data.read → 索引内部，候选借引用不 clone。`tests/filtered_search.rs` 6 例（含"提案全被拒绝必须回退拿满 k"回归）
+5. **B2a hybrid 搜索接线（本次，待提交）**：`CoreTexDB::hybrid_search`（向量路 + BM25 文本路 → RRF 融合，单侧可用；filter 两侧生效、文本 rank 过滤后赋值）；BM25 缓存按 `DataManager::data_version` 失效（`write_data()` helper 统一接管 17 处写锁拿锁即 bump）；`BM25Index::add_documents` 批量建 O(n)（原循环单加是 O(n²)）；修 `rrf_fusion` sources 按 id 收集 + 并列分 id tie-break；**0 分命中过滤**（BM25 对无词文档打 0 分仍占 top-k，会污染融合）。`tests/hybrid_search.rs` 7 例
+6. （0.2.3 时代）索引持久化接线：`VectorIndex::persist` + `IndexManager::load_index`、原子写+校验和防陈旧索引、`restore_from_storage` 两阶段、CLI `coretex index save|list`
 - Windows 验收：`E:\Ubuntn24042\wintest` 脚本 `windows_acceptance.ps1 -Root <dir>`，**19/19 全绿**（0.2.3 单 exe 构建）
 - Linux 测试基线：**491** 全绿（485 + A3 新增 6）；clippy `--all-targets` 0 error；rustdoc 0 warning
 
@@ -46,6 +47,7 @@
 - 偶发 `remote: Internal Server Error`：重试即可
 - GitHub API/HTTPS 本机不可用，Actions 状态需用户在浏览器看
 - PowerShell 调 WSL 时 **避免复杂引号/`$(...)`**，改写脚本文件执行
+- **ruflo 智能体平台**（2026-10-01 起用户要求用它辅助开发）：Windows npm 全局 3.49.0 + shim `C:\Users\QH\AppData\Roaming\npm\ruflo.cmd`（PATH 直接 `ruflo` 可用）；**WSL 内严禁跑 `/mnt/c` 下的 ruflo 包**（9p 跨文件系统加载卡死 0 输出），用 `npx -y ruflo@3.49.0`（缓存 WSL 原生）；交互命令需 PTY → `printf '<答案>' | script -qec "npx -y ruflo@3.49.0 init wizard" /dev/null`；LLM provider 全部未配置，key 由**用户自己** `ruflo providers configure -p openai -e <endpoint> -k <key> -m <model>` 填（不进对话）
 
 ## 架构速查
 
@@ -79,12 +81,12 @@ CoreTexDB-V0.2.4/
 
 ## 下次可能任务
 
-- [ ] **A3 提交推送**（等全量测试绿 → `bash /home/qh/commit_a3.sh` → SSH443 push）；roadmap 登记 A3 完成 → **阶段 A 收口**
-- [ ] 阶段 B：完整 C FFI（`coretexdb.h` + cbindgen + C 示例 + 测试）、hybrid/BM25/rerank 接入 search 与 CLI/REST
+- [ ] **B2a 提交推送**（等全量测试绿 → `bash /home/qh/commit_b2a.sh` → SSH443 push）
+- [ ] 阶段 B 剩余：**B1 C FFI**（`coretexdb.h` 全套 + cbindgen/手写 + C 示例 + 测试）、B3 CLI/REST hybrid 入口、B2 的 rerank 接线（`TwoStageSearchPipeline::search_with_callback` 有硬编码 mock 需先修）、B4 孤立模块处置、B6/B7/B8 Python
 - [ ] 确认 Actions 是否 green（tag `v0.2.4` 触发 release.yml；GitHub HTTPS 被墙，需用户看网页）
 - [ ] 是否把分支改名 `release/v0.2.4`（现仍叫 `v0.2.1-base`）
 - [ ] 遗留：约 100 个 clippy warning（D5）；`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；Python 无 `pyproject.toml`；Python 类名 `CortexDB*`→`CoreTexDB*`（B7，破坏性）
-- [ ] 系统级能力空白：复制/分片/Pub-Sub/快照
+- [ ] 系统级能力空白：复制/分片/Pub-Sub/快照（阶段 C）
 
 ## Git 身份
 

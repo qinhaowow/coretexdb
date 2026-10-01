@@ -80,41 +80,61 @@ impl BM25Index {
 
     pub async fn add_document(&self, doc: Document) -> Result<(), String> {
         let doc_id = doc.id.clone();
-        let _doc_len = doc.tokens.len() as f32;
-        
-        let mut docs = self.documents.write().await;
-        docs.insert(doc_id.clone(), doc);
+        {
+            let mut docs = self.documents.write().await;
+            docs.insert(doc_id, doc);
+        }
+        self.recompute_stats().await;
+        Ok(())
+    }
 
-        let n = docs.len() as f32;
-        let mut doc_freqs: HashMap<String, usize> = HashMap::new();
-
-        for doc in docs.values() {
-            let unique_terms: HashSet<String> = doc.tokens.iter().cloned().collect();
-            for term in unique_terms {
-                *doc_freqs.entry(term).or_insert(0) += 1;
+    /// Insert every document, then recompute the collection statistics **once**.
+    ///
+    /// [`Self::add_document`] rebuilds IDF over the whole collection each time,
+    /// so loading a collection through a loop of single adds is quadratic in
+    /// the number of documents. Bulk loading must stay linear.
+    pub async fn add_documents(&self, docs: Vec<Document>) -> Result<(), String> {
+        if docs.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut all = self.documents.write().await;
+            for doc in docs {
+                all.insert(doc.id.clone(), doc);
             }
+        }
+        self.recompute_stats().await;
+        Ok(())
+    }
+
+    /// Recompute IDF (per term) and the average document length from every
+    /// stored document. O(total tokens); idempotent.
+    async fn recompute_stats(&self) {
+        let n;
+        let mut doc_freqs: HashMap<String, usize> = HashMap::new();
+        let total_len;
+        {
+            let docs = self.documents.read().await;
+            n = docs.len() as f32;
+            for doc in docs.values() {
+                let unique_terms: HashSet<String> = doc.tokens.iter().cloned().collect();
+                for term in unique_terms {
+                    *doc_freqs.entry(term).or_insert(0) += 1;
+                }
+            }
+            total_len = docs.values().map(|d| d.tokens.len() as f32).sum::<f32>();
         }
 
         let mut idf = self.idf.write().await;
         idf.clear();
-        
         for (term, df) in doc_freqs {
             let idf_score = ((n - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln();
             idf.insert(term, idf_score);
         }
+        drop(idf);
 
-        let total_len: f32 = docs.values().map(|d| d.tokens.len() as f32).sum();
         let mut avgdl = self.avgdl.write().await;
         *avgdl = if n > 0.0 { total_len / n } else { 0.0 };
-
-        Ok(())
-    }
-
-    pub async fn add_documents(&self, docs: Vec<Document>) -> Result<(), String> {
-        for doc in docs {
-            self.add_document(doc).await?;
-        }
-        Ok(())
     }
 
     pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<BM25Result>, String> {

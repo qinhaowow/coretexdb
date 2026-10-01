@@ -125,9 +125,68 @@ pub struct DataManager {
     /// Directory holding per-collection index files (`<data>/indexes/vector`).
     /// `None` disables index persistence (tests, memory-only configs).
     indexes_dir: Option<std::path::PathBuf>,
+    /// Bumped by [`Self::write_data`] on every mutation of `data`.
+    /// A reader that snapshots this and then reads the map can therefore
+    /// tell that a write raced with it — used to invalidate derived
+    /// structures (the hybrid BM25 cache) instead of trusting stale data.
+    data_version: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DataManager {
+    /// Monotonic counter of vector-map mutations (see [`Self::write_data`]).
+    ///
+    /// Cheap to read. Two reads that differ mean at least one write landed
+    /// in between; a snapshot of version-then-map taken around a write can
+    /// therefore never mistake stale data for current data.
+    pub fn data_version(&self) -> u64 {
+        self.data_version
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Take the write lock on the vector map, bumping [`Self::data_version`]
+    /// before the caller mutates anything.
+    ///
+    /// Every mutation must acquire the map through this helper — never with
+    /// `self.data.write()` directly — so the version can lag behind the data
+    /// but never lead it. A derived cache built from (version, map) is then
+    /// either validated by the current version with matching data, or
+    /// invalidated and rebuilt. Both are safe; the reverse (new version,
+    /// old data) is impossible because the bump happens under the lock.
+    async fn write_data(
+        &self,
+    ) -> tokio::sync::RwLockWriteGuard<'_, HashMap<String, HashMap<String, VectorRecord>>> {
+        let guard = self.data.write().await;
+        self.data_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        guard
+    }
+
+    /// Snapshot `(id, text)` for every record whose `metadata[text_field]`
+    /// is a string — the input for a BM25 index over the collection.
+    ///
+    /// An unknown collection yields an empty vector, so a text query against
+    /// a fresh database is an empty result rather than an error.
+    pub async fn text_records(
+        &self,
+        collection: &str,
+        text_field: &str,
+    ) -> Vec<(String, String)> {
+        let data = self.data.read().await;
+        let Some(collection_data) = data.get(collection) else {
+            return Vec::new();
+        };
+        collection_data
+            .iter()
+            .filter_map(|(id, record)| {
+                record
+                    .metadata
+                    .get(text_field)
+                    .and_then(|v| v.as_str())
+                    .map(|text| (id.clone(), text.to_string()))
+            })
+            .collect()
+    }
+
     pub fn new(
         storage: Arc<RwLock<Box<dyn StorageEngine>>>,
         index_manager: Arc<IndexManager>,
@@ -142,6 +201,7 @@ impl DataManager {
             lakehouse: None,
             wal: OnceLock::new(),
             indexes_dir: None,
+            data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -160,6 +220,7 @@ impl DataManager {
             lakehouse: None,
             wal: OnceLock::new(),
             indexes_dir: None,
+            data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -179,6 +240,7 @@ impl DataManager {
             lakehouse: None,
             wal: OnceLock::new(),
             indexes_dir: None,
+            data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -200,6 +262,7 @@ impl DataManager {
             lakehouse,
             wal: OnceLock::new(),
             indexes_dir: None,
+            data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -360,7 +423,7 @@ impl DataManager {
                     if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
                         let _ = index.add(key, vector).await;
                     }
-                    let mut data = self.data.write().await;
+                    let mut data = self.write_data().await;
                     if let Some(collection_data) = data.get_mut(collection.as_str()) {
                         collection_data.insert(
                             key.clone(),
@@ -389,7 +452,7 @@ impl DataManager {
                     if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
                         let _ = index.remove(key).await;
                     }
-                    let mut data = self.data.write().await;
+                    let mut data = self.write_data().await;
                     if let Some(collection_data) = data.get_mut(collection.as_str()) {
                         collection_data.remove(key);
                     }
@@ -502,7 +565,7 @@ impl DataManager {
                 continue;
             };
 
-            let mut data = self.data.write().await;
+            let mut data = self.write_data().await;
             if let Some(collection_data) = data.get_mut(collection) {
                 collection_data.insert(id.to_string(), VectorRecord { vector, metadata });
                 restored += 1;
@@ -640,7 +703,7 @@ impl DataManager {
         }
 
         {
-            let mut data = self.data.write().await;
+            let mut data = self.write_data().await;
             data.insert(name.to_string(), HashMap::new());
         }
 
@@ -661,7 +724,7 @@ impl DataManager {
 
         collections.remove(name);
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         data.remove(name);
         drop(data);
 
@@ -717,7 +780,7 @@ impl DataManager {
 
         // 移出旧数据
         let old_data = {
-            let mut data = self.data.write().await;
+            let mut data = self.write_data().await;
             data.remove(old_name)
                 .unwrap_or_default()
         };
@@ -747,7 +810,7 @@ impl DataManager {
             });
         }
         {
-            let mut data = self.data.write().await;
+            let mut data = self.write_data().await;
             data.insert(new_name.to_string(), old_data);
         }
 
@@ -816,7 +879,7 @@ impl DataManager {
             }
         }
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -867,7 +930,7 @@ impl DataManager {
     }
 
     pub async fn delete_vectors(&self, collection: &str, ids: &[String]) -> Result<usize> {
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1124,7 +1187,7 @@ impl DataManager {
             });
         }
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1441,7 +1504,7 @@ impl DataManager {
             // collection. Longest prefix wins.
             let known: Vec<String> = self.collections.read().await.keys().cloned().collect();
 
-            let mut data = self.data.write().await;
+            let mut data = self.write_data().await;
             for storage_key in &expired {
                 let Some((collection, id)) = Self::split_storage_key(storage_key, &known) else {
                     log::warn!("purge_expired: cannot resolve storage key {}", storage_key);
@@ -1513,7 +1576,7 @@ impl DataManager {
             }
         }
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1561,7 +1624,7 @@ impl DataManager {
         ids: &[String],
         txn_id: TransactionId,
     ) -> Result<usize> {
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1614,7 +1677,7 @@ impl DataManager {
             });
         }
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1672,7 +1735,7 @@ impl DataManager {
         let mut inserted = Vec::new();
         let mut updated = Vec::new();
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1725,7 +1788,7 @@ impl DataManager {
         Ok((inserted, updated))
     }
 
-    fn matches_filter(metadata: &serde_json::Value, filter: &serde_json::Value) -> bool {
+    pub(crate) fn matches_filter(metadata: &serde_json::Value, filter: &serde_json::Value) -> bool {
         match filter {
             serde_json::Value::Object(obj) => {
                 if obj.is_empty() {
@@ -1878,7 +1941,7 @@ impl DataManager {
         }
 
         // 3. 写数据 + 索引
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or_else(|| {
                 let _ = tokio::runtime::Handle::try_current();
@@ -1964,7 +2027,7 @@ impl DataManager {
             .await
             .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
 
-        let mut data = self.data.write().await;
+        let mut data = self.write_data().await;
         let collection_data = data.get_mut(collection)
             .ok_or_else(|| {
                 // Note: abort is fire-and-forget here; we log the error if it fails

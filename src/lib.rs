@@ -183,7 +183,85 @@ pub struct CoreTexDB {
     pub wal: Option<Arc<WriteAheadLog>>,
     /// Per-collection file persistence nested under FileStorage's `store/` dir.
     pub persistence: Option<Arc<coretex_persistence::PersistenceManager>>,
+    /// Derived BM25 text indexes for [`Self::hybrid_search`], keyed by
+    /// `(collection, text_field)` and validated against
+    /// [`DataManager::data_version`] so no write can leave a stale index
+    /// behind. Guards are never held across an `.await`.
+    bm25_cache: std::sync::RwLock<std::collections::HashMap<(String, String), CachedBm25>>,
 }
+
+/// Parameters for [`CoreTexDB::hybrid_search`].
+///
+/// Provide `vector`, `text`, or both. With both, an id returned by both
+/// retrievers outranks one returned by either alone (reciprocal rank fusion).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct HybridSearchRequest {
+    /// Query vector for the ANN side; `None` skips that side.
+    pub vector: Option<Vec<f32>>,
+    /// Text query for the BM25 side; `None` (or blank) skips that side.
+    pub text: Option<String>,
+    /// How many hits to return.
+    #[serde(default)]
+    pub k: usize,
+    /// Metadata filter, applied to **both** sides before fusing.
+    pub filter: Option<serde_json::Value>,
+    /// Metadata field holding the document text (default `"text"`).
+    pub text_field: Option<String>,
+}
+
+impl HybridSearchRequest {
+    /// Request `k` hits; then add a `vector` and/or `text`.
+    pub fn new(k: usize) -> Self {
+        Self {
+            k,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_vector(mut self, vector: Vec<f32>) -> Self {
+        self.vector = Some(vector);
+        self
+    }
+
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = Some(text.into());
+        self
+    }
+
+    pub fn with_filter(mut self, filter: serde_json::Value) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Metadata field to read the document text from (default `"text"`).
+    pub fn with_text_field(mut self, field: impl Into<String>) -> Self {
+        self.text_field = Some(field.into());
+        self
+    }
+}
+
+/// One hit from [`CoreTexDB::hybrid_search`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HybridSearchHit {
+    /// Vector id.
+    pub id: String,
+    /// Reciprocal-rank-fused score; higher is better.
+    pub score: f32,
+    /// Which retrievers returned this id: `"vector"`, `"text"`, or both.
+    pub sources: Vec<String>,
+}
+
+/// A BM25 index materialised from the map state at `version`.
+struct CachedBm25 {
+    version: u64,
+    index: Arc<BM25Index>,
+}
+
+/// BM25 term-saturation / length-normalisation parameters (standard defaults).
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
+/// RRF constant: a result at `rank` contributes `1 / (RRF_K + rank)`.
+const RRF_K: u32 = 60;
 
 /// On-disk layout under an install root (`--data-dir`):
 ///
@@ -386,6 +464,7 @@ impl CoreTexDB {
             config,
             wal: None,
             persistence,
+            bm25_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -746,6 +825,170 @@ impl CoreTexDB {
 
     pub async fn search(&self, collection: &str, query: Vec<f32>, k: usize, filter: Option<serde_json::Value>) -> Result<Vec<SearchResult>> {
         self.data_manager.search(collection, query, k, filter).await
+    }
+
+    /// Hybrid search: fuse ANN neighbours with BM25 text matches using
+    /// reciprocal rank fusion ([`RRF_K`]).
+    ///
+    /// Either side may be omitted. The BM25 index is materialised from the
+    /// collection's `metadata[text_field]` string fields and cached against
+    /// [`DataManager::data_version`], so it is rebuilt after any write but
+    /// never served stale. `filter` is enforced on both sides — the vector
+    /// side inside [`Self::search`], text hits before fusing — so every
+    /// returned id satisfies it.
+    pub async fn hybrid_search(
+        &self,
+        collection: &str,
+        request: HybridSearchRequest,
+    ) -> Result<Vec<HybridSearchHit>> {
+        // Fail early and identically for both sides: an unknown collection
+        // is an error, not a silently empty result.
+        self.data_manager.get_collection(collection).await?;
+        if request.k == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Fuse from a pool deeper than k so the two sides can overlap.
+        let pool = request.k.saturating_mul(4).max(16);
+        let mut ranked: Vec<MultiModalResult> = Vec::new();
+
+        if let Some(vector) = request.vector.clone() {
+            let hits = self
+                .search(collection, vector, pool, request.filter.clone())
+                .await?;
+            ranked.extend(hits.into_iter().enumerate().map(|(rank, hit)| {
+                MultiModalResult {
+                    id: hit.id,
+                    // RRF ranks by position; the raw side scores are carried
+                    // only for callers that pick a weighted fusion instead.
+                    score: 0.0,
+                    rank,
+                    source: "vector".to_string(),
+                    weight: 1.0,
+                    metadata: None,
+                }
+            }));
+        }
+
+        let text_query = request
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        if let Some(text) = text_query {
+            let field = request.text_field.as_deref().unwrap_or("text");
+            let index = self.bm25_index_for(collection, field).await?;
+            let text_hits = index
+                .search(text, pool)
+                .await
+                .map_err(|e| CoreTexError::Internal(format!("bm25 search failed: {}", e)))?;
+
+            // BM25 scores every document; ones with none of the query terms
+            // score exactly 0 but still occupy top-k slots. They are not
+            // hits — keep them and they'd give pure vector results phantom
+            // "text" sources and make an empty query look non-empty.
+            let text_hits: Vec<_> = text_hits.into_iter().filter(|h| h.score > 0.0).collect();
+
+            // Filter first, then assign ranks: the rank RRF sees must be the
+            // position a caller would count, not a pre-filter gap.
+            let mut kept: Vec<(String, f32)> = Vec::new();
+            if let Some(filter) = &request.filter {
+                let ids: Vec<String> = text_hits.iter().map(|h| h.id.clone()).collect();
+                let records = self
+                    .data_manager
+                    .get_vectors_by_ids(collection, &ids)
+                    .await?;
+                let by_id: std::collections::HashMap<&str, &_> =
+                    records.iter().map(|(id, r)| (id.as_str(), r)).collect();
+                for hit in text_hits {
+                    let passes = by_id
+                        .get(hit.id.as_str())
+                        .map(|record| DataManager::matches_filter(&record.metadata, filter))
+                        .unwrap_or(false);
+                    if passes {
+                        kept.push((hit.id, hit.score));
+                    }
+                }
+            } else {
+                // No filter: the cached index is rebuilt on every write, so
+                // it cannot contain deleted ids.
+                kept.extend(text_hits.into_iter().map(|h| (h.id, h.score)));
+            }
+
+            ranked.extend(
+                kept.into_iter().enumerate().map(|(rank, (id, score))| {
+                    MultiModalResult {
+                        id,
+                        score,
+                        rank,
+                        source: "text".to_string(),
+                        weight: 1.0,
+                        metadata: None,
+                    }
+                }),
+            );
+        }
+
+        // Works for a single side too: a lone rank still orders by rank.
+        let engine = ScoreFusionEngine::new(ScoreFusion::RRF { k: RRF_K });
+        Ok(engine
+            .fuse(&ranked)
+            .into_iter()
+            .take(request.k)
+            .map(|fused| HybridSearchHit {
+                id: fused.id,
+                score: fused.score,
+                sources: fused.sources,
+            })
+            .collect())
+    }
+
+    /// The BM25 index for `(collection, text_field)`, materialised on first
+    /// use and cached until [`DataManager::data_version`] moves.
+    ///
+    /// Snapshot discipline: the version is read *before* the map. A write
+    /// landing in between either bumps the version (this entry, stamped with
+    /// the old one, is then discarded on the next call) or is not yet visible
+    /// to the read. It can never be hidden *and* stamped current, because
+    /// `write_data` bumps under the very write lock this read excludes.
+    async fn bm25_index_for(&self, collection: &str, text_field: &str) -> Result<Arc<BM25Index>> {
+        let version = self.data_manager.data_version();
+        let key = (collection.to_string(), text_field.to_string());
+
+        {
+            let cache = self.bm25_cache.read().expect("bm25 cache poisoned");
+            if let Some(cached) = cache.get(&key) {
+                if cached.version == version {
+                    return Ok(cached.index.clone());
+                }
+            }
+        }
+
+        // Build without the cache lock held: tokenising is the slow part and
+        // must not block lookups for other collections.
+        let texts = self.data_manager.text_records(collection, text_field).await;
+        let docs: Vec<coretex_bm25::Document> = texts
+            .into_iter()
+            .map(|(id, text)| coretex_bm25::Document::new(id, text))
+            .collect();
+        let index = Arc::new(BM25Index::new(BM25_K1, BM25_B));
+        index
+            .add_documents(docs)
+            .await
+            .map_err(|e| CoreTexError::Internal(format!("bm25 build failed: {}", e)))?;
+
+        let mut cache = self.bm25_cache.write().expect("bm25 cache poisoned");
+        // A concurrent builder may have finished first; keep a single copy.
+        if let Some(cached) = cache.get(&key) {
+            if cached.version == version {
+                return Ok(cached.index.clone());
+            }
+        }
+        cache.insert(key, CachedBm25 {
+            version,
+            index: index.clone(),
+        });
+        Ok(index)
     }
 
     pub async fn get_vectors_count(&self, collection: &str) -> Result<usize> {

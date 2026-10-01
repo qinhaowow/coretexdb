@@ -47,7 +47,7 @@
 | # | 项 | 预估 |
 | --- | --- | ---: |
 | B1 | **完整 C FFI**：`include/coretexdb.h` 目前是占位符，与 README 声称的能力不符。补齐 connect/collection/insert/search/backup 全套 + cbindgen + C 示例 + 测试 | +3.0k 行 |
-| B2 | **hybrid / BM25 / rerank 接线**：`coretex_hybrid`、`coretex_bm25`、`coretex_rerank` 已存在但没接进 `search` | +1.5k 行 |
+| B2 | **hybrid / BM25 / rerank 接线**：`coretex_hybrid`、`coretex_bm25`、`coretex_rerank` 已存在但没接进 `search` | 🔄 hybrid/BM25 ✅ `CoreTexDB::hybrid_search`（RRF 融合 + BM25 物化缓存按 `data_version` 失效 + 0 分命中过滤；`tests/hybrid_search.rs` 7 例）；**rerank ⬜** |
 | B3 | **REST/GraphQL 补全**：TTL 已补；余下 hybrid、分页参数、错误码统一 | +1.0k 行 |
 | B4 | **孤立模块处理**：`coretex_ann`、`coretex_graph`、`coretex_tantivy` 等 3.8k 行模块无调用点——要么接线，要么删除并说明取舍 | 视决定 |
 | B5 | **过滤索引**（对应 A3）：倒置索引让元数据预筛也变成次线性 | +1.5k 行 |
