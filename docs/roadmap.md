@@ -46,14 +46,14 @@
 
 | # | 项 | 预估 |
 | --- | --- | ---: |
-| B1 | **完整 C FFI**：`include/coretexdb.h` 目前是占位符，与 README 声称的能力不符。补齐 connect/collection/insert/search/backup 全套 + cbindgen + C 示例 + 测试 | +3.0k 行 |
-| B2 | **hybrid / BM25 / rerank 接线**：`coretex_hybrid`、`coretex_bm25`、`coretex_rerank` 已存在但没接进 `search` | 🔄 hybrid/BM25 ✅ `CoreTexDB::hybrid_search`（RRF 融合 + BM25 物化缓存按 `data_version` 失效 + 0 分命中过滤；`tests/hybrid_search.rs` 7 例）；**rerank ⬜** |
-| B3 | **REST/GraphQL 补全**：TTL 已补；余下 hybrid、分页参数、错误码统一 | +1.0k 行 |
-| B4 | **孤立模块处理**：`coretex_ann`、`coretex_graph`、`coretex_tantivy` 等 3.8k 行模块无调用点——要么接线，要么删除并说明取舍 | 视决定 |
-| B5 | **过滤索引**（对应 A3）：倒置索引让元数据预筛也变成次线性 | +1.5k 行 |
-| B6 | **Python 打包元数据缺失**：`python/` 没有 `pyproject.toml`/`setup.cfg`，`setup()` 不带任何元数据，`pip install -e .` 拿不到包名与依赖（CI 里靠先删 `pyproject.toml` 绕开 maturin） | +0.5k 行 |
-| B7 | **Python 命名不一致待决策**：包名 `coretexdb` 但类名是 `CortexDB`/`CortexDBClient`——是加 `CoreTexDB` 别名，还是统一改名（破坏性） | 决策 |
-| B8 | **`python/examples/basic_usage.py` 等示例的品牌与用法核对**（部分文案仍写 CortexDB） | 少量 |
+| B1 | **完整 C FFI**：`include/coretexdb.h` 目前是占位符，与 README 声称的能力不符。补齐 connect/collection/insert/search/backup 全套 + cbindgen + C 示例 + 测试 | ✅ 手写 `include/coretexdb.h`（13 个 `extern "C"` + 状态码宏 + 所有权/线程约定）+ `src/coretex_ffi.rs`（`CoreTexDbHandle` 2-worker runtime、`catch_unwind`、线程局部 last_error）+ `tests/ffi_api.rs` 7 例（含头文件↔源码符号一致性守护）+ `share/examples/c/main.c` 真编译真运行 + `scripts/build_ffi_example.sh`；重复建集合经死变体 `CollectionAlreadyExists` 源映射为 `-3` |
+| B2 | **hybrid / BM25 / rerank 接线**：`coretex_hybrid`、`coretex_bm25`、`coretex_rerank` 已存在但没接进 `search` | ✅ hybrid/BM25 `CoreTexDB::hybrid_search`（RRF 融合 + BM25 物化缓存按 `data_version` 失效 + 0 分命中过滤，`tests/hybrid_search.rs` 7 例）；rerank `CoreTexDB::hybrid_search_reranked`（细排对真实 metadata 文本、每次新建 pipeline、无文本查询逐位透传 RRF；`tests/rerank_search.rs` 3 例 + pipeline 单测）——B2 收口。余项：CLI/REST `--rerank` 标志（涉另一会话 WIP 文件，错峰补） |
+| B3 | **REST/GraphQL 补全**：TTL 已补；余下 hybrid、分页参数、错误码统一 | 🔄 hybrid ✅（`e122d80` REST/CLI 入口）；余分页参数、错误码统一 |
+| B4 | **孤立模块处理**：`coretex_ann`、`coretex_graph`、`coretex_tantivy` 等 3.8k 行模块无调用点——要么接线，要么删除并说明取舍 | ⏸ 暂缓（用户决定）：三模块零调用点、零测试引用、README/docs 无承诺，删除不损失现有功能；接线则意味着图查询产品面/自动调参/第二套全文引擎三块全新能力。待 C/D 排期后再定 |
+| B5 | **过滤索引**（对应 A3）：倒置索引让元数据预筛也变成次线性 | ✅ `coretex_data/filter_index.rs`：metadata 倒排（(字段, 规范值)→ids + 字段存在集），按 `data_version` 在 `data.read` 锁内校验缓存（写者在写锁内 bump，命中必对应当前快照）；`scan` 产出候选**超集**——等值/`$in`/单 `$ne`/`$exists` 精确集合代数、范围与 `$regex` 收窄到存在集、`$and`/`$or` 交并组合、`$not` 回退全表；`search_filtered` 与 `delete_vectors_where` 改为候选集迭代 + `matches_filter` 精筛（索引买规模、线性谓词保精确）。单测 38 种 filter 形状对拍 `matches_filter` 断言超集性质（含 1 vs 1.0 数字边界）+ 1000 条窄查询候选规模断言；`tests/filter_index_search.rs` 6 例（算子精确语义/缓存失效/回退/等价写法/删除路径） |
+| B6 | **Python 打包元数据缺失**：`python/` 没有 `pyproject.toml`/`setup.cfg`，`setup()` 不带任何元数据，`pip install -e .` 拿不到包名与依赖（CI 里靠先删 `pyproject.toml` 绕开 maturin） | ✅ `python/pyproject.toml`（PEP 621，setuptools 后端，dynamic version 取自 `coretexdb.version = 1.0.12` 单一事实源；5 个运行时依赖 + 3 组 extras）；CI 的 rm-pyproject 步骤删除（针对不存在文件的空操作，setuptools 后端本就不会触发 maturin）；实测 `pip install -e .` 拿到 `coretexdb 1.0.12` |
+| B7 | **Python 命名不一致待决策**：包名 `coretexdb` 但类名是 `CortexDB`/`CortexDBClient`——是加 `CoreTexDB` 别名，还是统一改名（破坏性） | ✅ 用户拍板"新名为主 + 旧名兼容别名"：`CoreTexDB`/`CoreTexDBClient`/`AsyncCoreTexDBClient`/`CoreTexDBGrpcClient`/`AsyncCoreTexDBGrpcClient`/`CoreTexDBVectorStore` 为正式类名，旧名 `CortexDB*` 保留为同对象别名至 1.0（`__all__` 双导出，测试断言 `alias is canonical`）；文档/示例统一用正式名 |
+| B8 | **`python/examples/basic_usage.py` 等示例的品牌与用法核对**（部分文案仍写 CortexDB） | ✅ 示例 16 处品牌改 `CoreTexDB`、4 个客户端方法逐一对照真实签名（`health_check`/`create_collection`/`insert_vectors`/`search`）、修正过时的 `bin coretex-server` 启动命令为单二进制 `./target/release/coretex server`（与 `examples/README.md` 对齐）；`py_compile` 通过 |
 
 ---
 

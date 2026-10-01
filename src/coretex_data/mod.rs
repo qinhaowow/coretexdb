@@ -13,6 +13,9 @@ use crate::coretex_utils::wal::{WriteAheadLog, WalEntryType};
 pub mod storage_adapter;
 pub use storage_adapter::{UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
 
+mod filter_index;
+use filter_index::{FilterIndex, IndexScan};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorRecord {
     pub vector: Vec<f32>,
@@ -130,6 +133,11 @@ pub struct DataManager {
     /// tell that a write raced with it — used to invalidate derived
     /// structures (the hybrid BM25 cache) instead of trusting stale data.
     data_version: Arc<std::sync::atomic::AtomicU64>,
+    /// Metadata inverted index per collection, validated against
+    /// [`Self::data_version`] like the hybrid BM25 cache: a hit only counts
+    /// when the version stored with the index equals the version read while
+    /// holding `data`'s read lock (see [`Self::index_scan`]).
+    filter_index_cache: Arc<RwLock<HashMap<String, (u64, Arc<FilterIndex>)>>>,
 }
 
 impl DataManager {
@@ -202,6 +210,7 @@ impl DataManager {
             wal: OnceLock::new(),
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -221,6 +230,7 @@ impl DataManager {
             wal: OnceLock::new(),
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -241,6 +251,7 @@ impl DataManager {
             wal: OnceLock::new(),
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -263,6 +274,7 @@ impl DataManager {
             wal: OnceLock::new(),
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -1043,6 +1055,46 @@ impl DataManager {
     /// an inverted index), then distances for at most `min(|matches|, proposals)`
     /// vectors instead of all `n` when the filter matches most of the
     /// collection.
+    /// Resolve `filter` to an [`IndexScan`] using the collection's cached
+    /// inverted index, under the caller's `data` read lock.
+    ///
+    /// The version is read while that lock is held (writers bump it under
+    /// the write lock), so a cached hit describes exactly the snapshot being
+    /// queried; a miss builds from that same snapshot. The scan is a
+    /// *superset* of the true matches — the caller still runs
+    /// [`Self::matches_filter`] per candidate, which keeps results exact.
+    async fn index_scan(
+        &self,
+        collection: &str,
+        records: &HashMap<String, VectorRecord>,
+        filter: &serde_json::Value,
+    ) -> IndexScan {
+        let version = self.data_version();
+
+        // Fast path: a version-validated hit under a shared lock.
+        {
+            let cache = self.filter_index_cache.read().await;
+            if let Some((cached_version, index)) = cache.get(collection) {
+                if *cached_version == version {
+                    return index.scan(filter);
+                }
+            }
+        }
+
+        // Slow path: build from the snapshot the caller already holds.
+        let index = Arc::new(FilterIndex::build(records));
+        let scan = index.scan(filter);
+        let mut cache = self.filter_index_cache.write().await;
+        // A concurrent builder may have finished first; keep one copy.
+        if let Some((cached_version, _)) = cache.get(collection) {
+            if *cached_version == version {
+                return scan;
+            }
+        }
+        cache.insert(collection.to_string(), (version, index));
+        scan
+    }
+
     async fn search_filtered(
         &self,
         collection: &str,
@@ -1067,13 +1119,26 @@ impl DataManager {
             .get(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
-        // One pass: decide membership and remember the matching vectors. No
-        // distance is computed yet, because the cheap path may not need them.
-        let matched: Vec<(&String, &Vec<f32>)> = collection_data
-            .iter()
-            .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
-            .map(|(id, record)| (id, &record.vector))
-            .collect();
+        // Pre-filter: the inverted index narrows the pool to a superset of
+        // the matches (sublinear for selective filters); every candidate is
+        // still tested with matches_filter, so the result is exact either
+        // way. When the index cannot narrow the filter, this is the same
+        // full pass as before. No distance is computed yet, because the
+        // cheap path may not need them.
+        let scan = self.index_scan(collection, collection_data, filter).await;
+        let matched: Vec<(&String, &Vec<f32>)> = match scan {
+            IndexScan::Candidates(candidates) => candidates
+                .iter()
+                .filter_map(|id| collection_data.get_key_value(id))
+                .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
+                .map(|(id, record)| (id, &record.vector))
+                .collect(),
+            IndexScan::All => collection_data
+                .iter()
+                .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
+                .map(|(id, record)| (id, &record.vector))
+                .collect(),
+        };
 
         let index = match index {
             Some(index) if matched.len() > proposals => index,
@@ -1412,11 +1477,26 @@ impl DataManager {
             let collection_data = data
                 .get(collection)
                 .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
-            collection_data
-                .iter()
-                .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
-                .map(|(id, _)| id.clone())
-                .collect()
+            // Same pre-filter as the query path: candidates from the index
+            // (superset), each re-checked with matches_filter so the delete
+            // set is exact.
+            let scan = self.index_scan(collection, collection_data, filter).await;
+            match scan {
+                IndexScan::Candidates(candidates) => candidates
+                    .into_iter()
+                    .filter(|id| {
+                        collection_data
+                            .get(id)
+                            .map(|record| Self::matches_filter(&record.metadata, filter))
+                            .unwrap_or(false)
+                    })
+                    .collect(),
+                IndexScan::All => collection_data
+                    .iter()
+                    .filter(|(_, record)| Self::matches_filter(&record.metadata, filter))
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            }
         };
         ids.sort();
 
