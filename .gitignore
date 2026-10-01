@@ -103,3 +103,9 @@ lock_probe.txt
 /*.exe
 /*.dll
 /*.pdb
+
+# ruflo agent 生成物（ruflo init 落盘的运行时配置，不进开源仓库）
+/.claude/
+/.claude-flow/
+/.mcp.json
+/.swarm/

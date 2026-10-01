@@ -680,10 +680,7 @@ impl DataManager {
         {
             let mut collections = self.collections.write().await;
             if collections.contains_key(name) {
-                return Err(CoreTexError::ValidationError(format!(
-                    "Collection '{}' already exists",
-                    name
-                )));
+                return Err(CoreTexError::CollectionAlreadyExists(name.to_string()));
             }
 
             collections.insert(
@@ -764,9 +761,7 @@ impl DataManager {
         {
             let collections = self.collections.read().await;
             if collections.contains_key(new_name) {
-                return Err(CoreTexError::ValidationError(format!(
-                    "Collection '{}' already exists", new_name
-                )));
+                return Err(CoreTexError::CollectionAlreadyExists(new_name.to_string()));
             }
         }
 

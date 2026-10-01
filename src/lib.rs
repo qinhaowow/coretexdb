@@ -74,6 +74,7 @@ pub mod coretex_ha_extra;
 pub mod coretex_bio;
 pub mod coretex_types_extra;
 pub mod coretex_grpo;
+pub mod coretex_ffi;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -836,10 +837,39 @@ impl CoreTexDB {
     /// never served stale. `filter` is enforced on both sides — the vector
     /// side inside [`Self::search`], text hits before fusing — so every
     /// returned id satisfies it.
+    ///
+    /// For reranked ordering see [`Self::hybrid_search_reranked`].
     pub async fn hybrid_search(
         &self,
         collection: &str,
         request: HybridSearchRequest,
+    ) -> Result<Vec<HybridSearchHit>> {
+        self.hybrid_search_impl(collection, request, false).await
+    }
+
+    /// [`Self::hybrid_search`] followed by a two-stage rerank of the fused
+    /// candidates: the coarse stage min-max normalises the RRF scores as a
+    /// single group, the fine stage scores each candidate's *real*
+    /// `metadata[text_field]` text against the query terms, so lexical
+    /// overlap can overturn close RRF ties. Ids, `sources`, `k` and the
+    /// `filter` contract are unchanged; hit scores become rerank final
+    /// scores (higher is better) instead of RRF `1 / (RRF_K + rank)`.
+    ///
+    /// Without a text query there is nothing to match against, so the RRF
+    /// order and scores pass through untouched.
+    pub async fn hybrid_search_reranked(
+        &self,
+        collection: &str,
+        request: HybridSearchRequest,
+    ) -> Result<Vec<HybridSearchHit>> {
+        self.hybrid_search_impl(collection, request, true).await
+    }
+
+    async fn hybrid_search_impl(
+        &self,
+        collection: &str,
+        request: HybridSearchRequest,
+        rerank: bool,
     ) -> Result<Vec<HybridSearchHit>> {
         // Fail early and identically for both sides: an unknown collection
         // is an error, not a silently empty result.
@@ -931,8 +961,26 @@ impl CoreTexDB {
 
         // Works for a single side too: a lone rank still orders by rank.
         let engine = ScoreFusionEngine::new(ScoreFusion::RRF { k: RRF_K });
-        Ok(engine
-            .fuse(&ranked)
+        let fused = engine.fuse(&ranked);
+
+        // Rerank only pays off with a text query (the fine stage measures
+        // term overlap); without one it would be a monotonic rescore of
+        // the same order, so pass the RRF result through untouched.
+        if rerank {
+            if let Some(text) = text_query {
+                return self
+                    .rerank_fused(
+                        collection,
+                        text,
+                        fused,
+                        request.k,
+                        request.text_field.as_deref(),
+                    )
+                    .await;
+            }
+        }
+
+        Ok(fused
             .into_iter()
             .take(request.k)
             .map(|fused| HybridSearchHit {
@@ -941,6 +989,104 @@ impl CoreTexDB {
                 sources: fused.sources,
             })
             .collect())
+    }
+
+    /// Two-stage rerank of fused hybrid candidates: the coarse stage
+    /// min-max normalises the RRF scores as one group, the fine stage
+    /// scores each candidate's *real* `metadata[text_field]` text against
+    /// the query, so lexical overlap can overturn close RRF ties. Ids and
+    /// their `sources` survive; ties break by id for a deterministic
+    /// order; candidates the coarse stage drops (top `coarse_top_k` keep)
+    /// keep their RRF score.
+    async fn rerank_fused(
+        &self,
+        collection: &str,
+        text: &str,
+        fused: Vec<FusedResult>,
+        k: usize,
+        text_field: Option<&str>,
+    ) -> Result<Vec<HybridSearchHit>> {
+        if fused.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Real document texts for every candidate; a record that vanished
+        // between fusion and fetch simply falls back to a synthetic body
+        // (the fine stage still ranks it, it just cannot win on overlap).
+        let ids: Vec<String> = fused.iter().map(|f| f.id.clone()).collect();
+        let records = self
+            .data_manager
+            .get_vectors_by_ids(collection, &ids)
+            .await?;
+        let field = text_field.unwrap_or("text");
+        let documents: std::collections::HashMap<String, RerankDocument> = records
+            .iter()
+            .map(|(id, record)| {
+                let body = record
+                    .metadata
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                (
+                    id.clone(),
+                    RerankDocument {
+                        id: id.clone(),
+                        text: body,
+                        vector: None,
+                    },
+                )
+            })
+            .collect();
+
+        // One source group, so the coarse stage normalises across the
+        // whole candidate set instead of per original side.
+        let raw: Vec<MultiModalResult> = fused
+            .iter()
+            .enumerate()
+            .map(|(rank, f)| MultiModalResult {
+                id: f.id.clone(),
+                score: f.score,
+                rank,
+                source: "hybrid".to_string(),
+                weight: 1.0,
+                metadata: None,
+            })
+            .collect();
+
+        // A fresh pipeline per call: CoarseRanker carries min/max state
+        // across rank() calls, which would leak normalisation ranges
+        // between queries.
+        let query = HybridQuery::new().with_text(text).with_top_k(fused.len());
+        let mut pipeline = TwoStageSearchPipeline::new().with_fine_config(FineRankerConfig {
+            rerank_top_k: fused.len(),
+            ..FineRankerConfig::default()
+        });
+        let reranked = pipeline.search_with_documents(&query, raw, documents);
+
+        // Overlay rerank scores onto the fused entries (ids the coarse
+        // stage dropped keep their RRF score), keeping original sources;
+        // order by score desc with id as the tie-break.
+        let mut score_by_id: std::collections::HashMap<&str, f32> = reranked
+            .iter()
+            .map(|r| (r.id.as_str(), r.score))
+            .collect();
+        let mut hits: Vec<HybridSearchHit> = fused
+            .into_iter()
+            .map(|f| HybridSearchHit {
+                score: score_by_id.remove(f.id.as_str()).unwrap_or(f.score),
+                id: f.id,
+                sources: f.sources,
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        hits.truncate(k);
+        Ok(hits)
     }
 
     /// The BM25 index for `(collection, text_field)`, materialised on first
