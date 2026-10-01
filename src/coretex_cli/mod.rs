@@ -39,6 +39,23 @@ fn parse_vector_arg(raw: &str) -> std::result::Result<Vec<f32>, String> {
         .collect()
 }
 
+/// Parse a numeric CLI argument, reporting a bad value instead of panicking.
+///
+/// The older subcommands still call `parse().unwrap()`, which turns a typo like
+/// `-k abc` into `exit=134`; new code must not add to that pile.
+fn parse_num<T>(m: &clap::ArgMatches, name: &str) -> std::result::Result<T, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = m
+        .get_one::<String>(name)
+        .ok_or_else(|| format!("缺少参数 --{}", name))?;
+    raw.trim()
+        .parse::<T>()
+        .map_err(|e| format!("参数 --{} 的值 '{}' 不合法: {}", name, raw, e))
+}
+
 /// Parse a JSON argument robustly on Windows.
 /// On Windows cmd, `'{"key":"val"}'` is passed literally including single quotes.
 /// Also handles cases where the user types single-quoted JSON values like `{'key':'val'}`.
@@ -543,6 +560,61 @@ where
                 Arg::new("filter")
                     .long("filter")
                     .help("Metadata filter (JSON)"),
+            )
+            .arg(
+                Arg::new("with-metadata")
+                    .long("with-metadata")
+                    .action(ArgAction::SetTrue)
+                    .help("Include metadata in results"),
+            )
+            .arg(
+                Arg::new("format")
+                    .long("format")
+                    .help("Output format: text, json")
+                    .default_value("text"),
+            ),
+    );
+
+    // ==================== hybrid-search ====================
+    cmd = cmd.subcommand(
+        Command::new("hybrid-search")
+            .about("Hybrid search: fuse vector similarity with BM25 text matching (RRF)")
+            .arg(
+                Arg::new("collection")
+                    .short('c')
+                    .long("collection")
+                    .help("Collection name")
+                    .default_value("default"),
+            )
+            .arg(
+                Arg::new("vector")
+                    .short('v')
+                    .long("vector")
+                    .help("Query vector (comma-separated values)"),
+            )
+            .arg(
+                Arg::new("text")
+                    .short('t')
+                    .long("text")
+                    .help("Text query for the BM25 side"),
+            )
+            .arg(
+                Arg::new("text-field")
+                    .long("text-field")
+                    .help("Metadata field holding the document text")
+                    .default_value("text"),
+            )
+            .arg(
+                Arg::new("k")
+                    .short('k')
+                    .long("k")
+                    .help("Number of results to return")
+                    .default_value("10"),
+            )
+            .arg(
+                Arg::new("filter")
+                    .long("filter")
+                    .help("Metadata filter (JSON), applied to both sides"),
             )
             .arg(
                 Arg::new("with-metadata")
@@ -1671,6 +1743,88 @@ where
                         }
                     }
                     println!("  {}. {} (score: {:.4})", i + 1, result.id, 1.0 - result.distance);
+                }
+            }
+        }
+
+        Some(("hybrid-search", m)) => {
+            let collection = extract_collection(m).ok_or("Missing --collection or positional collection name")?;
+            let k: usize = parse_num(m, "k")?;
+
+            let vector = match m.get_one::<String>("vector") {
+                Some(raw) => Some(parse_vector_arg(raw)?),
+                None => None,
+            };
+            let text = m.get_one::<String>("text").cloned();
+            // Both sides are individually optional, but a request with neither
+            // is a mistake worth naming rather than an empty result.
+            if vector.is_none() && text.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err("hybrid-search 至少需要 --vector 或 --text 之一（两者都给才是混合查询）".into());
+            }
+
+            let filter = match m.get_one::<String>("filter") {
+                Some(raw) => Some(parse_json_arg(raw)?),
+                None => None,
+            };
+            let text_field = m.get_one::<String>("text-field").cloned();
+            let format = m.get_one::<String>("format").unwrap();
+            let with_meta = m.get_flag("with-metadata");
+
+            let db_ref = db.clone();
+            let hits = db_ref
+                .read()
+                .await
+                .hybrid_search(
+                    &collection,
+                    crate::HybridSearchRequest {
+                        vector,
+                        text,
+                        k,
+                        filter,
+                        text_field,
+                    },
+                )
+                .await
+                .map_err(|e| format!("Hybrid search failed: {}", e))?;
+
+            if format == "json" {
+                let db_guard = db_ref.read().await;
+                let mut out = Vec::with_capacity(hits.len());
+                for h in &hits {
+                    let mut obj = serde_json::json!({
+                        "id": h.id,
+                        "score": h.score,
+                        "sources": h.sources,
+                    });
+                    if with_meta {
+                        if let Ok(Some((_, meta))) =
+                            db_guard.get_vector(&collection, &h.id).await
+                        {
+                            obj["metadata"] = meta;
+                        }
+                    }
+                    out.push(obj);
+                }
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                println!("Hybrid results from '{}' (k={}):", collection, k);
+                for (i, h) in hits.iter().enumerate() {
+                    // `sources` is what makes a hit explainable: it says which
+                    // retriever(s) found it.
+                    let sources = h.sources.join("+");
+                    if with_meta {
+                        if let Ok(Some((_, meta))) = db_ref.read().await.get_vector(&collection, &h.id).await {
+                            println!(
+                                "  {}. {} score={:.4} sources={} meta={}",
+                                i + 1, h.id, h.score, sources, meta
+                            );
+                            continue;
+                        }
+                    }
+                    println!(
+                        "  {}. {} (score: {:.4}, sources: {})",
+                        i + 1, h.id, h.score, sources
+                    );
                 }
             }
         }

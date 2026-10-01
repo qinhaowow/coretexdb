@@ -206,6 +206,43 @@ check "中文值标量过滤只回 1 条" "苹果-001" \
 check "比较算符 \$gte 生效" "-" \
     "$BIN" "${DD[@]}" search 2,0,0,0 -c "$C" -k 3 --filter '{"tag":{"$gte":1}}'
 
+# ---------------------------------------------------------------- hybrid
+# B3：向量路 + BM25 文本路 → RRF。每条命中必须带 sources（说明是哪一路找到的）。
+section "类别 4b hybrid 检索（向量 + BM25 → RRF）"
+HY=hy
+check "创建 hybrid 集合" "created" "$BIN" "${DD[@]}" collection create -n "$HY" -d 4 -m euclidean
+check "hybrid 写入 h1（含文本）" "inserted" \
+    "$BIN" "${DD[@]}" vector insert -c "$HY" -i h1 -v 0,1,0,0 -m '{"text":"alpha release notes","n":1}'
+check "hybrid 写入 h2" "inserted" \
+    "$BIN" "${DD[@]}" vector insert -c "$HY" -i h2 -v 0,0.9,0,0 -m '{"text":"beta notes","n":2}'
+
+check "纯文本侧命中" "h1" "$BIN" "${DD[@]}" hybrid-search -c "$HY" --text alpha -k 1
+check "纯文本侧来源标为 text" "sources: text" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" --text alpha -k 1
+check "纯向量侧来源标为 vector" "sources: vector" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" -v 0,1,0,0 -k 1
+check "双路命中来源为 vector+text" "sources: vector+text" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" -v 0,1,0,0 --text alpha -k 1
+check "hybrid json 含 sources" '"sources"' \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" -v 0,1,0,0 --text alpha -k 1 --format json
+check "hybrid --with-metadata 带出元数据" "alpha release notes" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" -v 0,1,0,0 --text alpha -k 1 --with-metadata
+check "hybrid filter 两侧生效" "h1" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" --text alpha --filter '{"n":{"$lte":1}}' -k 3
+check "文本无命中时不得编造结果" "-" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" --text zzzzabsent -k 3
+
+# 新命令不得重蹈 -k abc → exit=134 的覆盖。
+check_fail "hybrid 两侧都不给必须报错" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" -k 3
+check_fail "hybrid -k 非数字不得 panic" \
+    "$BIN" "${DD[@]}" hybrid-search -c "$HY" --text alpha -k abc
+
+# 文本字段可配置：数据在 content 里，text 字段为空时默认查不到。
+check "hybrid --text-field 可指定字段" "h3" \
+    bash -c "'$BIN' --data-dir '$DB_ARG' vector insert -c '$HY' -i h3 -v 0,0.8,0,0 -m '{\"content\":\"gamma alpha\"}' >/dev/null \
+             && '$BIN' --data-dir '$DB_ARG' hybrid-search -c '$HY' --text alpha --text-field content -k 1"
+
 # ---------------------------------------------------------------- 索引
 section "类别 3 索引"
 check "hnsw 集合可建成" "hnsw" "$BIN" "${DD[@]}" collection create h_coll -d 3 -m euclidean -i hnsw
@@ -325,6 +362,15 @@ else
             curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"vector":[1,0,0],"k":1}' \
             "http://127.0.0.1:$PORT/api/collections/rest_coll/search"
+        # B3：hybrid 入口。text_field 指向中文键，验证字段可配置真的通到 REST。
+        check "POST hybrid-search（text_field 指向中文键）" "r1" \
+            curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"text":"测试","text_field":"名称","k":1}' \
+            "http://127.0.0.1:$PORT/api/collections/rest_coll/hybrid-search"
+        check "POST hybrid-search 返回 sources" "sources" \
+            curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"vector":[1,0,0],"k":1}' \
+            "http://127.0.0.1:$PORT/api/collections/rest_coll/hybrid-search"
         stop_server
 
         if start_server; then

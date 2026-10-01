@@ -134,6 +134,40 @@ pub struct BatchSearchResponse {
     pub execution_time_ms: u64,
 }
 
+/// Body of `POST /api/collections/:name/hybrid-search`.
+///
+/// `vector` and `text` are both optional but at least one is required;
+/// supplying both is what makes this a *hybrid* query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HybridSearchRequest {
+    #[serde(default)]
+    pub vector: Option<Vec<f32>>,
+    #[serde(default)]
+    pub text: Option<String>,
+    pub k: usize,
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    /// Metadata field holding the document text (default `"text"`).
+    #[serde(default)]
+    pub text_field: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HybridSearchResponse {
+    pub results: Vec<HybridSearchResultItem>,
+    pub execution_time_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HybridSearchResultItem {
+    pub id: String,
+    /// Reciprocal-rank-fused score; higher is better.
+    pub score: f32,
+    /// Which retrievers returned this id: `"vector"`, `"text"`, or both.
+    pub sources: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateVectorsRequest {
     pub ids: Vec<String>,
@@ -295,6 +329,7 @@ pub async fn start_server_with_db(
         .route("/api/collections/:name/rename", put(rename_collection))
         .route("/api/collections/:name/search", post(search))
         .route("/api/collections/:name/batch-search", post(batch_search))
+        .route("/api/collections/:name/hybrid-search", post(hybrid_search))
         .route("/api/collections/:name/count", get(get_vectors_count))
         .route("/api/admin/purge-expired", post(purge_expired))
         .route("/api/admin/backup", post(create_backup))
@@ -712,6 +747,52 @@ async fn search(
             Json(ApiResponse::success(SearchResponse {
                 results: search_results,
                 execution_time_ms: execution_time,
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
+/// Hybrid retrieval: fuse ANN neighbours with BM25 text matches.
+///
+/// `crate::HybridSearchRequest` and this module's DTO share a name; the
+/// fully-qualified path below is the library type.
+async fn hybrid_search(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(req): Json<HybridSearchRequest>,
+) -> Json<ApiResponse<HybridSearchResponse>> {
+    let start = std::time::Instant::now();
+    let db = state.db.read().await;
+
+    let request = crate::HybridSearchRequest {
+        vector: req.vector,
+        text: req.text,
+        k: req.k,
+        filter: req.filter,
+        text_field: req.text_field,
+    };
+
+    match db.hybrid_search(&name, request).await {
+        Ok(hits) => {
+            let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+            let records = db.get_vectors_by_ids(&name, &ids).await.unwrap_or_default();
+            let metadata_map: std::collections::HashMap<String, serde_json::Value> =
+                records.into_iter().map(|(id, (_, m))| (id, m)).collect();
+
+            let search_results: Vec<HybridSearchResultItem> = hits
+                .into_iter()
+                .map(|h| HybridSearchResultItem {
+                    metadata: metadata_map.get(&h.id).cloned(),
+                    id: h.id,
+                    score: h.score,
+                    sources: h.sources,
+                })
+                .collect();
+
+            Json(ApiResponse::success(HybridSearchResponse {
+                results: search_results,
+                execution_time_ms: start.elapsed().as_millis() as u64,
             }))
         }
         Err(e) => Json(ApiResponse::error(&e.to_string())),
