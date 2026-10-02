@@ -4,8 +4,17 @@ replace-with = "tuna"
 [source.tuna]
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 
-[env]
-RUSTFLAGS = "--cap-lints warn"
+# 原先这里是 `RUSTFLAGS = "--cap-lints warn"`。
+#
+# `--cap-lints` 会把**所有** crate 的 lint 上限压到 warn，包括本 crate 自己的
+# `#![deny(...)]` —— 也就是说源码里写下的 deny 级门禁会被静默降级成 warning，
+# CI 因此永远不会因为 deny 被违反而失败。仓库里有 3 处恒真断言
+# （websocket / monitoring / distributed）长期无人发现，正是这类门禁失效的
+# 典型后果；它们已在 v0.2.4 修正为真实断言。
+#
+# 现在不再全局设置 RUSTFLAGS：让 lint 等级由各处的 `deny` 属性与 CI 参数决定。
+# 如果只是本地调试想压制依赖 crate 的噪声，用环境变量临时覆盖，不要写进配置：
+#   RUSTFLAGS="--cap-lints warn" cargo build
 
 # ── Windows 交叉编译（GNU ABI）────────────────────────────────
 # Linux 上无法构建 x86_64-pc-windows-msvc：那需要微软的 link.exe，

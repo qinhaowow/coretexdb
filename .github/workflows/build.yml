@@ -128,6 +128,96 @@ jobs:
     - name: Run tests
       run: cargo test --features full --verbose
 
+  # `full` 是 default 的超集，但两者都编译的是同一批 cfg 分支吗？不是：
+  # `#[cfg(not(feature = "tls-gen"))]` 这类对偶分支只在 default 下存在，
+  # `#[cfg(not(feature = "compression"))]` 同理。CONTRIBUTING §2 要求
+  # `cargo test`（default）与 `cargo test --features full` 都全绿，
+  # 但此前 CI 只有 full 一条路径，导致 default 专属的测试从未在 CI 执行过
+  # （例如 coretex_security_tests.rs 的 test_tls_self_signed_cert_disabled）。
+  test-default:
+    name: Test (default features)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
+        echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+
+    - name: cargo test (default features)
+      run: cargo test --verbose
+
+  # 每个 feature 单独编译，任何一个腐化都会被立刻定位到具体 feature。
+  #
+  # 之前不存在这道门禁：`cargo test --features full` 因 s3 编译失败而从未执行，
+  # 于是 onnx / tantivy / embedded / wasm 四个 feature 下的代码可以任意腐化而
+  # 无人察觉（`full` 里已把它们移出，见 Cargo.toml 的说明；本 job 是它们日后
+  # 回归时的第一道信号）。
+  feature-gate:
+    name: Feature gate (each feature must compile)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
+        echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+
+    # 已移出 `full` 的两个 feature：编译必然失败，这里先记录现状而不是掩盖。
+    # 修好 API 兼容后，把对应条目从这里移除、加入上面 active 列表，门禁即自动生效。
+    #
+    # （`embedded` / `wasm` 曾因 `coretex_edge` 里 `Result<(), EdgeError>` 撞上本 crate
+    # 的 `Result<T>` 别名遮蔽而失败，已修好并移入上面的 active 列表。）
+    #
+    # 必须叠加在 default features 之上：`tokio` / `serde` 虽在 features 表里声明为
+    # optional，但 `lib.rs` 无条件 `use` 它们（源码里没有对应的 `#[cfg]`），所以任何
+    # `--no-default-features` 组合都会先死于 `cannot find module or crate tokio`，
+    # 而非我们真正关心的 API 不兼容 —— 那样记录到的是误导性信息。
+    - name: Compile disabled features (known-broken, informational)
+      continue-on-error: true
+      run: |
+        set -u
+        for feat in onnx tantivy; do
+          echo "=== feature: $feat ==="
+          cargo check --features "$feat" --lib 2>&1 | tail -8
+        done
+
+    - name: Compile active features individually
+      run: |
+        set -euo pipefail
+        for feat in tokio serde compression metrics rocksdb tls-gen s3 embedded wasm python; do
+          echo "=== feature: $feat ==="
+          cargo check --features "$feat" --lib
+        done
+
+    # `full` 是发布产物使用的组合，必须始终能编译 + 跑测试。
+    - name: Compile full
+      run: cargo check --features full --all-targets
+
   build-python:
     name: Build Python Package
     runs-on: ubuntu-latest
@@ -203,6 +293,8 @@ jobs:
 
     - name: Run examples
       run: |
+        # `mvp` 是最小可运行链路的可执行定义：每一步都带断言，任何回归都会让 CI 变红。
+        cargo run -q --example mvp
         cargo run -q --example quickstart
         cargo run -q --example filter_search
         cargo run -q --example persistence
