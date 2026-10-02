@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CoreTexDB 控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         margin: 0; background: #1a1a1e; color: #e4e4e7; }
+  header { padding: 16px 24px; background: #25252b; border-bottom: 1px solid #3f3f46;
+           display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .badge { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: #3f3f46; }
+  .badge.up { background: #14532d; color: #86efac; }
+  .badge.down { background: #7f1d1d; color: #fca5a5; }
+  main { display: grid; grid-template-columns: 400px 1fr; gap: 0; height: calc(100vh - 58px); }
+  .panel { padding: 16px; overflow-y: auto; }
+  .left { background: #202024; border-right: 1px solid #3f3f46; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px;
+       color: #a1a1aa; margin: 20px 0 9px; font-weight: 600; }
+  h2:first-child { margin-top: 0; }
+  label { display: block; font-size: 12px; color: #a1a1aa; margin: 9px 0 3px; }
+  input, select, textarea {
+    width: 100%; padding: 7px 9px; background: #18181c; color: #e4e4e7;
+    border: 1px solid #3f3f46; border-radius: 5px; font-size: 13px;
+    font-family: inherit; }
+  textarea { font-family: Consolas, monospace; font-size: 12px; resize: vertical; }
+  button {
+    padding: 7px 13px; background: #2563eb; color: #fff; border: 0; border-radius: 5px;
+    font-size: 13px; cursor: pointer; font-family: inherit; margin: 4px 5px 0 0; }
+  button:hover { background: #1d4ed8; }
+  button.sec { background: #3f3f46; }
+  button.sec:hover { background: #52525b; }
+  button.danger { background: #b91c1c; }
+  button.danger:hover { background: #991b1b; }
+  .row { display: flex; gap: 7px; }
+  .row > * { flex: 1; }
+  #out { background: #18181c; padding: 13px; font-family: Consolas, monospace;
+        font-size: 12px; line-height: 1.55; white-space: pre-wrap;
+        word-break: break-all; margin: 0; min-height: 200px; }
+  .hint { font-size: 11px; color: #71717a; margin-top: 7px; line-height: 1.5; }
+  .checks { margin-top: 9px; }
+  .chk { font-size: 12px; padding: 5px 9px; border-radius: 4px; margin-bottom: 4px; }
+  .chk.pass { background: #14532d; color: #86efac; }
+  .chk.fail { background: #7f1d1d; color: #fca5a5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CoreTexDB 控制台</h1>
+  <span class="badge" id="st">连接中…</span>
+  <span class="badge" id="ver"></span>
+</header>
+
+<main>
+<div class="panel left">
+
+  <h2>集合</h2>
+  <label>名称</label><input id="cName" value="mydb" placeholder="mydb">
+  <label>维度</label><input id="cDim" type="number" value="4" placeholder="4">
+  <label>距离度量</label>
+  <select id="cMetric">
+    <option value="cosine">cosine</option>
+    <option value="euclidean">euclidean</option>
+    <option value="dotproduct">dotproduct</option>
+    <option value="manhattan">manhattan</option>
+  </select>
+  <label>索引类型</label>
+  <select id="cIndex">
+    <option value="hnsw">hnsw</option>
+    <option value="ivf">ivf</option>
+    <option value="brute_force">brute_force</option>
+    <option value="pq">pq</option>
+    <option value="scalar">scalar</option>
+  </select>
+  <div class="row">
+    <button onclick="createCollection()">创建</button>
+    <button class="sec" onclick="listCollections()">列出</button>
+    <button class="danger" onclick="dropCollection()">删除</button>
+  </div>
+
+  <h2>向量</h2>
+  <label>ID</label><input id="vId" value="k1" placeholder="k1">
+  <label>向量（逗号分隔）</label><input id="vVec" value="1,0,0,0" placeholder="1,0,0,0">
+  <label>metadata（JSON）</label><textarea id="vMeta" rows="2">{"lang":"zh"}</textarea>
+  <div class="row">
+    <button onclick="insertVector()">插入</button>
+    <button class="sec" onclick="getVector()">读取</button>
+    <button class="danger" onclick="deleteVector()">删除</button>
+  </div>
+
+  <h2>搜索</h2>
+  <label>查询向量</label><input id="qVec" value="1,0,0,0" placeholder="1,0,0,0">
+  <label>K</label><input id="qK" type="number" value="3" placeholder="3">
+  <label>filter（JSON，可留空）</label><textarea id="qFilter" rows="2" placeholder='{"lang":"zh"}'></textarea>
+  <div class="row">
+    <button onclick="search()">搜索</button>
+    <button class="sec" onclick="hybrid()">混合检索</button>
+  </div>
+
+  <h2>修复验收</h2>
+  <div class="checks">
+    <div class="chk" id="c1">待检：/raft/append_entries 应 404</div>
+    <div class="chk" id="c2">待检：/replication/status 应 200</div>
+    <div class="chk" id="c3">待检：/api/collections 应 200 或 401</div>
+  </div>
+  <button class="sec" onclick="runChecks()">运行三项检查</button>
+  <div class="hint">假 Raft 端点返回 404 = 修复生效（此前返回 success:true）；<br>
+    混合检索需记录含 <code>text</code> 字段的 metadata。</div>
+
+</div>
+
+<div class="panel"><pre id="out">就绪。左侧填集合名后点「创建」。</pre></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const out = $('out');
+function show(v) { out.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); }
+function log(m) { out.textContent = m + '\n\n' + out.textContent; }
+
+async function call(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) {
+    opt.headers['Content-Type'] = 'application/json';
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  return { code: r.status, data };
+}
+const vec = s => s.split(',').map(x => parseFloat(x.trim())).filter(x => !isNaN(x));
+const cname = () => $('cName').value.trim();
+
+async function createCollection() {
+  const r = await call('POST', '/api/collections', {
+    name: cname(), dimension: +$('cDim').value, metric: $('cMetric').value
+  });
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function listCollections() {
+  const r = await call('GET', '/api/collections');
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function dropCollection() {
+  if (!confirm(`删除集合 ${cname()} ?`)) return;
+  const r = await call('DELETE', '/api/collections/' + encodeURIComponent(cname()));
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function insertVector() {
+  let meta = {};
+  if ($('vMeta').value.trim()) {
+    try { meta = JSON.parse($('vMeta').value); }
+    catch (e) { return show('metadata 不是合法 JSON: ' + e.message); }
+  }
+  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/vectors`,
+    { id: $('vId').value.trim(), vector: vec($('vVec').value), metadata: meta });
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function getVector() {
+  const r = await call('GET', `/api/collections/${encodeURIComponent(cname())}/vectors/`
+    + encodeURIComponent($('vId').value.trim()));
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function deleteVector() {
+  const r = await call('DELETE', `/api/collections/${encodeURIComponent(cname())}/vectors/`
+    + encodeURIComponent($('vId').value.trim()));
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function search() {
+  const body = { vector: vec($('qVec').value), k: +$('qK').value };
+  const f = $('qFilter').value.trim();
+  if (f) { try { body.filter = JSON.parse(f); } catch (e) { return show('filter 不是合法 JSON: ' + e.message); } }
+  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/search`, body);
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+async function hybrid() {
+  const body = { vector: vec($('qVec').value), text: 'vector database', k: +$('qK').value };
+  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/hybrid-search`, body);
+  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+}
+
+function mark(id, ok, msg) {
+  const e = $(id);
+  e.className = 'chk ' + (ok ? 'pass' : 'fail');
+  e.textContent = (ok ? '✓ ' : '✗ ') + msg;
+}
+
+async function runChecks() {
+  log('--- 运行修复验收 ---');
+
+  // 1. 假 Raft 端点必须不存在
+  const raft = await call('POST', '/raft/append_entries', { term: 1 });
+  mark('c1', raft.code === 404,
+    `/raft/append_entries -> ${raft.code}（期望 404；修复前为 200 + success:true）`);
+  log(`[1] /raft/append_entries = ${raft.code}  ${JSON.stringify(raft.data)}`);
+
+  // 2. 真实复制读接口必须可用
+  const rep = await call('GET', '/replication/status');
+  mark('c2', rep.code === 200,
+    `/replication/status -> ${rep.code}（期望 200，真实接口应保留）`);
+  log(`[2] /replication/status = ${rep.code}  ${JSON.stringify(rep.data)}`);
+
+  // 3. 受保护路由需认证
+  const cols = await call('GET', '/api/collections');
+  const ok3 = cols.code === 200 || cols.code === 401;
+  mark('c3', ok3,
+    `/api/collections -> ${cols.code}（200=未开认证，401=已开认证）`);
+  log(`[3] /api/collections = ${cols.code}  ${JSON.stringify(cols.data)}`);
+}
+
+(async function ping() {
+  try {
+    const r = await call('GET', '/health');
+    if (r.code === 200) {
+      $('st').className = 'badge up'; $('st').textContent = '服务在线';
+      show('服务在线。选择左侧「修复验收」→ 运行三项检查。');
+    } else { throw new Error(r.code); }
+  } catch (e) {
+    $('st').className = 'badge down'; $('st').textContent = '无法连接 :5000';
+    show('无法连接到 http://localhost:5000\n\n请先在另一个终端启动：\n  coretex.exe server');
+  }
+})();
+</script>
+</body>
+</html>
