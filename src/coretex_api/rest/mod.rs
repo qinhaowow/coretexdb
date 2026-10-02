@@ -335,7 +335,20 @@ pub async fn start_server_with_db(
         .route("/api/admin/backup", post(create_backup))
         .route("/api/admin/restore", post(restore_backup))
         .route("/api/admin/backup/list", get(list_backups))
-        .route("/raft/append_entries", post(raft_append_entries))
+        // Replication data plane (auth skipped below): the replica's
+        // HttpTransport pulls these without a user session.
+        //
+        // No /raft/* routes on purpose. `coretex_failover` ships a RaftLog and
+        // an HttpRaftRpc client, but nothing ever constructs a FailoverManager
+        // and ApiState holds no log, so a handler here could only echo back a
+        // hardcoded `success: true` — which tells a leader its log was
+        // replicated when nothing was written. The endpoint was removed rather
+        // than stubbed; `HttpRaftRpc` requests /raft/request_vote and
+        // /raft/heartbeat, which were never routed either, so leader election
+        // and heartbeats 404 as well. See docs/roadmap.md C2.
+        .route("/replication/status", get(replication_status))
+        .route("/replication/snapshot", get(replication_snapshot))
+        .route("/replication/entries", get(replication_entries))
         .with_state(state.clone());
 
     // 启用认证中间件
@@ -385,7 +398,7 @@ pub async fn start_server_with_db(
         config.port,
     );
 
-    println!("Starting CortexDB API server on http://{}", addr);
+    println!("Starting CoreTexDB API server on http://{}", addr);
     println!("Auth enabled: {}", config.enable_auth);
     println!("Rate limit: {} req/min", config.rate_limit_per_minute);
     println!("API endpoints:");
@@ -451,11 +464,11 @@ async fn auth_middleware(
 ) -> std::result::Result<Response, StatusCode> {
     let path = req.uri().path().to_string();
 
-    // 白名单：登录、注册、健康检查、Raft 内部 RPC 不需要认证
+    // 白名单：登录、注册、健康检查、复制数据面不需要认证
     // 注意：/api/auth/register 在 register handler 内部会强制要求 admin token
     // （或首次启动时无用户时放开），这里仍放行至 handler。
     if path == "/health" || path == "/api/auth/login" || path == "/api/auth/register"
-        || path.starts_with("/raft/") {
+        || path.starts_with("/replication/") {
         return Ok(next.run(req).await);
     }
 
@@ -573,18 +586,57 @@ async fn register(
     }
 }
 
-async fn raft_append_entries(
+/// `GET /replication/status` — where this node's log is, and whether it
+/// refuses writes. Lets an operator see primary watermark vs. replica
+/// position at a glance.
+async fn replication_status(
     State(state): State<Arc<ApiState>>,
-    Json(req): Json<crate::coretex_failover::AppendEntriesRequest>,
-) -> Json<serde_json::Value> {
-    // 简单的 Raft 内部 RPC 端点（认证中间件已跳过此路径）
-    Json(serde_json::json!({
-        "follower_id": state.db.read().await.config.data_dir.clone(),
-        "term": req.term,
-        "success": true,
-        "match_index": req.prev_log_index,
-        "conflict_index": 0
-    }))
+) -> Json<crate::ReplicationStatus> {
+    let db = state.db.read().await;
+    Json(crate::ReplicationStatus::collect(&db).await)
+}
+
+/// `GET /replication/snapshot` — full-sync payload: every collection and
+/// record with the log position they are consistent with.
+async fn replication_snapshot(
+    State(state): State<Arc<ApiState>>,
+) -> Json<crate::ReplicationSnapshot> {
+    let db = state.db.read().await;
+    Json(db.data_manager.replication_snapshot().await)
+}
+
+#[derive(Deserialize)]
+struct ReplicationEntriesParams {
+    /// Last position the replica applied; entries with a higher sequence
+    /// come back. Missing = 0 (everything the log still holds).
+    #[serde(default)]
+    since: u64,
+}
+
+/// `GET /replication/entries?since=N` — incremental tail plus the
+/// continuity flag. The batch's `lsn` is derived from the shipped entries
+/// themselves, so it can never advertise a sequence that was not sent.
+async fn replication_entries(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Query(params): axum::extract::Query<ReplicationEntriesParams>,
+) -> Response {
+    let db = state.db.read().await;
+    match db.data_manager.read_replication_entries(params.since).await {
+        Ok((entries, truncated)) => {
+            let lsn = entries.last().map(|e| e.sequence).unwrap_or(params.since);
+            Json(crate::EntriesBatch {
+                entries,
+                truncated,
+                lsn,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn health_check() -> Json<HealthResponse> {
