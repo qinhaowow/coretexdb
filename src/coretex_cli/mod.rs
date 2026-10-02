@@ -1903,7 +1903,7 @@ where
                             if users.is_empty() {
                                 println!("(no users)");
                             } else {
-                                println!("{:<8} {:<20} {:<30} {:<10} {}", "ID", "Username", "Email", "Roles", "Active");
+                                println!("{:<8} {:<20} {:<30} {:<10} Active", "ID", "Username", "Email", "Roles");
                                 println!("{}", "-".repeat(80));
                                 for u in &users {
                                     println!("{:<8} {:<20} {:<30} {:<10} {}",
@@ -1943,8 +1943,21 @@ where
                         }
                         Some(("revoke", m)) => {
                             let username = m.get_one::<String>("username").unwrap();
-                            let _perm = m.get_one::<String>("permission").unwrap();
-                            println!("(Revoke role from user '{}' — role assignment update via assign_role)", username);
+                            let perm = m.get_one::<String>("permission").unwrap();
+                            // This arm used to read both arguments and then print
+                            // a parenthetical note, doing nothing at all. The
+                            // token-level `revoke` sibling really calls
+                            // `auth.revoke_token`, which made the silent no-op
+                            // easy to mistake for a working revoke.
+                            eprintln!(
+                                "✗ `user revoke` 尚未实现：无法撤销 '{}' 的 '{}' 权限。\n\
+                                 \n\
+                                 `AuthService` 只提供 `assign_role`（覆盖式授权），没有 revoke 接口。\n\
+                                 撤销权限目前只能直接调用 REST/gRPC 的角色改派，或重建用户。\n\
+                                 见 README §0（未接线）与 docs/roadmap.md 阶段 C。",
+                                username, perm
+                            );
+                            std::process::exit(2);
                         }
                         _ => {}
                     }
@@ -2166,70 +2179,33 @@ where
             }
         }
 
-        Some(("cluster", sub_matches)) => {
-            let data_dir_str = db.read().await.config.data_dir.clone();
-            let data_dir = std::path::Path::new(&data_dir_str);
-            let cluster_file = data_dir.join("cluster.json");
-            let mut cluster_info: serde_json::Value = if cluster_file.exists() {
-                std::fs::read_to_string(&cluster_file)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or(serde_json::json!({"mode": "standalone", "nodes": []}))
-            } else {
-                serde_json::json!({"mode": "standalone", "nodes": []})
-            };
-
-            match sub_matches.subcommand() {
-                Some(("status", _)) => {
-                    println!("=== Cluster Status ===");
-                    println!("  Mode: {}", cluster_info.get("mode").and_then(|v| v.as_str()).unwrap_or("standalone"));
-                    let nodes = cluster_info.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    println!("  Nodes: {}", nodes.len());
-                    for node in &nodes {
-                        let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                        let addr = node.get("address").and_then(|v| v.as_str()).unwrap_or("?");
-                        let status = node.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        println!("    - {} ({}) [{}]", id, addr, status);
-                    }
-                }
-                Some(("add-node", m)) => {
-                    let id = m.get_one::<String>("node-id").unwrap();
-                    let addr = m.get_one::<String>("address").unwrap();
-                    let nodes = cluster_info.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    let mut new_nodes = nodes;
-                    new_nodes.push(serde_json::json!({"id": id, "address": addr, "status": "active"}));
-                    cluster_info["nodes"] = serde_json::Value::Array(new_nodes);
-                    let _ = std::fs::create_dir_all(data_dir);
-                    let _ = std::fs::write(&cluster_file, serde_json::to_string_pretty(&cluster_info).unwrap());
-                    println!("✓ Node '{}' ({}) added to cluster", id, addr);
-                }
-                Some(("remove-node", m)) => {
-                    let id = m.get_one::<String>("node-id").unwrap();
-                    let nodes = cluster_info.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    let new_nodes: Vec<serde_json::Value> = nodes.into_iter()
-                        .filter(|n| n.get("id").and_then(|v| v.as_str()) != Some(id.as_str()))
-                        .collect();
-                    cluster_info["nodes"] = serde_json::Value::Array(new_nodes);
-                    let _ = std::fs::write(&cluster_file, serde_json::to_string_pretty(&cluster_info).unwrap());
-                    println!("✓ Node '{}' removed from cluster", id);
-                }
-                Some(("rebalance", _)) => {
-                    println!("Rebalancing shards across nodes...");
-                    let node_count = cluster_info.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                    if node_count <= 1 {
-                        println!("✓ Rebalance complete (single node, no redistribution needed)");
-                    } else {
-                        println!("✓ Rebalance complete (redistributed across {} nodes)", node_count);
-                    }
-                }
-                Some(("failover", m)) => {
-                    let target = m.get_one::<String>("target").unwrap();
-                    let reason = m.get_one::<String>("reason").unwrap();
-                    println!("Failing over to node '{}' (reason: {})", target, reason);
-                    println!("✓ Failover initiated — data recovery in progress");
-                }
-                _ => {}
-            }
+        Some(("cluster", _sub_matches)) => {
+            // The whole `cluster` group was theatre.
+            //
+            // `add-node` / `remove-node` appended to a `cluster.json` that no
+            // other code path ever reads, and `rebalance` / `failover` printed a
+            // success line without performing any work -- `rebalance` claimed
+            // "complete" even with zero nodes, and `failover` reported
+            // "data recovery in progress" for an action that recovers nothing.
+            // A false success is worse than an absent command.
+            //
+            // `coretex_distributed` (1319 lines) and `coretex_failover` (1001
+            // lines) still exist in the tree, but nothing constructs them and no
+            // wiring connects them to the CLI. Every subcommand therefore fails
+            // loudly, following the policy the CLI already applies to
+            // `--compression`, `--incremental` and `--target-time`.
+            eprintln!(
+                "cluster 子命令尚未实现，不执行任何操作。\n\
+                 \n\
+                 原因：`coretex_distributed` / `coretex_failover` 有代码在仓库里，\n\
+                 但没有任何入口能调用它们。过去的行为是：\n\
+                   - add-node / remove-node 只往无人读取的 cluster.json 写 JSON；\n\
+                   - rebalance / failover 只打印成功信息，不执行任何操作。\n\
+                 \n\
+                 单机部署直接用 `coretex server` + REST/gRPC 即可，不需要 cluster 配置。\n\
+                 进度见 README §0（未接线）与 docs/roadmap.md 阶段 C。"
+            );
+            std::process::exit(2);
         }
 
         Some(("migrate", m)) => {
@@ -2710,7 +2686,7 @@ where
                         return Ok(());
                     }
 
-                    use std::io::{Read, Seek, SeekFrom};
+                    use std::io::Read;
                     use std::io::BufReader;
                     let mut file = BufReader::new(std::fs::File::open(&file_path).unwrap());
                     let mut count = 0;
@@ -2741,7 +2717,7 @@ where
                         let key = String::from_utf8_lossy(&key_bytes);
 
                         // Parse payload: [u32 count][f32 LE × count][metadata JSON]
-                        let mut display = String::new();
+                        let _display = String::new();
                         if payload_len >= 4 {
                             let vec_count = u32::from_le_bytes([
                                 payload_bytes[0], payload_bytes[1], payload_bytes[2], payload_bytes[3]
@@ -2892,7 +2868,7 @@ where
                     let input = m.get_one::<String>("input").unwrap();
                     let key_hex = m.get_one::<String>("key").unwrap();
                     let cipher_name = m.get_one::<String>("cipher").unwrap();
-                    let output = m.get_one::<String>("output").map(String::clone).unwrap_or_else(|| {
+                    let output = m.get_one::<String>("output").cloned().unwrap_or_else(|| {
                         format!("{}.cdb", input)
                     });
 
@@ -2916,7 +2892,7 @@ where
                 Some(("decrypt", m)) => {
                     let input = m.get_one::<String>("input").unwrap();
                     let key_hex = m.get_one::<String>("key").unwrap();
-                    let output = m.get_one::<String>("output").map(String::clone).unwrap_or_else(|| {
+                    let output = m.get_one::<String>("output").cloned().unwrap_or_else(|| {
                         input.trim_end_matches(".cdb").to_string()
                     });
 
