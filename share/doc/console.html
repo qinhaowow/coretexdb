@@ -8,7 +8,7 @@
   body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
          margin: 0; background: #1a1a1e; color: #e4e4e7; }
   header { padding: 16px 24px; background: #25252b; border-bottom: 1px solid #3f3f46;
-           display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+           display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   h1 { font-size: 17px; margin: 0; font-weight: 600; }
   .badge { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: #3f3f46; }
   .badge.up { background: #14532d; color: #86efac; }
@@ -22,23 +22,21 @@
   label { display: block; font-size: 12px; color: #a1a1aa; margin: 9px 0 3px; }
   input, select, textarea {
     width: 100%; padding: 7px 9px; background: #18181c; color: #e4e4e7;
-    border: 1px solid #3f3f46; border-radius: 5px; font-size: 13px;
-    font-family: inherit; }
+    border: 1px solid #3f3f46; border-radius: 5px; font-size: 13px; font-family: inherit; }
   textarea { font-family: Consolas, monospace; font-size: 12px; resize: vertical; }
-  button {
-    padding: 7px 13px; background: #2563eb; color: #fff; border: 0; border-radius: 5px;
-    font-size: 13px; cursor: pointer; font-family: inherit; margin: 4px 5px 0 0; }
+  button { padding: 7px 13px; background: #2563eb; color: #fff; border: 0; border-radius: 5px;
+           font-size: 13px; cursor: pointer; font-family: inherit; margin: 4px 5px 0 0; }
   button:hover { background: #1d4ed8; }
-  button.sec { background: #3f3f46; }
-  button.sec:hover { background: #52525b; }
-  button.danger { background: #b91c1c; }
-  button.danger:hover { background: #991b1b; }
-  .row { display: flex; gap: 7px; }
-  .row > * { flex: 1; }
+  button.sec { background: #3f3f46; } button.sec:hover { background: #52525b; }
+  button.danger { background: #b91c1c; } button.danger:hover { background: #991b1b; }
+  .row { display: flex; gap: 7px; } .row > * { flex: 1; }
   #out { background: #18181c; padding: 13px; font-family: Consolas, monospace;
         font-size: 12px; line-height: 1.55; white-space: pre-wrap;
         word-break: break-all; margin: 0; min-height: 200px; }
-  .hint { font-size: 11px; color: #71717a; margin-top: 7px; line-height: 1.5; }
+  .hint { font-size: 11px; color: #71717a; margin-top: 7px; line-height: 1.6; }
+  .warn { background: #422006; color: #fbbf24; padding: 11px; border-radius: 6px;
+          font-size: 12px; line-height: 1.6; margin-bottom: 13px; }
+  .warn code { background: #78350f; padding: 1px 5px; border-radius: 3px; }
   .checks { margin-top: 9px; }
   .chk { font-size: 12px; padding: 5px 9px; border-radius: 4px; margin-bottom: 4px; }
   .chk.pass { background: #14532d; color: #86efac; }
@@ -49,11 +47,37 @@
 <header>
   <h1>CoreTexDB 控制台</h1>
   <span class="badge" id="st">连接中…</span>
-  <span class="badge" id="ver"></span>
+  <span class="badge" id="authMode">认证状态未知</span>
+  <span class="badge" id="src"></span>
 </header>
 
 <main>
 <div class="panel left">
+
+  <div class="warn" id="corsWarn" style="display:none">
+    浏览器拦截了请求：本页以 <code>file://</code> 打开，跨源策略禁止访问
+    <code>http://localhost:5000</code>。三选一：<br>
+    ① Chrome/Edge 用
+    <code>--allow-file-access-from-files</code> 启动后重新打开本页；<br>
+    ② 改用 <code>http://localhost:5000/console</code>（服务端已内置该路由）；<br>
+    ③ 用文本编辑器打开本页，复制全部内容粘到浏览器空白页。
+  </div>
+
+  <h2>认证</h2>
+  <div id="authBox">
+    <label>用户名</label><input id="aUser" placeholder="admin" autocomplete="username">
+    <label>密码</label><input id="aPass" type="password" placeholder="••••••" autocomplete="current-password">
+    <div class="row">
+      <button onclick="doLogin()">登录</button>
+      <button class="sec" onclick="doRegister()">注册</button>
+    </div>
+    <div class="hint">服务未开启 <code>--auth</code> 时无需登录；<br>
+      首次启动（无任何用户）可直接「注册」创建管理员。</div>
+  </div>
+  <div id="authOn" style="display:none">
+    <div class="chk pass" id="authStat">已登录</div>
+    <button class="sec" onclick="doLogout()">退出登录</button>
+  </div>
 
   <h2>集合</h2>
   <label>名称</label><input id="cName" value="mydb" placeholder="mydb">
@@ -110,76 +134,177 @@
 
 </div>
 
-<div class="panel"><pre id="out">就绪。左侧填集合名后点「创建」。</pre></div>
+<div class="panel"><pre id="out">就绪。</pre></div>
 </main>
 
 <script>
+// 始终使用绝对地址：以 file:// 打开时，相对路径会解析到 file:// 而失败。
+// 若通过 http://localhost:5000/console 打开，同源请求也一样可用。
+const BASE = 'http://localhost:5000';
+
 const $ = id => document.getElementById(id);
 const out = $('out');
 function show(v) { out.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); }
-function log(m) { out.textContent = m + '\n\n' + out.textContent; }
 
 async function call(method, path, body) {
   const opt = { method, headers: {} };
+  // Attach the bearer token when we have one. Harmless when the server runs
+  // without --auth, and required when it does.
+  const tok = getToken();
+  if (tok) opt.headers['Authorization'] = 'Bearer ' + tok;
   if (body !== undefined) {
     opt.headers['Content-Type'] = 'application/json';
     opt.body = JSON.stringify(body);
   }
-  const r = await fetch(path, opt);
+  let r;
+  try {
+    r = await fetch(BASE + path, opt);
+  } catch (e) {
+    $('corsWarn').style.display = 'block';
+    throw new Error(
+      '请求被浏览器拦截（跨源）。本页通过 ' + location.protocol + ' 打开，\n' +
+      '无法直接访问 ' + BASE + '。\n\n' +
+      '解决：Chrome/Edge 加 --allow-file-access-from-files 启动；\n' +
+      '      或改用 http://localhost:5000/console；\n' +
+      '      或把本页内容复制到浏览器空白页。\n\n原始错误: ' + e.message);
+  }
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
+
+  // A 401 means the token is missing, expired or revoked. Drop it so the form
+  // reappears, rather than leaving every later call failing silently.
+  if (r.status === 401) {
+    if (getToken()) { setToken(''); renderAuth(); }
+  }
   return { code: r.status, data };
 }
+
+// ── token store ──────────────────────────────────────────────────────────
+// localStorage throws in some privacy modes, so every access is guarded.
+const TOKEN_KEY = 'coretex.console.token';
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+function setToken(t) {
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* storage unavailable; token stays in-memory only */ }
+  renderAuth();
+}
+
+function renderAuth() {
+  const on = !!getToken();
+  $('authBox').style.display = on ? 'none' : 'block';
+  $('authOn').style.display  = on ? 'block' : 'none';
+}
+
+async function doLogin() {
+  await guard(async () => {
+    const u = $('aUser').value.trim();
+    const p = $('aPass').value;
+    if (!u || !p) return show('请填写用户名和密码');
+    const r = await call('POST', '/api/auth/login', { username: u, password: p });
+    const tok = r.data && r.data.data && r.data.data.token;
+    if (r.code === 200 && tok) {
+      setToken(tok);
+      $('aPass').value = '';
+      show(`登录成功（${u}）。token 已保存，刷新页面不会掉。`);
+    } else {
+      show(`登录失败 HTTP ${r.code}\n` + JSON.stringify(r.data, null, 2));
+    }
+  });
+}
+
+async function doRegister() {
+  await guard(async () => {
+    const u = $('aUser').value.trim();
+    const p = $('aPass').value;
+    if (!u || !p) return show('请填写用户名和密码');
+    const r = await call('POST', '/api/auth/register', { username: u, password: p });
+    show(`注册返回 HTTP ${r.code}\n` + JSON.stringify(r.data, null, 2)
+      + `\n\n注：已有用户时注册需要 admin token；首次启动（无用户）时直接放行。`);
+  });
+}
+
+function doLogout() {
+  setToken('');
+  show('已退出登录（本地 token 已清除）。');
+}
+
 const vec = s => s.split(',').map(x => parseFloat(x.trim())).filter(x => !isNaN(x));
 const cname = () => $('cName').value.trim();
+const enc = encodeURIComponent;
+
+async function guard(fn) {
+  try { await fn(); }
+  catch (e) { show(String(e.message || e)); }
+}
 
 async function createCollection() {
-  const r = await call('POST', '/api/collections', {
-    name: cname(), dimension: +$('cDim').value, metric: $('cMetric').value
+  await guard(async () => {
+    const r = await call('POST', '/api/collections',
+      { name: cname(), dimension: +$('cDim').value, metric: $('cMetric').value });
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
   });
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
 }
 async function listCollections() {
-  const r = await call('GET', '/api/collections');
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    const r = await call('GET', '/api/collections');
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function dropCollection() {
-  if (!confirm(`删除集合 ${cname()} ?`)) return;
-  const r = await call('DELETE', '/api/collections/' + encodeURIComponent(cname()));
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    if (!confirm(`删除集合 ${cname()} ?`)) return;
+    const r = await call('DELETE', '/api/collections/' + enc(cname()));
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function insertVector() {
-  let meta = {};
-  if ($('vMeta').value.trim()) {
-    try { meta = JSON.parse($('vMeta').value); }
-    catch (e) { return show('metadata 不是合法 JSON: ' + e.message); }
-  }
-  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/vectors`,
-    { id: $('vId').value.trim(), vector: vec($('vVec').value), metadata: meta });
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    let meta = {};
+    if ($('vMeta').value.trim()) {
+      try { meta = JSON.parse($('vMeta').value); }
+      catch (e) { return show('metadata 不是合法 JSON: ' + e.message); }
+    }
+    // POST /vectors 的 body 是 `{ vectors: [ {id, vector, metadata} ] }`
+    // （InsertVectorsRequest.vectors，见 rest/mod.rs），不是单条对象。
+    const r = await call('POST', `/api/collections/${enc(cname())}/vectors`,
+      { vectors: [ { id: $('vId').value.trim(),
+                     vector: vec($('vVec').value),
+                     metadata: meta } ] });
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function getVector() {
-  const r = await call('GET', `/api/collections/${encodeURIComponent(cname())}/vectors/`
-    + encodeURIComponent($('vId').value.trim()));
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    const r = await call('GET', `/api/collections/${enc(cname())}/vectors/` + enc($('vId').value.trim()));
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function deleteVector() {
-  const r = await call('DELETE', `/api/collections/${encodeURIComponent(cname())}/vectors/`
-    + encodeURIComponent($('vId').value.trim()));
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    const r = await call('DELETE', `/api/collections/${enc(cname())}/vectors/` + enc($('vId').value.trim()));
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function search() {
-  const body = { vector: vec($('qVec').value), k: +$('qK').value };
-  const f = $('qFilter').value.trim();
-  if (f) { try { body.filter = JSON.parse(f); } catch (e) { return show('filter 不是合法 JSON: ' + e.message); } }
-  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/search`, body);
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    const body = { vector: vec($('qVec').value), k: +$('qK').value };
+    const f = $('qFilter').value.trim();
+    if (f) { try { body.filter = JSON.parse(f); } catch (e) { return show('filter 不是合法 JSON: ' + e.message); } }
+    const r = await call('POST', `/api/collections/${enc(cname())}/search`, body);
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 async function hybrid() {
-  const body = { vector: vec($('qVec').value), text: 'vector database', k: +$('qK').value };
-  const r = await call('POST', `/api/collections/${encodeURIComponent(cname())}/hybrid-search`, body);
-  show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  await guard(async () => {
+    const r = await call('POST', `/api/collections/${enc(cname())}/hybrid-search`,
+      { vector: vec($('qVec').value), text: 'vector database', k: +$('qK').value });
+    show(`${r.code}\n` + JSON.stringify(r.data, null, 2));
+  });
 }
 
 function mark(id, ok, msg) {
@@ -189,38 +314,53 @@ function mark(id, ok, msg) {
 }
 
 async function runChecks() {
-  log('--- 运行修复验收 ---');
+  await guard(async () => {
+    const log = [];
+    const raft = await call('POST', '/raft/append_entries', { term: 1 });
+    mark('c1', raft.code === 404,
+      `/raft/append_entries -> ${raft.code}（期望 404；修复前为 200 + success:true）`);
+    log.push(`[1] /raft/append_entries = ${raft.code}  ${JSON.stringify(raft.data)}`);
 
-  // 1. 假 Raft 端点必须不存在
-  const raft = await call('POST', '/raft/append_entries', { term: 1 });
-  mark('c1', raft.code === 404,
-    `/raft/append_entries -> ${raft.code}（期望 404；修复前为 200 + success:true）`);
-  log(`[1] /raft/append_entries = ${raft.code}  ${JSON.stringify(raft.data)}`);
+    const rep = await call('GET', '/replication/status');
+    mark('c2', rep.code === 200,
+      `/replication/status -> ${rep.code}（期望 200，真实接口应保留）`);
+    log.push(`[2] /replication/status = ${rep.code}  ${JSON.stringify(rep.data)}`);
 
-  // 2. 真实复制读接口必须可用
-  const rep = await call('GET', '/replication/status');
-  mark('c2', rep.code === 200,
-    `/replication/status -> ${rep.code}（期望 200，真实接口应保留）`);
-  log(`[2] /replication/status = ${rep.code}  ${JSON.stringify(rep.data)}`);
+    const cols = await call('GET', '/api/collections');
+    // 401 means auth is on and (no token was sent, or it was rejected).
+    // 200 is equally correct when auth is off, or a valid token was attached.
+    const ok3 = cols.code === 200 || cols.code === 401;
+    const why = cols.code === 401 ? '未带/无效 token（认证已开启）'
+                                  : '通过（认证未开启，或已带有效 token）';
+    mark('c3', ok3, `/api/collections -> ${cols.code}  ${why}`);
+    log.push(`[3] /api/collections = ${cols.code}  ${JSON.stringify(cols.data)}`);
 
-  // 3. 受保护路由需认证
-  const cols = await call('GET', '/api/collections');
-  const ok3 = cols.code === 200 || cols.code === 401;
-  mark('c3', ok3,
-    `/api/collections -> ${cols.code}（200=未开认证，401=已开认证）`);
-  log(`[3] /api/collections = ${cols.code}  ${JSON.stringify(cols.data)}`);
+    out.textContent = log.join('\n\n') + '\n\n' + out.textContent;
+  });
 }
 
 (async function ping() {
+  $('src').textContent = location.protocol === 'file:' ? '来源 file://' : '来源 http';
+  renderAuth();
   try {
     const r = await call('GET', '/health');
-    if (r.code === 200) {
-      $('st').className = 'badge up'; $('st').textContent = '服务在线';
-      show('服务在线。选择左侧「修复验收」→ 运行三项检查。');
-    } else { throw new Error(r.code); }
+    if (r.code !== 200) throw new Error('服务返回 HTTP ' + r.code);
+
+    $('st').className = 'badge up'; $('st').textContent = '服务在线';
+
+    // Probe a protected route to tell the user whether auth is required, so
+    // they know if the login form matters before trying to log in.
+    const probe = await call('GET', '/api/collections');
+    const needAuth = probe.code === 401;
+    $('authMode').textContent = needAuth ? '认证已开启' : '认证未开启';
+    $('authMode').className = 'badge ' + (needAuth ? 'down' : 'up');
+
+    show(needAuth
+      ? '服务在线，且已开启认证。\n请在左侧「认证」区登录后使用其它功能。'
+      : '服务在线（未开启认证），可直接使用。\n左侧「修复验收」→ 运行三项检查。');
   } catch (e) {
-    $('st').className = 'badge down'; $('st').textContent = '无法连接 :5000';
-    show('无法连接到 http://localhost:5000\n\n请先在另一个终端启动：\n  coretex.exe server');
+    $('st').className = 'badge down'; $('st').textContent = '被拦截/无法连接';
+    show(String(e.message || e));
   }
 })();
 </script>
