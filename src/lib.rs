@@ -75,6 +75,7 @@ pub mod coretex_bio;
 pub mod coretex_types_extra;
 pub mod coretex_grpo;
 pub mod coretex_ffi;
+pub mod coretex_replication;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -95,6 +96,7 @@ pub use coretex_incremental::{IncrementalIndex, IndexUpdate};
 pub use coretex_cdc::{CdcEngine, CdcEvent, CdcConfig, CdcSource, CdcError, PostgresCdcSource, MysqlCdcSource, MongodbCdcSource, VectorSyncHandler, VectorSyncEvent, SchemaChangeType};
 pub use coretex_transaction::{TransactionManager, TransactionId, Snapshot, WriteAheadLog, IsolationLevel, TransactionError, WalEntry, WalOperation, LockManager, LockMode, LockRequest, DeadlockInfo};
 pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult}; 
+pub use coretex_replication::{ReplicationSnapshot, EntriesBatch, ReplicationStatus, ReplicationTransport, HttpTransport, InProcessTransport, ReplicaSync, SyncOutcome};
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
 pub use coretex_storage::{StorageEngine, MemoryStorage, FileStorage};
@@ -119,7 +121,7 @@ pub use coretex_embedding::{
     StreamingEmbedder, StreamItem, StreamResult, EmbeddingStream, StreamingStats,
     BatchedStreamEmbedder, WindowedStreamEmbedder, BackpressureStreamEmbedder, BackpressureSignal
 }; 
-pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsInterceptor, ComposedInterceptor};
+pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsLayer, MetricsService, ComposedInterceptor};
 pub mod grpc_client {
     pub use crate::coretex_grpc::server::client::{connect, AuthApply};
 }
@@ -560,6 +562,10 @@ impl CoreTexDB {
             self.config.backup_incremental_dir(),
             PathBuf::from(&self.config.backup_dir).join("snapshots"),
             PathBuf::from(&self.config.data_dir).join("store"),
+            // Reserved for audit logging. Created so the layout matches the
+            // documented install tree, but nothing writes here: `AuditLogger`
+            // lives in `coretex_security`, which has no production call site.
+            // See README §0 (未接线 → 审计日志).
             PathBuf::from(&self.config.log_dir).join("audit"),
             PathBuf::from(&self.config.base_dir).join("data").join("versions"),
         ];

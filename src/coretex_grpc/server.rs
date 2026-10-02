@@ -1,11 +1,13 @@
 //! gRPC server runner
 //!
 //! 提供完整的 gRPC 服务：
-//! - JWT 认证拦截器
-//! - 限流拦截器
-//! - 指标收集
+//! - JWT 认证拦截器（已接入服务链）
+//! - 指标收集（[`MetricsLayer`]，已接入服务链）
 //! - 优雅关闭
 //! - TLS 支持
+//!
+//! 限流拦截器已实现但**未接入**：构造后即丢弃，配置项
+//! `GrpcConfig::rate_limit_per_minute` 不生效，启动横幅却照常打印该值。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +18,12 @@ use tonic::transport::Server;
 use tonic::{Request, Status};
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
+use tonic::server::NamedService;
+use tower::{Layer, Service};
+
+// `http` comes from tonic's re-export so the `Service` impl below cannot drift
+// onto a second http version in the tree.
+use tonic::codegen::http;
 
 use crate::coretex_grpc::coretex_service::coretex_service_server::CoretexServiceServer;
 use crate::coretex_auth::{AuthService, RateLimiter};
@@ -180,42 +188,108 @@ impl Interceptor for RateLimitInterceptor {
     }
 }
 
-/// 指标拦截器
+/// Tower layer that records per-request metrics.
+///
+/// tonic's `Interceptor` trait is pre-call only: it can observe a request but
+/// never the response, so latency and success/failure are unobservable there.
+/// The earlier `MetricsInterceptor` therefore had nowhere to report to — its
+/// `MetricsContext` was inserted and never read, `_metrics` was never read, and
+/// the service printed `total=0 success=0 failed=0` forever. This layer wraps
+/// the actual service call, so it observes both.
 #[derive(Clone)]
-pub struct MetricsInterceptor {
-    _metrics: Arc<RwLock<GrpcMetrics>>,
+pub struct MetricsLayer {
+    metrics: Arc<RwLock<GrpcMetrics>>,
 }
 
-impl MetricsInterceptor {
+impl MetricsLayer {
     pub fn new(metrics: Arc<RwLock<GrpcMetrics>>) -> Self {
-        Self { _metrics: metrics }
+        Self { metrics }
     }
 }
 
-impl Interceptor for MetricsInterceptor {
-    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
+impl<S> Layer<S> for MetricsLayer {
+    type Service = MetricsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MetricsService {
+            inner,
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+pub struct MetricsService<S> {
+    inner: S,
+    metrics: Arc<RwLock<GrpcMetrics>>,
+}
+
+/// `add_service` requires `Clone` (tonic clones the router per connection).
+impl<S: Clone> Clone for MetricsService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+/// tonic routes by service name, so the wrapper must delegate it to the inner
+/// service — otherwise `/coretex.CoretexService/*` stops resolving.
+impl<S: Clone + NamedService> NamedService for MetricsService<S> {
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for MetricsService<S>
+where
+    S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    // The response is held across the `metrics.write().await` below, so the
+    // body type must be Send for the wrapper future to be Send.
+    ResBody: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    // Fully qualified: this file imports `crate::coretex_core::Result`, a
+    // single-parameter alias for `Result<T, CoreTexError>`, which would
+    // shadow `std`'s two-parameter `Result` here.
+    type Future = std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<Self::Response, Self::Error>>
+                + Send,
+        >,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
+        let method = req.uri().path().to_string();
+        let metrics = self.metrics.clone();
         let start = std::time::Instant::now();
-        let path = request
-            .metadata()
-            .get("x-grpc-method")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
 
-        // 在请求完成后记录（使用 extensions）
-        let mut req = request;
-        req.extensions_mut().insert(MetricsContext {
-            _method: path,
-            _start: start,
-        });
-        Ok(req)
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            let result = fut.await;
+            let latency_us = start.elapsed().as_micros() as u64;
+            // Scoped so the write guard is dropped before `result` is returned:
+            // holding it across the return would make the future !Send.
+            let success = match &result {
+                Ok(response) => response.status().is_success(),
+                // Transport-level failure: still a request, and it failed.
+                Err(_) => false,
+            };
+            {
+                let mut m = metrics.write().await;
+                m.record_request(&method, success, latency_us);
+            }
+            result
+        })
     }
-}
-
-#[derive(Clone)]
-struct MetricsContext {
-    _method: String,
-    _start: std::time::Instant,
 }
 
 /// 启动 gRPC 服务器
@@ -258,11 +332,14 @@ pub async fn start_grpc_server_shared(
     // 拦截器链
     let auth_interceptor = AuthInterceptor::new(auth.clone(), config.enable_auth);
 
+    // Layer the metrics service in *before* wrapping with the interceptor:
+    // `InterceptedService` is itself a Service, not a Layer, so it has no
+    // `.layer()` of its own. `Server::builder().layer(..)` would sit outside
+    // the whole stack and would also count requests rejected by auth.
+    let metered = MetricsLayer::new(metrics.clone()).layer(CoretexServiceServer::new(service));
+
     let intercepted: InterceptedService<_, AuthInterceptor> =
-        InterceptedService::new(
-            CoretexServiceServer::new(service),
-            auth_interceptor,
-        );
+        InterceptedService::new(metered, auth_interceptor);
 
     println!("Starting gRPC server on {}", config.addr);
     println!("gRPC configuration:");
@@ -331,7 +408,6 @@ pub async fn start_grpc_server_shared(
 }
 
 /// 组合多个拦截器
-#[allow(dead_code)]
 fn compose_interceptors<A, B, C>(a: A, b: B, c: C) -> ComposedInterceptor<A, B, C>
 where
     A: Interceptor,
@@ -450,12 +526,77 @@ use crate::coretex_core::Result;
         assert!(interceptor.call(req).is_ok());
     }
 
-    #[test]
-    fn test_metrics_interceptor() {
+    /// The old `test_metrics_interceptor` asserted only `result.is_ok()` on a
+    /// `MetricsInterceptor::call` — which returns `Ok` unconditionally and
+    /// never touched the metrics. It passed while the server printed
+    /// `total=0` forever.
+    ///
+    /// `MetricsLayer` now records in `call`, so this drives the whole path and
+    /// asserts the counters actually moved.
+    #[tokio::test]
+    async fn test_metrics_layer_records_requests() {
         let metrics = Arc::new(RwLock::new(GrpcMetrics::default()));
-        let mut interceptor = MetricsInterceptor::new(metrics);
-        let req = Request::new(());
-        let result = interceptor.call(req);
-        assert!(result.is_ok());
+        let service = MetricsLayer::new(metrics.clone()).layer(tower::service_fn(
+            |_req: http::Request<()>| async {
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder().status(200).body(()).unwrap(),
+                )
+            },
+        ));
+
+        let mut svc = service;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tx.send(()).unwrap();
+
+        // poll_ready then call, twice: success then an error status.
+        futures::future::poll_fn(|cx| {
+            match svc.poll_ready(cx) {
+                std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(()),
+                std::task::Poll::Ready(Err(_)) => panic!("poll_ready failed"),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        })
+        .await;
+
+        let _ = svc.call(http::Request::builder().uri("/svc/Ok").body(()).unwrap()).await;
+
+        let m = metrics.read().await;
+        assert_eq!(m.total_requests, 1, "a served request must be counted");
+        assert_eq!(m.successful_requests, 1);
+        assert_eq!(m.failed_requests, 0);
+        assert_eq!(
+            m.method_calls.get("/svc/Ok").copied(),
+            Some(1),
+            "method name must come from the request path"
+        );
+        let _ = rx.await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_metrics_layer_counts_failed_status() {
+        let metrics = Arc::new(RwLock::new(GrpcMetrics::default()));
+        let mut svc = MetricsLayer::new(metrics.clone()).layer(tower::service_fn(
+            |_req: http::Request<()>| async {
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder().status(500).body(()).unwrap(),
+                )
+            },
+        ));
+
+        futures::future::poll_fn(|cx| {
+            match svc.poll_ready(cx) {
+                std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(()),
+                std::task::Poll::Ready(Err(_)) => panic!("poll_ready failed"),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        })
+        .await;
+
+        let _ = svc.call(http::Request::builder().uri("/svc/Bad").body(()).unwrap()).await;
+
+        let m = metrics.read().await;
+        assert_eq!(m.total_requests, 1);
+        assert_eq!(m.successful_requests, 0, "HTTP 500 is not a success");
+        assert_eq!(m.failed_requests, 1);
     }
 }

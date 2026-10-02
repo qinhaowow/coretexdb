@@ -15,6 +15,9 @@ pub use coretex_service::CoretexService;
 pub use server::{
     start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared,
     GrpcConfig, GrpcMetrics,
-    AuthInterceptor, RateLimitInterceptor, MetricsInterceptor,
+    AuthInterceptor, RateLimitInterceptor,
+    // MetricsInterceptor was replaced by MetricsLayer: tonic's `Interceptor` is
+    // pre-call only, so it cannot observe latency or the response status.
+    MetricsLayer, MetricsService,
     ComposedInterceptor,
 };
