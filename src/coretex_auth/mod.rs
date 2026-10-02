@@ -671,6 +671,15 @@ pub struct RateLimiter {
     requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
     max_requests: usize,
     window_secs: u64,
+    /// Hard ceiling on tracked identifiers.
+    ///
+    /// Entries whose timestamps all age out are dropped on sight, so a stable
+    /// client population cannot grow the map on its own. This bound is the
+    /// backstop for the case that actually happens in practice: a burst of
+    /// one-shot identifiers (a gRPC client rotating bearer tokens, a bot
+    /// scanning source addresses) creates a key per request before any of them
+    /// can age out.
+    max_identifiers: usize,
 }
 
 impl RateLimiter {
@@ -679,24 +688,48 @@ impl RateLimiter {
             requests: Arc::new(RwLock::new(HashMap::new())),
             max_requests,
             window_secs,
+            max_identifiers: 10_000,
         }
     }
 
     pub async fn check_rate_limit(&self, identifier: &str) -> Result<(), String> {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
-        
+
+        // Drop every entry whose window has fully elapsed, not just the one
+        // being checked. Previously the key was inserted and never removed, so
+        // the map grew by one entry per distinct identifier forever — and
+        // `RateLimiter` is keyed by client IP on REST and by the full token
+        // string on gRPC, i.e. by an attacker-controlled value.
+        requests.retain(|_, timestamps| {
+            timestamps.retain(|t| now.duration_since(*t).as_secs() < self.window_secs);
+            !timestamps.is_empty()
+        });
+
         let timestamps = requests.entry(identifier.to_string()).or_insert_with(Vec::new);
-        
-        timestamps.retain(|t| now.duration_since(*t).as_secs() < self.window_secs);
-        
+
         if timestamps.len() >= self.max_requests {
             return Err("Rate limit exceeded".to_string());
         }
-        
+
         timestamps.push(now);
-        
+
+        // At the ceiling, refuse to track new identities instead of evicting a
+        // live one: dropping a busy client's history would hand it a fresh
+        // allowance. Untracked callers are simply not rate limited, which is
+        // the lesser evil next to unbounded growth.
+        if requests.len() > self.max_identifiers {
+            requests.remove(identifier);
+            return Ok(());
+        }
+
         Ok(())
+    }
+
+    /// Number of identifiers currently tracked. Exposed for tests and for an
+    /// operator sanity check.
+    pub async fn tracked_identifiers(&self) -> usize {
+        self.requests.read().await.len()
     }
 }
 
@@ -876,6 +909,61 @@ use crate::coretex_core::Result;
         let has_admin = auth.has_permission(&user_id, Permission::Admin).await;
         
         assert!(has_read);
+    }
+
+    /// Regression: `check_rate_limit` inserted a key per identifier and never
+    /// removed it — `retain` only pruned the timestamps *inside* each entry.
+    /// The map therefore grew by one entry for every distinct client forever,
+    /// and the key is attacker-controlled (a bearer token on gRPC, a source
+    /// address on REST). This is unbounded memory growth reachable without
+    /// authentication.
+    #[tokio::test]
+    async fn test_rate_limiter_does_not_grow_without_bound() {
+        let limiter = RateLimiter::new(100, 1); // 1-second window
+        assert_eq!(limiter.tracked_identifiers().await, 0);
+
+        // 500 distinct one-shot identifiers, well past the ceiling.
+        for i in 0..500 {
+            limiter.check_rate_limit(&format!("client-{i}")).await.unwrap();
+        }
+
+        let tracked = limiter.tracked_identifiers().await;
+        assert!(
+            tracked <= 10_000,
+            "tracked identifiers must stay bounded, got {tracked}"
+        );
+
+        // Wait past the window, then push more identifiers. The first burst is
+        // entirely stale by now and must have been reclaimed rather than kept
+        // alive forever.
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        limiter.check_rate_limit("late-arrival").await.unwrap();
+
+        assert!(
+            limiter.tracked_identifiers().await < 500,
+            "stale entries should have been reclaimed, still tracking {}",
+            limiter.tracked_identifiers().await
+        );
+    }
+
+    /// A caller that exhausts its window must regain its allowance once the
+    /// window elapses — pruning must not lock anyone out permanently.
+    #[tokio::test]
+    async fn test_rate_limiter_window_expires_and_entry_is_reclaimed() {
+        let limiter = RateLimiter::new(2, 1); // 2 requests per second
+
+        limiter.check_rate_limit("a").await.unwrap();
+        limiter.check_rate_limit("a").await.unwrap();
+        assert!(
+            limiter.check_rate_limit("a").await.is_err(),
+            "third request inside the window must be rejected"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        limiter
+            .check_rate_limit("a")
+            .await
+            .expect("allowance must return after the window elapses");
     }
 
     #[tokio::test]

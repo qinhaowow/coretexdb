@@ -19,5 +19,9 @@ pub use server::{
     // MetricsInterceptor was replaced by MetricsLayer: tonic's `Interceptor` is
     // pre-call only, so it cannot observe latency or the response status.
     MetricsLayer, MetricsService,
+    // AuthLayer resolves what InterceptedService destroys — the method path and
+    // the peer address — before handing off to AuthInterceptor, which cannot see
+    // either. Without it the public-method whitelist can never match.
+    AuthLayer, AuthServiceWrapper, SKIP_AUTH, CLIENT_KEY,
     ComposedInterceptor,
 };

@@ -1058,7 +1058,12 @@ where
             println!("Starting CoreTexDB server on {}:{}", address, port);
             println!("Data directory: {}", data_dir);
             println!("Auth: {}", if enable_auth { "enabled" } else { "disabled" });
-            println!("Rate limit: {} req/min", rate_limit);
+            // 0 = 不限。原先无条件打印数值，读起来像"已启用 0 req/min"。
+            if rate_limit > 0 {
+                println!("Rate limit: {} req/min", rate_limit);
+            } else {
+                println!("Rate limit: disabled");
+            }
             if grpc_port > 0 {
                 println!("gRPC: port {}", grpc_port);
             } else {

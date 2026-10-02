@@ -121,7 +121,7 @@ pub use coretex_embedding::{
     StreamingEmbedder, StreamItem, StreamResult, EmbeddingStream, StreamingStats,
     BatchedStreamEmbedder, WindowedStreamEmbedder, BackpressureStreamEmbedder, BackpressureSignal
 }; 
-pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, MetricsLayer, MetricsService, ComposedInterceptor};
+pub use coretex_grpc::{CoretexService, start_grpc_server, start_grpc_server_with_config, start_grpc_server_shared, GrpcConfig, GrpcMetrics, AuthInterceptor, RateLimitInterceptor, AuthLayer, AuthServiceWrapper, MetricsLayer, MetricsService, ComposedInterceptor};
 pub mod grpc_client {
     pub use crate::coretex_grpc::server::client::{connect, AuthApply};
 }

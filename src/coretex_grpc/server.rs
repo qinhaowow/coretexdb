@@ -86,12 +86,13 @@ impl GrpcMetrics {
     }
 }
 
-/// 认证拦截器
+/// 认证拦截器。同时承担 gRPC 侧的限流。
 #[derive(Clone)]
 pub struct AuthInterceptor {
     auth: Arc<AuthService>,
     enable_auth: bool,
     public_methods: Vec<String>,
+    limiter: Option<Arc<RateLimiter>>,
 }
 
 impl AuthInterceptor {
@@ -100,24 +101,59 @@ impl AuthInterceptor {
         let public_methods = vec![
             "/coretex.CoretexService/HealthCheck".to_string(),
         ];
-        Self { auth, enable_auth, public_methods }
+        Self { auth, enable_auth, public_methods, limiter: None }
+    }
+
+    /// Attach a limiter. `None` (the default in `new`) means unlimited.
+    pub fn with_rate_limit(mut self, limiter: Arc<RateLimiter>) -> Self {
+        self.limiter = Some(limiter);
+        self
     }
 }
 
 impl Interceptor for AuthInterceptor {
     fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
+        // Rate limiting applies whether or not auth is on — it is a load
+        // control, not an access control, and the old code built a limiter and
+        // dropped it on the floor while the banner advertised the limit.
+        if let Some(ref limiter) = self.limiter {
+            // Keyed on the client identity resolved by AuthLayer (peer address),
+            // never the bearer token: keying on the token let a client escape
+            // the limit by asking for a new one.
+            let key = request
+                .metadata()
+                .get(CLIENT_KEY)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("ip:unknown")
+                .to_string();
+            // `block_on` here would stall a tokio worker; the interceptor
+            // signature is synchronous, so this is the one place it cannot be
+            // avoided. Kept to a cheap in-memory lock, unlike verify_token below
+            // which can hash an argon2 password.
+            if futures::executor::block_on(limiter.check_rate_limit(&key)).is_err() {
+                return Err(Status::resource_exhausted("Rate limit exceeded"));
+            }
+        }
+
         if !self.enable_auth {
             return Ok(request);
         }
 
-        let path = request
-            .metadata()
-            .get("x-grpc-method")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        // 健康检查跳过认证
-        if self.public_methods.iter().any(|p| p == path) {
+        // The method name is NOT available here. `InterceptedService::call`
+        // strips the HTTP URI before invoking the interceptor — tonic's own
+        // comment says "Tonic requests do not preserve the URI, HTTP version,
+        // and HTTP method", and it stashes the uri in a closure to restore it
+        // afterwards. Anything we look for is guaranteed absent.
+        //
+        // This previously read an `x-grpc-method` metadata header, which tonic
+        // never set and no client ever sent, so `path` was always empty: the
+        // public-method whitelist never matched and, with auth enabled, even
+        // HealthCheck demanded a token.
+        //
+        // [`AuthLayer`] now decides that, where the real `:path` is visible,
+        // and signals it by adding the header below — the only channel that
+        // survives into this call.
+        if request.metadata().contains_key(SKIP_AUTH) {
             return Ok(request);
         }
 
@@ -249,6 +285,128 @@ impl<S: Clone + NamedService> NamedService for MetricsService<S> {
     const NAME: &'static str = S::NAME;
 }
 
+/// Rate limiting lives in [`AuthInterceptor`] rather than its own tower layer.
+///
+/// A separate layer cannot reject cleanly: tonic's generated services have
+/// `Error = Infallible`, so a rate-limit rejection has nowhere to go — the only
+/// way to fail the call is to return a `Status`, which cannot be converted. The
+/// interceptor already returns `Status`, so both checks live there.
+///
+/// The key is the **peer address** (supplied by [`AuthLayer`], which can still
+/// see it), never the bearer token: keying on the token let a client bypass the
+/// limit by requesting a fresh one — the flaw the REST limiter avoids by keying
+/// on X-Forwarded-For / peer IP.
+
+
+/// Tower layer that resolves what `InterceptedService` destroys before handing
+/// off to [`AuthInterceptor`].
+///
+/// `InterceptedService::call` strips the HTTP URI before invoking the
+/// interceptor — tonic's own comment says "Tonic requests do not preserve the
+/// URI, HTTP version, and HTTP method". So the interceptor cannot know which
+/// method is being called, nor the peer address.
+///
+/// This layer can, and passes both along in headers, which tonic *does*
+/// preserve:
+///   * `x-coretex-public-method` — the method is whitelisted, skip auth
+///   * `x-coretex-client-key`    — the client identity used for rate limiting
+#[derive(Clone)]
+pub struct AuthLayer {
+    public_methods: Arc<Vec<String>>,
+}
+
+impl AuthLayer {
+    pub fn new() -> Self {
+        let auth = Arc::new(AuthService::new());
+        Self {
+            public_methods: Arc::new(AuthInterceptor::new(auth, false).public_methods),
+        }
+    }
+}
+
+impl Default for AuthLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> Layer<S> for AuthLayer {
+    type Service = AuthServiceWrapper<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AuthServiceWrapper {
+            inner,
+            public_methods: self.public_methods.clone(),
+        }
+    }
+}
+
+/// Marks a request as belonging to a public method, so the interceptor skips
+/// authentication for it. See [`AuthLayer`].
+pub const SKIP_AUTH: &str = "x-coretex-public-method";
+/// Carries the client identity the interceptor rate-limits on. See [`AuthLayer`].
+pub const CLIENT_KEY: &str = "x-coretex-client-key";
+
+pub struct AuthServiceWrapper<S> {
+    inner: S,
+    public_methods: Arc<Vec<String>>,
+}
+
+impl<S: Clone> Clone for AuthServiceWrapper<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            public_methods: self.public_methods.clone(),
+        }
+    }
+}
+
+impl<S: Clone + NamedService> NamedService for AuthServiceWrapper<S> {
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for AuthServiceWrapper<S>
+where
+    S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: http::Request<ReqBody>) -> Self::Future {
+        if self.public_methods.iter().any(|p| p == req.uri().path()) {
+            if let Ok(value) = SKIP_AUTH.parse() {
+                req.headers_mut().insert(SKIP_AUTH, value);
+            }
+        }
+
+        // Peer address for rate limiting. `remote_addr()` is an Option (absent
+        // for connections whose transport layer did not record it, e.g. TLS
+        // terminators); fall back to a shared bucket — coarse, but safe.
+        let key = req
+            .extensions()
+            .get::<tonic::transport::server::TcpConnectInfo>()
+            .and_then(|info| info.remote_addr())
+            .map(|addr| format!("ip:{}", addr))
+            .unwrap_or_else(|| "ip:unknown".to_string());
+        if let Ok(value) = key.parse() {
+            req.headers_mut().insert(CLIENT_KEY, value);
+        }
+
+        self.inner.call(req)
+    }
+}
+
 impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for MetricsService<S>
 where
     S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
@@ -343,8 +501,14 @@ pub async fn start_grpc_server_shared(
         None => AuthService::new(),
     });
 
-    // 限流器
-    let _rate_limiter = if config.rate_limit_per_minute > 0 {
+    // 限流器。`RateLimiter` now prunes expired identifiers, so keying by
+    // client-supplied value is bounded (it was not: the map grew forever).
+    //
+    // `rate_limit_active` is kept because the limiter is moved into the
+    // interceptor below, and the startup banner needs to report whether a limit
+    // is actually in force.
+    let rate_limit_active = config.rate_limit_per_minute > 0;
+    let rate_limiter = if rate_limit_active {
         Some(Arc::new(RateLimiter::new(config.rate_limit_per_minute, 60)))
     } else {
         None
@@ -354,22 +518,37 @@ pub async fn start_grpc_server_shared(
     let metrics = Arc::new(RwLock::new(GrpcMetrics::default()));
 
     // 拦截器链
-    let auth_interceptor = AuthInterceptor::new(auth.clone(), config.enable_auth);
+    //
+    // The interceptor performs both the token check and rate limiting, because
+    // it is the only place that can return a `Status` — tonic's generated
+    // services have `Error = Infallible`, so a standalone tower layer has no way
+    // to reject a call.
+    let auth_interceptor = AuthInterceptor::new(auth.clone(), config.enable_auth)
+        .with_rate_limit(rate_limiter.unwrap_or_else(|| Arc::new(RateLimiter::new(usize::MAX, 60))));
 
-    // Layer the metrics service in *before* wrapping with the interceptor:
-    // `InterceptedService` is itself a Service, not a Layer, so it has no
-    // `.layer()` of its own. `Server::builder().layer(..)` would sit outside
-    // the whole stack and would also count requests rejected by auth.
+    // Order matters:
+    //   AuthLayer  — outermost of the two, because it needs the real `:path`
+    //                (tonic strips the URI before `InterceptedService` invokes
+    //                the interceptor, so the whitelist cannot live in there);
+    //   Metrics    — inside, so rejected requests are not counted as served.
     let metered = MetricsLayer::new(metrics.clone()).layer(CoretexServiceServer::new(service));
+    let guarded = AuthLayer::new().layer(metered);
 
     let intercepted: InterceptedService<_, AuthInterceptor> =
-        InterceptedService::new(metered, auth_interceptor);
+        InterceptedService::new(guarded, auth_interceptor);
 
     println!("Starting gRPC server on {}", config.addr);
     println!("gRPC configuration:");
     println!("  Auth enabled: {}", config.enable_auth);
     println!("  TLS enabled: {}", config.enable_tls);
-    println!("  Rate limit: {} req/min", config.rate_limit_per_minute);
+    // Only print a limit that is actually in force. This line used to print the
+    // configured value unconditionally while the limiter was constructed and
+    // discarded, so the banner advertised protection that did not exist.
+    if rate_limit_active {
+        println!("  Rate limit: {} req/min (per client address)", config.rate_limit_per_minute);
+    } else {
+        println!("  Rate limit: disabled");
+    }
     println!("  Metrics enabled: {}", config.enable_metrics);
     println!("Endpoints:");
     println!("  CreateCollection");
@@ -525,6 +704,73 @@ use crate::coretex_core::Result;
         assert_eq!(m.failed_requests, 1);
         assert_eq!(*m.method_calls.get("CreateCollection").unwrap(), 2);
         assert_eq!(*m.method_calls.get("SearchVectors").unwrap(), 1);
+    }
+
+    /// Regression: the whitelist used to be checked against an `x-grpc-method`
+    /// header that tonic never sets and no client sends, so `path` was always
+    /// empty and no entry ever matched — with auth on, HealthCheck required a
+    /// token. The old test only asserted the string was present in the vec,
+    /// which passed regardless.
+    ///
+    /// The check now lives in `AuthLayer`, which sees the real `:path`, and is
+    /// relayed to the interceptor via a header.
+    #[tokio::test]
+    async fn test_auth_layer_marks_public_method_and_interceptor_honours_it() {
+        let auth = Arc::new(AuthService::new());
+        let mut interceptor = AuthInterceptor::new(auth, true); // auth ENABLED
+
+        // Build the request the way the layer does.
+        let mut req: http::Request<()> =
+            http::Request::builder().uri("/coretex.CoretexService/HealthCheck").body(()).unwrap();
+        let key = "ip:test";
+        req.headers_mut()
+            .insert(SKIP_AUTH, "1".parse().unwrap());
+        req.headers_mut()
+            .insert(CLIENT_KEY, key.parse().unwrap());
+
+        let tonic_req = Request::from_http(req);
+        assert!(
+            interceptor.call(tonic_req).is_ok(),
+            "a public method must be reachable without a token"
+        );
+
+        // A non-public method without the marker must still be rejected.
+        let plain = Request::new(());
+        assert!(
+            interceptor.call(plain).is_err(),
+            "a non-public method must still require authentication"
+        );
+    }
+
+    /// Rate limiting must actually reject, and must not be bypassable by
+    /// swapping the bearer token — that was the flaw in the limiter it replaced,
+    /// which keyed on the token string itself.
+    #[tokio::test]
+    async fn test_interceptor_rate_limit_rejects_and_ignores_token_swap() {
+        let auth = Arc::new(AuthService::new());
+        let limiter = Arc::new(crate::coretex_auth::RateLimiter::new(2, 60));
+        let mut interceptor =
+            AuthInterceptor::new(auth, false).with_rate_limit(limiter.clone());
+
+        let mut call_with_token = |tok: &'static str| {
+            let mut req = Request::new(());
+            req.metadata_mut()
+                .insert(CLIENT_KEY, "ip:fixed-client".parse().unwrap());
+            req.metadata_mut()
+                .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+            interceptor.call(req)
+        };
+
+        assert!(call_with_token("t1").is_ok(), "first request");
+        assert!(call_with_token("t2").is_ok(), "second request");
+        // Third must be rejected despite a *different* token.
+        let third = call_with_token("t3");
+        assert!(third.is_err(), "third request must be rate limited");
+        assert_eq!(
+            third.unwrap_err().code(),
+            tonic::Code::ResourceExhausted,
+            "a rejected call must surface as resource_exhausted"
+        );
     }
 
     #[test]
