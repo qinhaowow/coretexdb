@@ -11,6 +11,10 @@
 
 use async_trait::async_trait;
 use crate::coretex_core::Result;
+// `CoreTexError` is only needed by the rocksdb-gated `PersistentStorage`; naming
+// it unconditionally would warn when that feature is off.
+#[cfg(feature = "rocksdb")]
+use crate::coretex_core::CoreTexError;
 #[cfg(feature = "rocksdb")]
 use rocksdb::{DB, Options};
 
@@ -214,6 +218,11 @@ impl StorageEngine for PersistentStorage {
         let meta_bytes = meta_json.as_bytes();
 
         let mut entry = Vec::new();
+        // Length-prefix the vector blob so `retrieve` never has to re-derive how
+        // many bytes bincode used. It previously assumed `vector.len() * 4`,
+        // omitting bincode's 8-byte `Vec` length prefix — so metadata parsing
+        // started 8 bytes early, inside the vector data.
+        entry.extend_from_slice(&(data.len() as u64).to_le_bytes());
         entry.extend_from_slice(&data);
         entry.extend_from_slice(meta_bytes);
 
@@ -226,12 +235,35 @@ impl StorageEngine for PersistentStorage {
     async fn retrieve(&self, id: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>> {
         let db = self.db.as_ref().ok_or(CoreTexError::StorageNotInitialized)?;
 
+        // rocksdb 0.22: `get` yields `Option<DBVector>`, which derefs to `[u8]`
+        // rather than being a `Vec<u8>`. Bind the slice so indexing below works.
         if let Some(entry) = db.get(id.as_bytes())
-            .map_err(|e| CoreTexError::StorageError(format!("RocksDB get failed: {}", e)))? 
+            .map_err(|e| CoreTexError::StorageError(format!("RocksDB get failed: {}", e)))?
         {
-            let vector: Vec<f32> = bincode::deserialize(&entry)?;
-            let vec_byte_len = vector.len() * 4;
-            let metadata: serde_json::Value = serde_json::from_slice(&entry[vec_byte_len..])?;
+            let entry: &[u8] = &entry;
+
+            if entry.len() < 8 {
+                return Err(CoreTexError::StorageError(format!(
+                    "corrupt entry for {}: {} bytes, too short for the length prefix",
+                    id,
+                    entry.len()
+                )));
+            }
+            let vec_len = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
+            let vec_end = 8usize
+                .checked_add(vec_len)
+                .filter(|end| *end <= entry.len())
+                .ok_or_else(|| {
+                    CoreTexError::StorageError(format!(
+                        "corrupt entry for {}: declares {} vector bytes but entry is {} bytes",
+                        id,
+                        vec_len,
+                        entry.len()
+                    ))
+                })?;
+
+            let vector: Vec<f32> = bincode::deserialize(&entry[8..vec_end])?;
+            let metadata: serde_json::Value = serde_json::from_slice(&entry[vec_end..])?;
 
             Ok(Some((vector, metadata)))
         } else {

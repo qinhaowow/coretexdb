@@ -424,7 +424,11 @@ use crate::coretex_core::Result;
             }
         }
         
-        pub fn create_collection(&mut self, name: &str, dimension: usize) -> Result<(), EdgeError> {
+        // This file imports `crate::coretex_core::Result`, a single-parameter
+        // alias over `CoreTexError`. Signatures below want a different error
+        // type (`EdgeError`), so they must spell out `std::result::Result` —
+        // otherwise the alias shadows it and E0107 fires under `--features wasm`.
+        pub fn create_collection(&mut self, name: &str, dimension: usize) -> std::result::Result<(), EdgeError> {
             if self.collections.contains_key(name) {
                 return Err(EdgeError::CollectionExists(name.to_string()));
             }
@@ -439,7 +443,7 @@ use crate::coretex_core::Result;
             Ok(())
         }
         
-        pub fn insert(&mut self, collection: &str, id: &str, vector: Vec<f32>) -> Result<(), EdgeError> {
+        pub fn insert(&mut self, collection: &str, id: &str, vector: Vec<f32>) -> std::result::Result<(), EdgeError> {
             let coll = self.collections.get_mut(collection)
                 .ok_or(EdgeError::CollectionNotFound(collection.to_string()))?;
             
@@ -447,7 +451,7 @@ use crate::coretex_core::Result;
             Ok(())
         }
         
-        pub fn search(&self, collection: &str, query: &[f32], k: usize) -> Result<Vec<EdgeSearchResult>, EdgeError> {
+        pub fn search(&self, collection: &str, query: &[f32], k: usize) -> std::result::Result<Vec<EdgeSearchResult>, EdgeError> {
             let coll = self.collections.get(collection)
                 .ok_or(EdgeError::CollectionNotFound(collection.to_string()))?;
             

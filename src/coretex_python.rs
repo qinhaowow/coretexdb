@@ -12,12 +12,22 @@
 //! - 指标/健康
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::{CoreTexDB, DbConfig, SearchResult};
+use crate::{CoreTexDB, DbConfig};
+
+/// Convert any displayable error into a `PyErr`.
+///
+/// `future_into_py` bounds its future on `Output = PyResult<T>`, so an async
+/// binding method must yield `PyErr` — returning `PyCoreTexError` instead is a
+/// type error (E0271), which is why these methods could not compile while the
+/// `python` feature was never enabled. Routing every site through one helper
+/// keeps the sync and async halves consistent.
+fn py_err(e: impl std::fmt::Display) -> PyErr {
+    PyErr::from(PyCoreTexError::new(e.to_string()))
+}
 
 /// 同步 Python 绑定入口
 #[pyclass]
@@ -315,7 +325,7 @@ impl PyAsyncCortexDB {
         let db = self.db.clone();
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
-            db.init().await.map_err(|e| PyCoreTexError::new(e.to_string()))
+            db.init().await.map_err(py_err)
         })
     }
 
@@ -332,7 +342,7 @@ impl PyAsyncCortexDB {
             let db = db.read().await;
             db.create_collection(&name, dimension, &m)
                 .await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))
+                .map_err(py_err)
         })
     }
 
@@ -340,7 +350,7 @@ impl PyAsyncCortexDB {
         let db = self.db.clone();
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
-            db.list_collections().await.map_err(|e| PyCoreTexError::new(e.to_string()))
+            db.list_collections().await.map_err(py_err)
         })
     }
 
@@ -355,7 +365,7 @@ impl PyAsyncCortexDB {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
             let results = db.search(&collection, query, k, None).await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))?;
+                .map_err(py_err)?;
             let py_results: Vec<PySearchResult> = results.into_iter()
                 .map(|r| PySearchResult { id: r.id, distance: r.distance })
                 .collect();
@@ -391,7 +401,7 @@ impl PyAsyncCortexDB {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
             db.insert_vectors(&collection, data).await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))
+                .map_err(py_err)
         })
     }
 
@@ -405,7 +415,7 @@ impl PyAsyncCortexDB {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
             db.delete_vectors(&collection, &ids).await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))
+                .map_err(py_err)
         })
     }
 
@@ -419,7 +429,7 @@ impl PyAsyncCortexDB {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
             let result = db.get_vector(&collection, &id).await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))?;
+                .map_err(py_err)?;
             match result {
                 Some((v, m)) => {
                     let meta_map: HashMap<String, String> = serde_json::from_value(m)
@@ -436,7 +446,7 @@ impl PyAsyncCortexDB {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let db = db.read().await;
             db.get_vectors_count(&collection).await
-                .map_err(|e| PyCoreTexError::new(e.to_string()))
+                .map_err(py_err)
         })
     }
 }

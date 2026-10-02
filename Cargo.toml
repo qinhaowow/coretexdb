@@ -25,7 +25,23 @@ path = "src/main.rs"
 [features]
 default = ["tokio", "serde", "compression", "metrics"]
 python = ["dep:pyo3", "dep:pyo3-asyncio"]
-full = ["tokio", "serde", "rocksdb", "compression", "metrics", "onnx", "tls-gen", "tantivy", "embedded", "wasm", "s3"]
+# `full` 曾包含 `onnx` / `tantivy` / `embedded` / `wasm`，其中 `onnx` 与 `tantivy`
+# 的代码**从未通过编译**：
+#   * onnx    — `ort = "=2.0.0-rc.12"` 的 API 与代码所用的 `ort::Session` /
+#               `SessionInputValue` 不匹配（`cannot find Session in ort`）
+#   * tantivy — tantivy 0.22 把多处 API 从 `Option` 改为 `Result`，且
+#               `schema::Field` 不再实现 `Default`
+#
+# 这两个模块（`coretex_tantivy` 296 行、`coretex_embedding` 的 ONNX 引擎）全部
+# **零生产调用点**，为它们做 API 迁移等于给死代码做维护，故先移出 `full`，让 CI
+# 的 build/test job 真正能跑起来。
+#
+# `embedded` / `wasm` 曾因同一类原因失败（`coretex_edge` 里 `Result<(), EdgeError>`
+# 撞上本 crate 的 `Result<T>` 别名遮蔽），已修好并保留在 `full` 中。
+#
+# 恢复条件：修好 onnx / tantivy 的 API 兼容后加回。届时 `feature-gate` job 会
+# 给出信号（它对这两个 feature 用 `continue-on-error` 记录现状）。
+full = ["tokio", "serde", "rocksdb", "compression", "metrics", "tls-gen", "s3", "embedded", "wasm"]
 tokio = ["dep:tokio", "dep:tokio-tungstenite"]
 serde = ["dep:serde", "dep:serde_json"]
 compression = ["dep:flate2", "dep:snap", "dep:lz4_flex", "dep:zstd"]
@@ -37,6 +53,8 @@ tantivy = ["dep:tantivy"]
 tls-gen = ["dep:rcgen"]
 embedded = []
 wasm = []
+# S3 / MinIO 存储后端已改为 s3_http::HttpS3Storage（SigV4 over reqwest），
+# 无需厂商 SDK，因此无条件编译。此 feature 仅为兼容既有命令行而保留为空。
 s3 = []
 
 [dependencies]
@@ -55,7 +73,10 @@ serde_json = { version = "1.0", optional = true }
 bincode = "1.3"
 
 # 数据库存储
-rocksdb = { version = "0.20", features = ["snappy", "lz4", "zstd"], optional = true }
+# 0.20 锁在 librocksdb-sys 0.10（RocksDB 7.9.2），其头文件依赖间接引入
+# <cstdint>；GCC 13 收紧传递包含后大量 uint8_t/uint32_t 未声明，编译失败。
+# 0.22 对应 RocksDB 8.x，已适配新编译器。
+rocksdb = { version = "0.22", features = ["snappy", "lz4", "zstd"], optional = true }
 
 # 向量计算
 ndarray = "0.17"
@@ -122,7 +143,11 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 
 # Python绑定
 pyo3 = { version = "0.19", features = ["extension-module", "abi3-py38"], optional = true }
-pyo3-asyncio = { version = "0.19", features = ["tokio"], optional = true }
+# feature 名是 `tokio-runtime`（对应 `pyo3_asyncio::tokio` 模块）。
+# 原先写的 "tokio" 不是 pyo3-asyncio 的 feature，被 Cargo 静默忽略，
+# 于是 `pyo3_asyncio::tokio` 在 `--features python` 下从不存在，
+# 514 行绑定代码一次也没编译过。改为正确的 feature 名。
+pyo3-asyncio = { version = "0.19", features = ["tokio-runtime"], optional = true }
 
 # gRPC
 tonic = { version = "0.10", features = ["tls", "transport", "gzip"] }

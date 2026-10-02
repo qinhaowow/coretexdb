@@ -108,103 +108,19 @@ impl StorageBackendTrait for LocalStorage {
     }
 }
 
-#[cfg(feature = "s3")]
-mod s3_backend {
-    use super::*;
-    
-    pub struct S3Storage {
-        client: aws_sdk_s3::Client,
-        bucket: String,
-    }
-    
-    impl S3Storage {
-        pub fn new(config: &S3Config) -> Self {
-            let sdk_config = aws_config::from_env()
-                .region(aws_sdk_s3::config::Region::new(&config.region))
-                .load()
-                .await;
-            
-            Self {
-                client: aws_sdk_s3::Client::new(&sdk_config),
-                bucket: config.bucket.clone(),
-            }
-        }
-    }
-    
-    impl StorageBackendTrait for S3Storage {
-        fn write(&self, key: &str, data: &[u8]) -> Result<(), String> {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    self.client.put_object()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .body(data.into())
-                        .send()
-                        .await
-                        .map_err(|e| e.to_string())
-                })
-        }
-        
-        fn read(&self, key: &str) -> Result<Vec<u8>, String> {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    let response = self.client.get_object()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .send()
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    
-                    let bytes = response.body.collect().await.map_err(|e| e.to_string())?;
-                    Ok(bytes.to_vec())
-                })
-        }
-        
-        fn delete(&self, key: &str) -> Result<(), String> {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    self.client.delete_object()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .send()
-                        .await
-                        .map_err(|e| e.to_string())
-                })
-        }
-        
-        fn exists(&self, key: &str) -> bool {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    self.client.head_object()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .send()
-                        .await
-                        .is_ok()
-                })
-        }
-        
-        fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    let response = self.client.list_objects_v2()
-                        .bucket(&self.bucket)
-                        .prefix(prefix)
-                        .send()
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    
-                    Ok(response.contents()
-                        .map(|objects| {
-                            objects.iter()
-                                .filter_map(|o| o.key().map(|k| k.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default())
-                })
-        }
-    }
-}
+// An earlier draft of the S3 backend called the `aws-sdk-s3` / `aws-config`
+// crates. Neither was ever added to `Cargo.toml`, so the `s3` feature stayed
+// empty (`s3 = []`) and this module could not compile: `--features s3` — and
+// therefore `--features full`, which is what CI builds and tests with — failed
+// with "use of undeclared crate or module aws_sdk_s3" before a single test ran.
+//
+// `s3_http::HttpS3Storage` is the replacement: it speaks AWS Signature V4 over
+// plain HTTP with `reqwest`, needs no vendor SDK, and covers AWS S3, MinIO and
+// any S3-compatible endpoint. It is compiled unconditionally. Use it via
+// `HttpS3Storage::new(..)` / `::new_minio(..)`.
+//
+// Restoring an SDK-backed backend means adding the dependencies to `Cargo.toml`
+// first, then giving that feature a compile+test gate so it cannot rot again.
 
 impl StorageBackend {
     pub fn create_local(path: &str) -> Self {

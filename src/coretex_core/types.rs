@@ -97,9 +97,13 @@ pub struct CollectionSchema {
     pub metadata_schema: Option<serde_json::Value>, 
 } 
 
-/// Distance metric for vector similarity 
-#[derive(Debug, Clone, Serialize, Deserialize)] 
-pub enum DistanceMetric { 
+/// Distance metric for vector similarity
+///
+/// Derives `PartialEq`/`Eq` to match `IndexType`: without them a
+/// `CollectionSchema`'s metric cannot be compared at all, not even in a test
+/// assertion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DistanceMetric {
     Cosine, 
     Euclidean, 
     DotProduct, 
