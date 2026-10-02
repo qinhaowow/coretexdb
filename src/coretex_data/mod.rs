@@ -138,6 +138,11 @@ pub struct DataManager {
     /// when the version stored with the index equals the version read while
     /// holding `data`'s read lock (see [`Self::index_scan`]).
     filter_index_cache: Arc<RwLock<HashMap<String, (u64, Arc<FilterIndex>)>>>,
+    /// Replication guard: while set, every mutation through the public write
+    /// paths is refused (see [`Self::ensure_writable`]). Startup recovery and
+    /// replication replay go through [`Self::write_data_unchecked`] and are
+    /// unaffected — a replica must still apply what the primary sends.
+    read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DataManager {
@@ -151,8 +156,35 @@ impl DataManager {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Whether this node refuses mutations (see [`Self::set_read_only`]).
+    pub fn read_only(&self) -> bool {
+        self.read_only.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Put this node into (or out of) read-only replica mode.
+    ///
+    /// While set, every mutation through the public write paths fails with an
+    /// error. Replication replay and startup recovery are exempt: they go
+    /// through [`Self::write_data_unchecked`] and `create_collection_inner`,
+    /// because a replica must still apply what the primary sends.
+    pub fn set_read_only(&self, value: bool) {
+        self.read_only
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Refuse a mutation while this node is a read-only replica.
+    fn ensure_writable(&self) -> Result<()> {
+        if self.read_only() {
+            return Err(CoreTexError::Other(
+                "database is in read-only mode (replication replica)".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Take the write lock on the vector map, bumping [`Self::data_version`]
-    /// before the caller mutates anything.
+    /// before the caller mutates anything — refusing first when this node is
+    /// a read-only replica.
     ///
     /// Every mutation must acquire the map through this helper — never with
     /// `self.data.write()` directly — so the version can lag behind the data
@@ -161,6 +193,15 @@ impl DataManager {
     /// invalidated and rebuilt. Both are safe; the reverse (new version,
     /// old data) is impossible because the bump happens under the lock.
     async fn write_data(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, HashMap<String, HashMap<String, VectorRecord>>>> {
+        self.ensure_writable()?;
+        Ok(self.write_data_unchecked().await)
+    }
+
+    /// [`Self::write_data`] without the read-only guard — startup recovery
+    /// and replication replay only.
+    async fn write_data_unchecked(
         &self,
     ) -> tokio::sync::RwLockWriteGuard<'_, HashMap<String, HashMap<String, VectorRecord>>> {
         let guard = self.data.write().await;
@@ -211,6 +252,7 @@ impl DataManager {
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
+            read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -231,6 +273,7 @@ impl DataManager {
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
+            read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -252,6 +295,7 @@ impl DataManager {
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
+            read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -275,6 +319,7 @@ impl DataManager {
             indexes_dir: None,
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
+            read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -423,7 +468,7 @@ impl DataManager {
                     // instead of dropping the row.
                     if !self.collection_exists(collection).await {
                         let _ = self
-                            .create_collection_with_index(
+                            .create_collection_inner(
                                 collection,
                                 vector.len(),
                                 "cosine",
@@ -435,7 +480,7 @@ impl DataManager {
                     if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
                         let _ = index.add(key, vector).await;
                     }
-                    let mut data = self.write_data().await;
+                    let mut data = self.write_data_unchecked().await;
                     if let Some(collection_data) = data.get_mut(collection.as_str()) {
                         collection_data.insert(
                             key.clone(),
@@ -464,7 +509,7 @@ impl DataManager {
                     if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
                         let _ = index.remove(key).await;
                     }
-                    let mut data = self.write_data().await;
+                    let mut data = self.write_data_unchecked().await;
                     if let Some(collection_data) = data.get_mut(collection.as_str()) {
                         collection_data.remove(key);
                     }
@@ -528,12 +573,303 @@ impl DataManager {
     /// split on `:`, so a collection name or vector id containing a colon stays
     /// unambiguous. Keys belonging to no known collection are orphans of a
     /// deleted collection and are skipped.
+    /// A point-in-time copy of every collection and record together with the
+    /// log position it corresponds to — the full-sync payload for a replica.
+    ///
+    /// The read order is load-bearing: log position first, then schemas,
+    /// then records. Record writes hold the data write lock across their WAL
+    /// append, and schema writes hold the collections lock across theirs, so
+    /// anything missing from this copy was written after `lsn` and arrives
+    /// through [`Self::read_replication_entries`]; anything already in the
+    /// copy may be replayed from the tail as well, and replay is idempotent.
+    pub async fn replication_snapshot(&self) -> crate::coretex_replication::ReplicationSnapshot {
+        let lsn = match self.wal.get() {
+            Some(wal) => wal.last_sequence().await,
+            None => 0,
+        };
+        let collections: Vec<CollectionSchema> = {
+            let map = self.collections.read().await;
+            map.values().cloned().collect()
+        };
+        let records = self.data.read().await.clone();
+        crate::coretex_replication::ReplicationSnapshot {
+            lsn,
+            collections,
+            records,
+        }
+    }
+
+    /// The log tail after `lsn` plus whether it is still continuous from
+    /// there (see [`crate::coretex_utils::wal::WriteAheadLog::read_entries_since`]).
+    /// Without a configured WAL the only honest answer for a non-zero
+    /// position is "truncated": an unlogged primary serves full syncs only.
+    pub async fn read_replication_entries(
+        &self,
+        lsn: u64,
+    ) -> Result<(Vec<crate::coretex_utils::wal::WalEntry>, bool)> {
+        match self.wal.get() {
+            Some(wal) => wal
+                .read_entries_since(lsn)
+                .await
+                .map_err(CoreTexError::Io),
+            None => Ok((Vec::new(), lsn > 0)),
+        }
+    }
+
+    /// Current replication log position (`last_sequence`), 0 when no WAL is
+    /// configured. Read-only counterpart to [`Self::read_replication_entries`]:
+    /// cheap enough for status endpoints, unlike a snapshot.
+    pub async fn replication_lsn(&self) -> u64 {
+        match self.wal.get() {
+            Some(wal) => wal.last_sequence().await,
+            None => 0,
+        }
+    }
+
+    /// Replace everything with `snapshot` — the full half of a replica sync.
+    ///
+    /// Wipes schema, storage and memory, loads the records into storage, then
+    /// rebuilds schema/memory/index through the normal startup restore path,
+    /// so a replica ends up where a freshly recovered primary would.
+    pub async fn apply_replication_snapshot(
+        &self,
+        snapshot: &crate::coretex_replication::ReplicationSnapshot,
+    ) -> Result<usize> {
+        {
+            let mut collections = self.collections.write().await;
+            collections.clear();
+        }
+        {
+            let storage = self.storage.read().await;
+            for key in storage.list().await? {
+                storage.delete(&key).await?;
+            }
+        }
+        {
+            let mut data = self.write_data_unchecked().await;
+            data.clear();
+        }
+
+        {
+            let storage = self.storage.read().await;
+            for (collection, records) in &snapshot.records {
+                for (id, record) in records {
+                    storage
+                        .store(
+                            &format!("{}:{}", collection, id),
+                            &record.vector,
+                            &record.metadata,
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        self.restore_from_storage(&snapshot.collections).await
+    }
+
+    /// Apply a primary's log tail — the incremental half of a replica sync.
+    ///
+    /// Bypasses the read-only guard (this *is* the write path on a replica)
+    /// but appends to the replica's own WAL, so a restart recovers the
+    /// applied state through the normal recovery path. Returns how many
+    /// entries changed state: replaying the same batch is a no-op.
+    pub async fn apply_replicated_entries(
+        &self,
+        entries: &[crate::coretex_utils::wal::WalEntry],
+    ) -> Result<u32> {
+        use crate::coretex_utils::wal::WalEntryType;
+
+        let mut applied = 0u32;
+        for entry in entries {
+            match entry.entry_type {
+                WalEntryType::CreateCollection => {
+                    // wal_log wraps the metadata argument as
+                    // `{"vector": …, "metadata": …}`, and the create path
+                    // passes the schema itself as that metadata.
+                    let schema: CollectionSchema = serde_json::from_value(
+                        entry
+                            .data
+                            .get("metadata")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    )?;
+                    let is_new = {
+                        let mut collections = self.collections.write().await;
+                        collections.insert(schema.name.clone(), schema.clone()).is_none()
+                    };
+                    if !is_new {
+                        continue;
+                    }
+                    {
+                        let mut data = self.write_data_unchecked().await;
+                        data.entry(schema.name.clone()).or_default();
+                    }
+                    let index_name = index_name_for(&schema.name);
+                    let engine = schema
+                        .indexes
+                        .first()
+                        .map(|i| index_type_name(&i.index_type))
+                        .unwrap_or(DEFAULT_INDEX_TYPE);
+                    self.index_manager
+                        .create_index(&index_name, engine, metric_name(&schema.distance_metric))
+                        .await
+                        .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
+                    applied += 1;
+                }
+                WalEntryType::DeleteCollection => {
+                    let existed = {
+                        let mut collections = self.collections.write().await;
+                        collections.remove(&entry.collection).is_some()
+                    };
+                    if !existed {
+                        continue;
+                    }
+                    {
+                        let mut data = self.write_data_unchecked().await;
+                        data.remove(&entry.collection);
+                    }
+                    let index_name = index_name_for(&entry.collection);
+                    let _ = self.index_manager.delete_index(&index_name).await;
+                    // Drop persisted rows too, so a later re-create of the
+                    // same name cannot resurrect them (mirrors delete_collection).
+                    let prefix = format!("{}:", entry.collection);
+                    let storage = self.storage.read().await;
+                    let keys: Vec<String> = storage
+                        .list()
+                        .await?
+                        .into_iter()
+                        .filter(|key| key.starts_with(&prefix))
+                        .collect();
+                    for key in keys {
+                        storage.delete(&key).await?;
+                    }
+                    drop(storage);
+                    applied += 1;
+                }
+                WalEntryType::Insert | WalEntryType::Update => {
+                    let vector: Vec<f32> = entry
+                        .data
+                        .get("vector")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_f64())
+                                .map(|f| f as f32)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let metadata = entry
+                        .data
+                        .get("metadata")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+
+                    // Self-heal a missing collection exactly like startup
+                    // recovery does; `create_collection_inner` is exempt from
+                    // the replica guard.
+                    if !self.collections.read().await.contains_key(&entry.collection) {
+                        let _ = self
+                            .create_collection_inner(
+                                &entry.collection,
+                                vector.len(),
+                                "cosine",
+                                DEFAULT_INDEX_TYPE,
+                            )
+                            .await;
+                    }
+
+                    // Durable order, same as the local write path:
+                    // WAL → storage → memory → index. The WAL entry is the
+                    // replica's *own* log, so restart recovery replays it.
+                    self.wal_log(
+                        entry.entry_type,
+                        &entry.collection,
+                        &entry.key,
+                        &vector,
+                        &metadata,
+                    )
+                    .await?;
+                    {
+                        let storage = self.storage.read().await;
+                        storage
+                            .store(
+                                &format!("{}:{}", entry.collection, entry.key),
+                                &vector,
+                                &metadata,
+                            )
+                            .await?;
+                    }
+                    let mut data = self.write_data_unchecked().await;
+                    data.entry(entry.collection.clone())
+                        .or_default()
+                        .insert(
+                            entry.key.clone(),
+                            VectorRecord {
+                                vector: vector.clone(),
+                                metadata: metadata.clone(),
+                            },
+                        );
+                    drop(data);
+                    let index_name = index_name_for(&entry.collection);
+                    if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                        let _ = index.add(&entry.key, &vector).await;
+                    }
+                    applied += 1;
+                }
+                WalEntryType::Delete => {
+                    // Idempotent: deleting something already gone is a no-op.
+                    let existed = {
+                        let data = self.data.read().await;
+                        data.get(&entry.collection)
+                            .map(|c| c.contains_key(&entry.key))
+                            .unwrap_or(false)
+                    };
+                    if !existed {
+                        continue;
+                    }
+
+                    self.wal_log(
+                        WalEntryType::Delete,
+                        &entry.collection,
+                        &entry.key,
+                        &[],
+                        &serde_json::json!({}),
+                    )
+                    .await?;
+                    {
+                        let storage = self.storage.read().await;
+                        let _ = storage
+                            .delete(&format!("{}:{}", entry.collection, entry.key))
+                            .await;
+                    }
+                    let mut data = self.write_data_unchecked().await;
+                    if let Some(collection_data) = data.get_mut(&entry.collection) {
+                        collection_data.remove(&entry.key);
+                    }
+                    drop(data);
+                    let index_name = index_name_for(&entry.collection);
+                    if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+                        let _ = index.remove(&entry.key).await;
+                    }
+                    applied += 1;
+                }
+                // Transaction markers and checkpoints describe the primary's
+                // local bookkeeping; data rows carry their own entries.
+                _ => {}
+            }
+        }
+        Ok(applied)
+    }
+
     pub async fn restore_from_storage(&self, schemas: &[CollectionSchema]) -> Result<usize> {
         for schema in schemas {
             if self.collection_exists(&schema.name).await {
                 continue;
             }
-            self.create_collection_with_index(
+            // Inner builder: restore runs during startup (and inside replica
+            // snapshot apply), where the read-only guard must not apply.
+            self.create_collection_inner(
                 &schema.name,
                 schema.dimension,
                 metric_name(&schema.distance_metric),
@@ -577,7 +913,7 @@ impl DataManager {
                 continue;
             };
 
-            let mut data = self.write_data().await;
+            let mut data = self.write_data_unchecked().await;
             if let Some(collection_data) = data.get_mut(collection) {
                 collection_data.insert(id.to_string(), VectorRecord { vector, metadata });
                 restored += 1;
@@ -685,6 +1021,22 @@ impl DataManager {
         metric: &str,
         index_type: &str,
     ) -> Result<()> {
+        self.ensure_writable()?;
+        self.create_collection_inner(name, dimension, metric, index_type)
+            .await
+    }
+
+    /// Create a collection together with its index, without the read-only
+    /// guard. Startup restore and replication replay build schemas through
+    /// this path; external writes go through
+    /// [`Self::create_collection_with_index`], which checks first.
+    async fn create_collection_inner(
+        &self,
+        name: &str,
+        dimension: usize,
+        metric: &str,
+        index_type: &str,
+    ) -> Result<()> {
         let (kind, engine_name) = parse_index_type(index_type);
         let distance_metric = parse_metric(metric);
         let index_name = index_name_for(name);
@@ -695,24 +1047,36 @@ impl DataManager {
                 return Err(CoreTexError::CollectionAlreadyExists(name.to_string()));
             }
 
-            collections.insert(
-                name.to_string(),
-                CollectionSchema {
-                    name: name.to_string(),
-                    dimension,
-                    distance_metric: distance_metric.clone(),
-                    indexes: vec![IndexConfig {
-                        name: index_name.clone(),
-                        index_type: kind,
-                        parameters: HashMap::new(),
-                    }],
-                    metadata_schema: None,
-                },
-            );
+            let schema = CollectionSchema {
+                name: name.to_string(),
+                dimension,
+                distance_metric: distance_metric.clone(),
+                indexes: vec![IndexConfig {
+                    name: index_name.clone(),
+                    index_type: kind,
+                    parameters: HashMap::new(),
+                }],
+                metadata_schema: None,
+            };
+            // Replication: the schema must reach the WAL while the
+            // collections lock is still held. A snapshot reads the log
+            // position and then the schemas; only lock-coupled WAL writes
+            // make every schema change visible to both halves.
+            self.wal_log(
+                WalEntryType::CreateCollection,
+                name,
+                "",
+                &[],
+                &serde_json::to_value(&schema)?,
+            )
+            .await?;
+
+            collections.insert(name.to_string(), schema);
         }
 
         {
-            let mut data = self.write_data().await;
+            // Inner builder: exempt from the read-only guard (see above).
+            let mut data = self.write_data_unchecked().await;
             data.insert(name.to_string(), HashMap::new());
         }
 
@@ -725,15 +1089,28 @@ impl DataManager {
     }
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
+        self.ensure_writable()?;
         let mut collections = self.collections.write().await;
 
         if !collections.contains_key(name) {
             return Err(CoreTexError::CollectionNotFound(name.to_string()));
         }
 
+        // Replication: log the removal inside the collections lock, matching
+        // the create path — the tail must carry every schema change that a
+        // snapshot taken before this point does not.
+        self.wal_log(
+            WalEntryType::DeleteCollection,
+            name,
+            "",
+            &[],
+            &serde_json::json!({}),
+        )
+        .await?;
+
         collections.remove(name);
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         data.remove(name);
         drop(data);
 
@@ -768,6 +1145,7 @@ impl DataManager {
         if old_name == new_name {
             return Ok(());
         }
+        self.ensure_writable()?;
 
         // 检查新名称是否已存在
         {
@@ -787,7 +1165,7 @@ impl DataManager {
 
         // 移出旧数据
         let old_data = {
-            let mut data = self.write_data().await;
+            let mut data = self.write_data().await?;
             data.remove(old_name)
                 .unwrap_or_default()
         };
@@ -817,7 +1195,7 @@ impl DataManager {
             });
         }
         {
-            let mut data = self.write_data().await;
+            let mut data = self.write_data().await?;
             data.insert(new_name.to_string(), old_data);
         }
 
@@ -886,7 +1264,7 @@ impl DataManager {
             }
         }
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -937,7 +1315,7 @@ impl DataManager {
     }
 
     pub async fn delete_vectors(&self, collection: &str, ids: &[String]) -> Result<usize> {
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1247,7 +1625,7 @@ impl DataManager {
             });
         }
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1472,6 +1850,7 @@ impl DataManager {
         collection: &str,
         filter: &serde_json::Value,
     ) -> Result<Vec<String>> {
+        self.ensure_writable()?;
         let mut ids: Vec<String> = {
             let data = self.data.read().await;
             let collection_data = data
@@ -1543,6 +1922,7 @@ impl DataManager {
     }
 
     pub async fn set_ttl(&self, collection: &str, id: &str, ttl_secs: u64) -> Result<()> {
+        self.ensure_writable()?;
         let storage = self.storage.read().await;
         let storage_key = format!("{}:{}", collection, id);
         storage.set_ttl(&storage_key, ttl_secs).await
@@ -1550,6 +1930,7 @@ impl DataManager {
     }
 
     pub async fn remove_ttl(&self, collection: &str, id: &str) -> Result<()> {
+        self.ensure_writable()?;
         let storage = self.storage.read().await;
         let storage_key = format!("{}:{}", collection, id);
         storage.remove_ttl(&storage_key).await
@@ -1557,6 +1938,9 @@ impl DataManager {
     }
 
     pub async fn purge_expired(&self) -> Result<usize> {
+        // Check before touching storage: purging first and failing the guard
+        // afterwards would desynchronise the two.
+        self.ensure_writable()?;
         // Ask storage which keys have elapsed *before* purging — afterwards the
         // TTL bookkeeping is gone. `storage.list()` cannot be used for this: it
         // already hides expired keys, so a before/after diff detects nothing and
@@ -1579,7 +1963,7 @@ impl DataManager {
             // collection. Longest prefix wins.
             let known: Vec<String> = self.collections.read().await.keys().cloned().collect();
 
-            let mut data = self.write_data().await;
+            let mut data = self.write_data().await?;
             for storage_key in &expired {
                 let Some((collection, id)) = Self::split_storage_key(storage_key, &known) else {
                     log::warn!("purge_expired: cannot resolve storage key {}", storage_key);
@@ -1651,7 +2035,7 @@ impl DataManager {
             }
         }
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1699,7 +2083,7 @@ impl DataManager {
         ids: &[String],
         txn_id: TransactionId,
     ) -> Result<usize> {
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1752,7 +2136,7 @@ impl DataManager {
             });
         }
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -1810,7 +2194,7 @@ impl DataManager {
         let mut inserted = Vec::new();
         let mut updated = Vec::new();
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
@@ -2016,7 +2400,7 @@ impl DataManager {
         }
 
         // 3. 写数据 + 索引
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or_else(|| {
                 let _ = tokio::runtime::Handle::try_current();
@@ -2102,7 +2486,7 @@ impl DataManager {
             .await
             .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
 
-        let mut data = self.write_data().await;
+        let mut data = self.write_data().await?;
         let collection_data = data.get_mut(collection)
             .ok_or_else(|| {
                 // Note: abort is fire-and-forget here; we log the error if it fails
