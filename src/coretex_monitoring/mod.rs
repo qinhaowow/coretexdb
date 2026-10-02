@@ -633,22 +633,84 @@ mod tests {
     #[tokio::test]
     async fn test_alert_manager() {
         let db_metrics = Arc::new(DatabaseMetrics::new());
-        let alert_mgr = AlertManager::new(db_metrics);
-        
+        let alert_mgr = AlertManager::new(Arc::clone(&db_metrics));
+
         let rule = AlertRule {
             name: "high_error_rate".to_string(),
             condition: AlertCondition::Threshold {
-                metric: "errors".to_string(),
+                metric: "coretexdb_error_ratio".to_string(),
                 operator: ">".to_string(),
                 value: 10.0,
             },
             severity: AlertSeverity::Critical,
             description: "Error rate is too high".to_string(),
         };
-        
+
         alert_mgr.add_rule(rule).await;
-        
+
+        // Unrecorded metric reads as 0.0, so a >10.0 threshold must not fire.
         let alerts = alert_mgr.check_alerts().await;
-        assert!(alerts.is_empty() || !alerts.is_empty());
+        assert!(
+            alerts.is_empty(),
+            "metric never recorded reads as 0.0, so a >10.0 threshold must not fire: {:?}",
+            alerts
+        );
+
+        // Crossing the threshold must fire exactly this rule.
+        db_metrics
+            .metrics
+            .set_gauge("coretexdb_error_ratio", 11.0, None)
+            .await;
+        let alerts = alert_mgr.check_alerts().await;
+        assert_eq!(alerts.len(), 1, "threshold crossed, expected exactly one alert");
+        assert_eq!(alerts[0].name, "high_error_rate");
+
+        // Falling back under the threshold must silence it again.
+        db_metrics
+            .metrics
+            .set_gauge("coretexdb_error_ratio", 3.0, None)
+            .await;
+        assert!(
+            alert_mgr.check_alerts().await.is_empty(),
+            "alert must stop firing once the metric drops back below the threshold"
+        );
+    }
+
+    /// `check_threshold` looks a metric up by its **exact** storage key, and
+    /// labelled series are stored as `name:label=value` (see `make_key`). A rule
+    /// naming the bare metric therefore never sees a labelled series.
+    ///
+    /// This is a real limitation of `AlertManager`, not of the test above — it
+    /// pins the current behaviour so a future fix has to update this test on
+    /// purpose. `DatabaseMetrics::record_error` records
+    /// `coretexdb_errors_total:type=io`, so a rule on `"errors"` (or on
+    /// `"coretexdb_errors_total"`) can never fire.
+    #[tokio::test]
+    async fn test_alert_rule_cannot_match_labelled_series() {
+        let db_metrics = Arc::new(DatabaseMetrics::new());
+        let alert_mgr = AlertManager::new(Arc::clone(&db_metrics));
+
+        for _ in 0..50 {
+            db_metrics.record_error("io").await;
+        }
+
+        alert_mgr
+            .add_rule(AlertRule {
+                name: "errors_by_bare_name".to_string(),
+                condition: AlertCondition::Threshold {
+                    metric: "coretexdb_errors_total".to_string(),
+                    operator: ">".to_string(),
+                    value: 1.0,
+                },
+                severity: AlertSeverity::Warning,
+                description: "bare name cannot see a labelled series".to_string(),
+            })
+            .await;
+
+        assert!(
+            alert_mgr.check_alerts().await.is_empty(),
+            "documents current behaviour: the counter is keyed \
+             `coretexdb_errors_total:type=io`, so a bare-name rule sees 0.0"
+        );
     }
 }

@@ -159,6 +159,15 @@ pub struct BatchedStreamEmbedder {
     embedder: StreamingEmbedder,
     pending: Arc<RwLock<Vec<StreamItem>>>,
     flush_interval: tokio::time::Duration,
+    /// Results produced by flushes that `push` triggered on its own.
+    ///
+    /// `push` returns `Result<(), String>`, so it cannot hand a
+    /// `Vec<StreamResult>` back to its caller. Before this existed, the
+    /// results of an automatic flush were simply dropped — combined with
+    /// `flush()` returning `Ok(vec![])`, every full batch disappeared with no
+    /// way for a caller to observe it. They are buffered here and drained via
+    /// [`Self::take_flushed_results`].
+    flushed: Arc<RwLock<Vec<StreamResult>>>,
 }
 
 impl BatchedStreamEmbedder {
@@ -167,32 +176,73 @@ impl BatchedStreamEmbedder {
             embedder: StreamingEmbedder::new(config),
             pending: Arc::new(RwLock::new(Vec::new())),
             flush_interval: tokio::time::Duration::from_millis(flush_interval_ms),
+            flushed: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
     pub async fn push(&self, item: StreamItem) -> Result<(), String> {
-        let mut pending = self.pending.write().await;
-        pending.push(item);
-        
-        if pending.len() >= self.embedder.batch_size {
-            drop(pending);
-            self.flush().await?;
+        let should_flush = {
+            let mut pending = self.pending.write().await;
+            pending.push(item);
+            pending.len() >= self.embedder.batch_size
+        };
+
+        if should_flush {
+            let results = self.flush().await?;
+            self.flushed.write().await.extend(results);
         }
-        
+
         Ok(())
     }
 
+    /// Take everything produced by flushes that `push` triggered on its own.
+    ///
+    /// Those results are otherwise unreachable: `push` cannot return them, and
+    /// by the time the caller calls [`Self::flush`] the batch is already gone.
+    pub async fn take_flushed_results(&self) -> Vec<StreamResult> {
+        std::mem::take(&mut *self.flushed.write().await)
+    }
+
+    /// Embed the buffered batch and return one result per item.
+    ///
+    /// There is no embedding backend reachable from here yet — the five
+    /// modality embedders in this module are hash-based placeholders and the
+    /// ONNX engine lives behind the `onnx` feature — so this reports every
+    /// item as an explicit per-item error instead of dropping the batch.
+    ///
+    /// The previous body took the buffer with `mem::take` and then returned
+    /// `Ok(vec![])`, silently discarding every full batch that `push` triggered.
+    /// Callers saw success and lost the data. An error per id keeps the failure
+    /// visible and keeps `len(results) == len(items)`.
     pub async fn flush(&self) -> Result<Vec<StreamResult>, String> {
         let items: Vec<StreamItem> = {
             let mut pending = self.pending.write().await;
             std::mem::take(&mut *pending)
         };
-        
+
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        
-        Ok(vec![])
+
+        let now = chrono::Utc::now().timestamp_millis();
+        for _ in 0..items.len() {
+            self.embedder.record_error().await;
+        }
+
+        Ok(items
+            .into_iter()
+            .map(|item| StreamResult {
+                id: item.id,
+                embedding: None,
+                error: Some(
+                    "no embedding backend is wired into BatchedStreamEmbedder::flush; \
+                     the modality embedders in this module are hash-based placeholders \
+                     and the ONNX engine requires the `onnx` feature"
+                        .to_string(),
+                ),
+                timestamp: now,
+            })
+            .collect())
     }
 
     pub async fn start_background_flush<F, Fut>(&self, processor: F)
@@ -385,6 +435,59 @@ use crate::coretex_core::Result;
             stats.buffer_size <= 2,
             "buffer_size {} 不应超过 batch_size 2",
             stats.buffer_size
+        );
+    }
+
+    /// Regression: `flush` used to `mem::take` the buffer and return
+    /// `Ok(vec![])`, so the full batch that the second `push` triggered was
+    /// destroyed. `buffer_size <= 2` could not catch that — the buffer was
+    /// emptied, not filled.
+    #[tokio::test]
+    async fn test_flush_reports_every_buffered_item() {
+        let config = EmbeddingConfig {
+            batch_size: 2,
+            ..Default::default()
+        };
+        let embedder = BatchedStreamEmbedder::new(config, 100);
+
+        for id in ["1", "2"] {
+            embedder
+                .push(StreamItem {
+                    id: id.to_string(),
+                    data: vec![],
+                    data_type: DataType::Text,
+                    metadata: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        // The second push hit batch_size, so `push` triggered the flush itself.
+        // That result cannot come back through `push`, so it has to be
+        // reachable via `take_flushed_results`.
+        let mut seen: Vec<String> = embedder
+            .take_flushed_results()
+            .await
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        seen.sort();
+
+        assert_eq!(
+            seen,
+            vec!["1".to_string(), "2".to_string()],
+            "the batch flushed by push must not vanish"
+        );
+
+        assert!(
+            embedder.flush().await.unwrap().is_empty(),
+            "buffer is empty after the automatic flush"
+        );
+
+        assert_eq!(
+            embedder.stats().await.errors,
+            2,
+            "each item without a backend must be counted as an error"
         );
     }
 }

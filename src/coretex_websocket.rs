@@ -839,12 +839,14 @@ mod tests {
         let server = WebSocketServer::new(WebSocketConfig::default());
         let _ = server.handle_connection("conn1".to_string()).await;
 
-        // 首次未认证，状态机将拒绝除 Auth 外的消息
+        // enable_auth=false 时，首次非 Auth 消息会把连接从 Connecting 推到
+        // Connected（websocket.rs:420-433），Ping 因此必须得到一个 Heartbeat。
+        // 原来这里是恒真的 `is_some() || is_none()`，什么都测不到。
         let response = server.handle_message("conn1", WebSocketMessage::Ping).await;
-        // 因为 enable_auth=false，状态机会自动转 Connected
-        // 第一次调用时 state == Connecting
-        // 由于 enable_auth=false，会直接转 Connected 并处理 Ping
-        assert!(response.is_some() || response.is_none());
+        match response {
+            Some(WebSocketMessage::Heartbeat(hb)) => assert_eq!(hb.seq, 1),
+            other => panic!("expected Heartbeat(seq=1) for Ping, got {:?}", other),
+        }
     }
 
     #[tokio::test]

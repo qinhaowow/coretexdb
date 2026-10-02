@@ -724,6 +724,21 @@ mod tests {
             operations,
         ).await;
 
-        assert!(result.is_ok() || result.is_err());
+        // `TransactionCoordinator::new` installs `LocalParticipantRpc`, which
+        // votes yes on prepare/commit, so this path must reach Committed and
+        // report Ok. The old `is_ok() || is_err()` asserted nothing at all —
+        // it could not distinguish a committed transaction from an early abort.
+        assert!(
+            result.is_ok(),
+            "single-participant 2PC with LocalParticipantRpc must commit: {:?}",
+            result
+        );
+
+        // The commit branch releases each acquired lock; verify one is gone
+        // rather than leaked past the transaction.
+        assert!(
+            coordinator.lock_manager.get_fence_token("test:1").await.is_none(),
+            "lock on test:1 must be released after commit"
+        );
     }
 }
