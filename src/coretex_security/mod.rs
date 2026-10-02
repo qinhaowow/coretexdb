@@ -498,7 +498,7 @@ mod encryption {
             let bytes = self.decrypt(encrypted).await?;
             
             let floats: Vec<f32> = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                 .collect();
             
@@ -573,6 +573,23 @@ mod audit {
         persistent_storage: bool,
         storage_path: String,
     }
+
+    /// Monotonic event id.
+    ///
+    /// The id used to be `format!("audit_{}", unix_seconds)`, so every event
+    /// within the same second shared one — under load that is most of them, and
+    /// an audit trail whose ids collide cannot be correlated or deduplicated.
+    /// Second-granularity is still the `timestamp`; the id adds a counter.
+    fn next_event_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("audit_{now}_{n}")
+    }
     
     impl AuditLogger {
         pub fn new(max_events: usize) -> Self {
@@ -609,24 +626,53 @@ mod audit {
         }
     
         async fn persist_event(&self, event: &AuditEvent) {
-            if let Ok(json) = serde_json::to_string(event) {
-                let path = Path::new(&self.storage_path);
-                let exists = path.exists();
-                let mut file = match std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
-                use std::io::Write;
-                if !exists {
-                    let _ = writeln!(file, "[{}]", json);
-                } else {
-                    let _ = writeln!(file, ",{}", json);
+            let Ok(json) = serde_json::to_string(event) else {
+                return;
+            };
+            let path = Path::new(&self.storage_path);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
             }
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            else {
+                return;
+            };
+            // One JSON object per line (JSONL), append-only.
+            //
+            // This used to write `[{...}]` on the first event and `,{...}` on
+            // every one after, producing
+            //
+            //     [{"..."}]
+            //     ,{"..."}
+            //     ,{"..."}
+            //
+            // which is neither a JSON array nor JSONL: `serde_json` rejects it,
+            // and a leading comma on line 2 is not valid anywhere. The persisted
+            // log was unreadable by the only thing that could read it. It went
+            // unnoticed because `with_persistent_storage` was never called, so
+            // this path never executed in production.
+            use std::io::Write;
+            let _ = writeln!(file, "{}", json);
+        }
+
+        /// Read the persisted log back.
+        ///
+        /// `None` if the file is absent. Individual malformed lines are skipped
+        /// rather than failing the whole read — a truncated final line (process
+        /// killed mid-write) must not make the entire history unreadable.
+        pub async fn load_persisted(&self) -> Option<Vec<AuditEvent>> {
+            let content = std::fs::read_to_string(&self.storage_path).ok()?;
+            let events: Vec<AuditEvent> = content
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            Some(events)
         }
     
         pub async fn log_event(
@@ -641,9 +687,9 @@ mod audit {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            
+
             let event = AuditEvent {
-                id: format!("audit_{}", now),
+                id: next_event_id(),
                 timestamp: now,
                 level,
                 action,
@@ -655,7 +701,43 @@ mod audit {
                 success,
                 error_message: None,
             };
-            
+
+            self.log(event).await;
+        }
+
+        /// Log an event with the client address attached.
+        ///
+        /// The address is what makes an audit trail worth having — without it,
+        /// a log of "user X logged in" cannot answer "from where".
+        pub async fn log_request(
+            &self,
+            level: AuditLevel,
+            action: AuditAction,
+            resource: &str,
+            user_id: Option<&str>,
+            client_ip: Option<&str>,
+            success: bool,
+            error: Option<&str>,
+        ) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let event = AuditEvent {
+                id: next_event_id(),
+                timestamp: now,
+                level,
+                action,
+                user_id: user_id.map(String::from),
+                username: None,
+                resource: resource.to_string(),
+                details: HashMap::new(),
+                ip_address: client_ip.map(String::from),
+                success,
+                error_message: error.map(String::from),
+            };
+
             self.log(event).await;
         }
     
@@ -778,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_login_tracking() {
         let logger = AuditLogger::new(100);
-        
+
         logger.log_event(
             AuditLevel::Warning,
             AuditAction::Login,
@@ -786,8 +868,140 @@ mod tests {
             Some("hacker"),
             false,
         ).await;
-        
+
         let failed = logger.get_failed_logins(10).await;
         assert!(!failed.is_empty());
+    }
+
+    /// Regression: `persist_event` wrote `[{...}]` for the first event and
+    /// `,{...}` for every one after. The file was therefore neither a JSON
+    /// array nor JSONL — `serde_json` rejected the leading comma on line 2, so
+    /// the persisted audit log was unreadable by the only thing that could read
+    /// it. It went unnoticed because nothing ever enabled persistent storage.
+    #[tokio::test]
+    async fn test_persisted_audit_log_is_parseable_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("audit.jsonl");
+        let logger = AuditLogger::new(100)
+            .with_persistent_storage(true)
+            .with_storage_path(path.to_str().unwrap());
+
+        for i in 0..5 {
+            logger
+                .log_event(
+                    AuditLevel::Info,
+                    AuditAction::Admin,
+                    &format!("resource-{i}"),
+                    Some("user1"),
+                    true,
+                )
+                .await;
+        }
+
+        // The raw bytes must not contain the old broken shapes.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.trim_start().starts_with('['),
+            "must be JSONL, not a JSON array: {raw}"
+        );
+        assert!(
+            !raw.contains("\n,{"),
+            "must not emit leading commas between records: {raw}"
+        );
+
+        // Every line parses independently.
+        for (i, line) in raw.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            serde_json::from_str::<AuditEvent>(line)
+                .unwrap_or_else(|e| panic!("line {i} is not valid JSON: {line:?} ({e})"));
+        }
+
+        // And the whole log round-trips.
+        let loaded = logger.load_persisted().await.expect("log must be readable");
+        assert_eq!(loaded.len(), 5);
+        assert_eq!(loaded[0].resource, "resource-0");
+        assert_eq!(loaded[4].resource, "resource-4");
+    }
+
+    /// Regression: ids were `audit_{unix_seconds}`, so every event in the same
+    /// second collided. Under load that is most of them, and a trail whose ids
+    /// collide cannot be correlated or deduplicated.
+    #[tokio::test]
+    async fn test_audit_event_ids_are_unique() {
+        let logger = AuditLogger::new(1000);
+
+        for _ in 0..50 {
+            logger
+                .log_event(AuditLevel::Info, AuditAction::Query, "q", None, true)
+                .await;
+        }
+
+        let events = logger.get_events(None, None, 1000).await;
+        assert_eq!(events.len(), 50);
+
+        let mut ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            before,
+            "event ids must be unique — 50 events in one second must not share \
+             one id"
+        );
+    }
+
+    /// A malformed line — e.g. a truncated write from a killed process — must
+    /// not make the entire history unreadable.
+    #[tokio::test]
+    async fn test_persisted_log_tolerates_a_truncated_final_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let logger = AuditLogger::new(100)
+            .with_persistent_storage(true)
+            .with_storage_path(path.to_str().unwrap());
+
+        logger
+            .log_event(AuditLevel::Info, AuditAction::Query, "a", None, true)
+            .await;
+        logger
+            .log_event(AuditLevel::Info, AuditAction::Query, "b", None, true)
+            .await;
+
+        // Simulate a process killed mid-write.
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"id\":\"audit_trunc\",\"resour");
+        std::fs::write(&path, raw).unwrap();
+
+        let loaded = logger.load_persisted().await.unwrap();
+        assert_eq!(
+            loaded.len(),
+            2,
+            "the two complete records must survive a truncated tail"
+        );
+    }
+
+    /// The client address is what makes an audit trail useful — a log of
+    /// "user X logged in" that cannot say from where answers little.
+    #[tokio::test]
+    async fn test_log_request_records_client_ip_and_error() {
+        let logger = AuditLogger::new(10);
+
+        logger
+            .log_request(
+                AuditLevel::Warning,
+                AuditAction::Login,
+                "auth",
+                Some("user1"),
+                Some("10.1.2.3"),
+                false,
+                Some("Invalid password"),
+            )
+            .await;
+
+        let events = logger.get_events(None, None, 10).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].ip_address.as_deref(), Some("10.1.2.3"));
+        assert_eq!(events[0].error_message.as_deref(), Some("Invalid password"));
+        assert!(!events[0].success);
     }
 }

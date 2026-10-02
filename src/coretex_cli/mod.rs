@@ -1107,6 +1107,9 @@ where
                 cors_allowed_origins: Vec::new(),
                 enable_auth,
                 rate_limit_per_minute: rate_limit,
+                // Audit events kept in memory for querying. The durable record
+                // is always the JSONL file under `<data>/logs/audit`.
+                audit_max_events: 10_000,
             };
 
             start_server_with_db(config, shared_db).await?;

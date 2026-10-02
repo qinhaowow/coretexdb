@@ -34,6 +34,11 @@ async fn app_for_test() -> (axum::Router, tempfile::TempDir) {
         rate_limit_per_minute: 0,
         enable_cors: false,
         cors_allowed_origins: vec![],
+        // `..Default::default()` rather than spelling every field: adding one
+        // to `ApiConfig` used to break this file, and `cargo test --lib` does
+        // not compile integration-test targets — the break only surfaced in the
+        // `full --all-targets` gate.
+        ..Default::default()
     };
 
     let app = build_app(&config, db).await.expect("router must build");
@@ -240,6 +245,7 @@ async fn app_for_test_with_auth() -> (axum::Router, tempfile::TempDir) {
         rate_limit_per_minute: 0,
         enable_cors: false,
         cors_allowed_origins: vec![],
+        ..Default::default()
     };
 
     let app = build_app(&config, db).await.expect("router must build");

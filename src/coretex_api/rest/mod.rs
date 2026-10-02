@@ -6,7 +6,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, delete, put},
-    Json, Router, extract::State,
+    Json, Router, extract::State, extract::Extension,
 };
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ use crate::{CoreTexDB, DbConfig};
 use crate::coretex_auth::{AuthService, Permission, RateLimiter};
 use crate::coretex_core::Result;
 use crate::coretex_monitoring::DatabaseMetrics;
+use crate::coretex_security::{AuditAction, AuditLevel, AuditLogger};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiConfig {
@@ -33,6 +34,10 @@ pub struct ApiConfig {
     pub cors_allowed_origins: Vec<String>,
     pub enable_auth: bool,
     pub rate_limit_per_minute: usize,
+    /// In-memory audit events retained for querying. The JSONL file on disk is
+    /// the durable record; this only bounds what `/api/admin/audit` can return
+    /// without re-reading the file.
+    pub audit_max_events: usize,
 }
 
 impl Default for ApiConfig {
@@ -46,6 +51,7 @@ impl Default for ApiConfig {
             cors_allowed_origins: Vec::new(),
             enable_auth: true,
             rate_limit_per_minute: 0,
+            audit_max_events: 10_000,
         }
     }
 }
@@ -273,6 +279,15 @@ pub struct ApiState {
     /// ever recorded a metric. Sharing one instance here is what makes the
     /// endpoint return anything other than an empty body.
     pub metrics: Arc<DatabaseMetrics>,
+    /// Audit trail.
+    ///
+    /// Previously unreachable in exactly the same way: `AuditLogger` lives in
+    /// `coretex_security`, is re-exported from `lib.rs`, and had no production
+    /// call site — `with_persistent_storage` was never invoked, so
+    /// `persist_event` never ran and the `logs/audit` directory that
+    /// `init_metadata` creates stayed empty. The install tree documented a
+    /// feature that did not exist.
+    pub audit: Option<Arc<AuditLogger>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -375,12 +390,35 @@ pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result
     // below, so both observe the same series.
     let metrics = Arc::new(DatabaseMetrics::new());
 
+    // Audit trail, appended to `<data_dir>/logs/audit/audit.jsonl` — the
+    // directory `init_metadata` already creates for exactly this purpose.
+    //
+    // Enabled whenever auth is, because the events worth recording are
+    // authentication and administrative ones. Running with auth off means
+    // there is no identity to attribute an action to, so a trail of anonymous
+    // operations would be misleading rather than useful.
+    let audit = if config.enable_auth {
+        // `config.log_dir` is a String, not a PathBuf. `init_metadata` creates
+        // `<log_dir>/audit`, so writing there keeps the audit trail inside the
+        // tree it already reserves for it.
+        let dir = std::path::PathBuf::from(&db.read().await.config.log_dir).join("audit");
+        let path = dir.join("audit.jsonl");
+        Some(Arc::new(
+            AuditLogger::new(config.audit_max_events)
+                .with_persistent_storage(true)
+                .with_storage_path(&path.to_string_lossy()),
+        ))
+    } else {
+        None
+    };
+
     let state = Arc::new(ApiState {
         db,
         auth: auth.clone(),
         rate_limiter: rate_limiter.clone(),
         enable_auth: config.enable_auth,
         metrics: metrics.clone(),
+        audit: audit.clone(),
     });
 
     let mut app = Router::new()
@@ -437,7 +475,8 @@ pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result
         app = app.layer(middleware::from_fn(move |req, next| {
             let auth = auth_clone.clone();
             let rl = rl_clone.clone();
-            async move { auth_middleware(req, next, auth, rl).await }
+            let audit = audit.clone();
+            async move { auth_middleware(req, next, auth, rl, audit).await }
         }));
     } else if rate_limiter.is_some() {
         // 即使没启用认证也启用速率限制
@@ -447,6 +486,21 @@ pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result
             async move { rate_limit_middleware(req, next, rl).await }
         }));
     }
+
+    // Guarantee a `Caller` always exists, whatever the auth configuration.
+    //
+    // Sits outside `auth_middleware`: it seeds a `Caller` with the client
+    // address and no identity, and the auth layer (inner) overwrites it with
+    // the verified user id when a token checks out. Handlers can then take
+    // `Extension<Caller>` and be certain the extractor resolves — with auth
+    // disabled there is no auth layer at all to seed it.
+    app = app.layer(middleware::from_fn(
+        |mut req: Request, next: Next| async move {
+            let ip = caller_ip_from_headers(req.headers());
+            req.extensions_mut().insert(Caller { user_id: None, ip });
+            Ok::<_, std::convert::Infallible>(next.run(req).await)
+        },
+    ));
 
     // Metrics instrumentation is applied LAST so that it is the OUTERMOST
     // layer — in axum the most recently added `Router::layer` wraps the others.
@@ -554,6 +608,7 @@ async fn auth_middleware(
     next: Next,
     auth: Arc<AuthService>,
     rate_limiter: Option<Arc<RateLimiter>>,
+    audit: Option<Arc<AuditLogger>>,
 ) -> std::result::Result<Response, StatusCode> {
     let path = req.uri().path().to_string();
 
@@ -592,12 +647,89 @@ async fn auth_middleware(
     };
 
     match auth.verify_token(&token).await {
-        Ok(_claims) => Ok(next.run(req).await),
-        Err(e) => Ok((StatusCode::UNAUTHORIZED, Json(serde_json::json!({
-            "status": "error",
-            "error": format!("Invalid token: {}", e)
-        }))).into_response()),
+        Ok(claims) => {
+            // Hand the caller's identity to the handler.
+            //
+            // It used to be discarded (`Ok(_claims)`), so no handler could know
+            // who was calling. That makes an audit trail impossible to write
+            // correctly: "collection deleted" without an actor answers none of
+            // the questions an audit log exists for.
+            //
+            // Only the user id goes in the extensions; the `Caller` extractor
+            // fills in the client address from the headers itself.
+            let mut req = req;
+            req.extensions_mut().insert(Caller {
+                user_id: Some(claims.sub.clone()),
+                ip: None,
+            });
+            Ok(next.run(req).await)
+        }
+        Err(e) => {
+            // A rejected token is itself worth recording — repeated failures
+            // against one address are what a credential-stuffing attempt looks
+            // like, and by the time anyone notices, the in-memory ring buffer
+            // that would have shown it has long since rolled over.
+            if let Some(audit) = &audit {
+                let ip = caller_ip_from_headers(req.headers());
+                audit
+                    .log_request(
+                        AuditLevel::Warning,
+                        AuditAction::Login,
+                        "auth",
+                        None,
+                        ip.as_deref(),
+                        false,
+                        Some(&format!("Invalid token: {}", e)),
+                    )
+                    .await;
+            }
+            Ok((StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+                "status": "error",
+                "error": format!("Invalid token: {}", e)
+            }))).into_response())
+        }
     }
+}
+
+/// First hop of `X-Forwarded-For`, else `X-Real-IP`.
+///
+/// Only the first entry is taken: everything after it is appended by
+/// intermediate proxies and is trivially forged by a client. Shared by the
+/// middleware and the `Caller` extractor so both derive the same address.
+fn caller_ip_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next().map(str::trim))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        })
+}
+
+/// Who is making this request, and from where.
+///
+/// Lives in the request extensions. `auth_middleware` overwrites the entry with
+/// the verified identity; a fallback layer guarantees one always exists, so
+/// handlers can take the plain built-in `Extension<Caller>` extractor and be
+/// certain it resolves.
+///
+/// Both fields are optional and frequently are: `user_id` is unknown when auth
+/// is disabled or the route is whitelisted, and `ip` is unknown when the
+/// request arrived without either forwarding header.
+///
+/// A custom `FromRequestParts` extractor was tried first and rejected: `Request`
+/// and `Json<T>` both consume the body and axum permits only one body-consuming
+/// argument, so an audited handler cannot see the caller that way. Reading the
+/// extensions through the built-in `Extension` extractor avoids that entirely.
+#[derive(Clone, Debug, Default)]
+pub struct Caller {
+    pub user_id: Option<String>,
+    pub ip: Option<String>,
 }
 
 async fn rate_limit_middleware(
@@ -620,24 +752,67 @@ async fn rate_limit_middleware(
 
 async fn login(
     State(state): State<Arc<ApiState>>,
-    Json(req): Json<LoginRequest>,
+    Extension(caller): Extension<Caller>,
+    Json(body): Json<LoginRequest>,
 ) -> Json<ApiResponse<LoginResponse>> {
-    match state.auth.authenticate(&req.username, &req.password).await {
-        Ok(token) => Json(ApiResponse::success(LoginResponse {
-            token: token.token,
-            user_id: token.user_id,
-            expires_in: 86400, // 24 小时
-        })),
-        Err(e) => Json(ApiResponse::error(&e)),
+    match state.auth.authenticate(&body.username, &body.password).await {
+        Ok(token) => {
+            if let Some(audit) = &state.audit {
+                // Both outcomes are recorded. A trail that only contains
+                // successes cannot answer "who was trying to get in", which is
+                // usually the first question worth asking.
+                audit
+                    .log_request(
+                        AuditLevel::Info,
+                        AuditAction::Login,
+                        "auth",
+                        Some(&token.user_id),
+                        caller.ip.as_deref(),
+                        true,
+                        None,
+                    )
+                    .await;
+            }
+            Json(ApiResponse::success(LoginResponse {
+                token: token.token,
+                user_id: token.user_id,
+                expires_in: 86400, // 24 小时
+            }))
+        }
+        Err(e) => {
+            if let Some(audit) = &state.audit {
+                audit
+                    .log_request(
+                        AuditLevel::Warning,
+                        AuditAction::Login,
+                        "auth",
+                        // The user id is unknown here — the credentials were
+                        // rejected — so the attempt is recorded against the
+                        // address and the error, which is the useful signal.
+                        None,
+                        caller.ip.as_deref(),
+                        false,
+                        Some(&e.to_string()),
+                    )
+                    .await;
+            }
+            Json(ApiResponse::error(&e))
+        }
     }
 }
 
 async fn register(
     State(state): State<Arc<ApiState>>,
+    Extension(caller): Extension<Caller>,
     req: Request,
 ) -> Json<ApiResponse<String>> {
     // 安全修复：注册端点要求 admin token 鉴权，或在系统无任何用户时
     // （首次启动）允许无鉴权注册第一个用户。
+    //
+    // The token is verified here rather than taken from `caller`, because this
+    // route is in `auth_middleware`'s whitelist — the middleware never checks
+    // it, so there is no `Caller` to read even when a valid admin token was
+    // sent.
     let user_count = state.auth.list_users().await.len();
     if user_count > 0 {
         // 已存在用户：要求 Authorization 头包含有效 admin token。
@@ -648,6 +823,19 @@ async fn register(
             .unwrap_or("");
         let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
+            if let Some(audit) = &state.audit {
+                audit
+                    .log_request(
+                        AuditLevel::Warning,
+                        AuditAction::Admin,
+                        "user",
+                        None,
+                        caller.ip.as_deref(),
+                        false,
+                        Some("Admin token required to register new users"),
+                    )
+                    .await;
+            }
             return Json(ApiResponse::error(
                 "Admin token required to register new users",
             ));
@@ -666,20 +854,51 @@ async fn register(
     }
 
     // 解析 body。
-    let (parts, body) = req.into_parts();
+    let (_, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
         Ok(b) => b,
         Err(e) => return Json(ApiResponse::error(&format!("Invalid body: {}", e))),
     };
     let parsed = serde_json::from_slice::<LoginRequest>(&bytes);
-    let req = match parsed {
+    let body = match parsed {
         Ok(r) => r,
         Err(e) => return Json(ApiResponse::error(&format!("Invalid JSON: {}", e))),
     };
-    let _ = parts; // 抑制未使用警告
-    match state.auth.create_user(&req.username, &req.password, None).await {
-        Ok(user_id) => Json(ApiResponse::success(user_id)),
-        Err(e) => Json(ApiResponse::error(&e)),
+    match state.auth.create_user(&body.username, &body.password, None).await {
+        Ok(user_id) => {
+            if let Some(audit) = &state.audit {
+                audit
+                    .log_request(
+                        AuditLevel::Info,
+                        AuditAction::Admin,
+                        &format!("user:{user_id}"),
+                        // On first run there is no caller yet — the first
+                        // registration is necessarily unauthenticated.
+                        caller.user_id.as_deref(),
+                        caller.ip.as_deref(),
+                        true,
+                        None,
+                    )
+                    .await;
+            }
+            Json(ApiResponse::success(user_id))
+        }
+        Err(e) => {
+            if let Some(audit) = &state.audit {
+                audit
+                    .log_request(
+                        AuditLevel::Warning,
+                        AuditAction::Admin,
+                        "user",
+                        caller.user_id.as_deref(),
+                        caller.ip.as_deref(),
+                        false,
+                        Some(&e.to_string()),
+                    )
+                    .await;
+            }
+            Json(ApiResponse::error(&e))
+        }
     }
 }
 
@@ -810,12 +1029,35 @@ async fn list_collections(
 
 async fn create_collection(
     State(state): State<Arc<ApiState>>,
+    Extension(caller): Extension<Caller>,
     Json(req): Json<CreateCollectionRequest>,
 ) -> Json<ApiResponse<CollectionInfo>> {
-    let db = state.db.read().await;
     let metric = req.distance_metric.unwrap_or_else(|| "cosine".to_string());
-    
-    match db.create_collection(&req.name, req.dimension, &metric).await {
+
+    let result = {
+        let db = state.db.read().await;
+        db.create_collection(&req.name, req.dimension, &metric).await
+    };
+
+    if let Some(audit) = &state.audit {
+        let (level, ok, err) = match &result {
+            Ok(_) => (AuditLevel::Info, true, None),
+            Err(e) => (AuditLevel::Warning, false, Some(e.to_string())),
+        };
+        audit
+            .log_request(
+                level,
+                AuditAction::Create,
+                &format!("collection:{}", req.name),
+                caller.user_id.as_deref(),
+                caller.ip.as_deref(),
+                ok,
+                err.as_deref(),
+            )
+            .await;
+    }
+
+    match result {
         Ok(_) => {
             let info = CollectionInfo {
                 name: req.name.clone(),
@@ -852,11 +1094,37 @@ async fn get_collection(
 
 async fn delete_collection(
     State(state): State<Arc<ApiState>>,
+    Extension(caller): Extension<Caller>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
-    let db = state.db.read().await;
-    
-    match db.delete_collection(&name).await {
+    let result = {
+        let db = state.db.read().await;
+        db.delete_collection(&name).await
+    };
+
+    // Deleting a collection destroys its data irreversibly. This is the single
+    // most consequential action the API exposes, so it is recorded whether it
+    // succeeded or failed — a repeated stream of failed deletes is someone
+    // probing for what exists.
+    if let Some(audit) = &state.audit {
+        let (level, ok, err) = match &result {
+            Ok(_) => (AuditLevel::Warning, true, None),
+            Err(e) => (AuditLevel::Warning, false, Some(e.to_string())),
+        };
+        audit
+            .log_request(
+                level,
+                AuditAction::Delete,
+                &format!("collection:{name}"),
+                caller.user_id.as_deref(),
+                caller.ip.as_deref(),
+                ok,
+                err.as_deref(),
+            )
+            .await;
+    }
+
+    match result {
         Ok(_) => Json(ApiResponse::success(format!("Collection '{}' deleted", name))),
         Err(e) => Json(ApiResponse::error(&e.to_string())),
     }
@@ -1270,6 +1538,7 @@ pub struct RestoreResponse {
 
 async fn create_backup(
     State(state): State<Arc<ApiState>>,
+    Extension(caller): Extension<Caller>,
     Json(req): Json<BackupRequest>,
 ) -> Json<ApiResponse<BackupResponse>> {
     let db = state.db.read().await;
@@ -1283,7 +1552,27 @@ async fn create_backup(
         .join("full")
         .join(&backup_name);
 
-    match crate::coretex_cli::data_backup::create(install_root, &backup_dir) {
+    let result = crate::coretex_cli::data_backup::create(install_root, &backup_dir);
+
+    if let Some(audit) = &state.audit {
+        let (ok, err) = match &result {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e.clone())),
+        };
+        audit
+            .log_request(
+                AuditLevel::Info,
+                AuditAction::Admin,
+                &format!("backup:{backup_name}"),
+                caller.user_id.as_deref(),
+                caller.ip.as_deref(),
+                ok,
+                err.as_deref(),
+            )
+            .await;
+    }
+
+    match result {
         Ok(manifest) => {
             let total_bytes: u64 = manifest.files.iter().map(|f| f.bytes).sum();
             Json(ApiResponse::success(BackupResponse {
@@ -1299,6 +1588,7 @@ async fn create_backup(
 
 async fn restore_backup(
     State(state): State<Arc<ApiState>>,
+    Extension(caller): Extension<Caller>,
     Json(req): Json<RestoreRequest>,
 ) -> Json<ApiResponse<RestoreResponse>> {
     let db = state.db.read().await;
@@ -1309,18 +1599,41 @@ async fn restore_backup(
         .join("full")
         .join(&req.backup_name);
 
-    if !backup_dir.exists() {
-        return Json(ApiResponse::error("Backup not found"));
+    let outcome = if !backup_dir.exists() {
+        Err("Backup not found".to_string())
+    } else {
+        crate::coretex_cli::data_backup::restore(&backup_dir, install_root)
+            .map(|(manifest, count)| (manifest.created_at, count))
+            .map_err(|e| e)
+    };
+
+    // Restore overwrites live data with a snapshot. If one is ever triggered by
+    // someone who should not have been able to, the only way to find out is a
+    // record that it happened and who did it.
+    if let Some(audit) = &state.audit {
+        let (ok, err) = match &outcome {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e.clone())),
+        };
+        audit
+            .log_request(
+                AuditLevel::Warning,
+                AuditAction::Admin,
+                &format!("restore:{}", req.backup_name),
+                caller.user_id.as_deref(),
+                caller.ip.as_deref(),
+                ok,
+                err.as_deref(),
+            )
+            .await;
     }
 
-    match crate::coretex_cli::data_backup::restore(&backup_dir, install_root) {
-        Ok((manifest, count)) => {
-            Json(ApiResponse::success(RestoreResponse {
-                status: "ok".to_string(),
-                files_restored: count,
-                message: format!("Restored {} files from backup '{}'", count, manifest.created_at),
-            }))
-        }
+    match outcome {
+        Ok((created_at, count)) => Json(ApiResponse::success(RestoreResponse {
+            status: "ok".to_string(),
+            files_restored: count,
+            message: format!("Restored {} files from backup '{}'", count, created_at),
+        })),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
