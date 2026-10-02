@@ -154,6 +154,12 @@ impl AuthService {
 
     /// Create a persistent AuthService that loads/saves users under
     /// `<data_dir>/metadata/auth.json`.
+    ///
+    /// `data_dir` is expected to be the directory that already *contains* the
+    /// `metadata/` folder — i.e. `DbConfig::data_dir`, not the install root.
+    /// The REST and gRPC servers pass exactly that, so the file lands beside
+    /// `metadata.json` and the placeholder `auth.json` that `init_metadata()`
+    /// writes, rather than in a second, competing directory.
     pub fn with_persistence(data_dir: &str) -> Self {
         let meta_dir = std::path::PathBuf::from(data_dir).join("metadata");
         let _ = std::fs::create_dir_all(&meta_dir);
@@ -177,6 +183,13 @@ impl AuthService {
         }
     }
 
+    /// Persist the user table atomically: write a sibling temp file, fsync it,
+    /// then rename over the target.
+    ///
+    /// A plain `fs::write` truncates first, so a crash (or a concurrent reader)
+    /// could observe a half-written file — and this file holds the only copy of
+    /// every account. Renaming within the same directory also keeps the file on
+    /// one filesystem. Mirrors `CoreTexDB::write_file_atomic`.
     async fn save_to_disk(&self) {
         if let Some(ref path) = self.persist_path {
             let users = self.users.read().await.clone();
@@ -185,7 +198,18 @@ impl AuthService {
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                let _ = std::fs::write(path, json);
+                let tmp = path.with_extension("json.tmp");
+                let written = (|| -> std::io::Result<()> {
+                    use std::io::Write as _;
+                    let mut f = std::fs::File::create(&tmp)?;
+                    f.write_all(json.as_bytes())?;
+                    f.sync_all()?;
+                    std::fs::rename(&tmp, path)
+                })();
+                if let Err(e) = written {
+                    let _ = std::fs::remove_file(&tmp);
+                    eprintln!("failed to persist auth users to {}: {}", path.display(), e);
+                }
             }
         }
     }
@@ -681,12 +705,101 @@ mod tests {
     use super::*;
 use crate::coretex_core::Result;
 
+    /// Recursively collect paths whose file name equals `name`.
+    /// Walks the tree by hand rather than pulling in a crate for one test.
+    fn collect_named(dir: &std::path::Path, name: &str, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_named(&path, name, out);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Recursively collect paths whose file name ends with `suffix`.
+    fn collect_suffix(dir: &std::path::Path, suffix: &str, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_suffix(&path, suffix, out);
+            } else if path.to_string_lossy().ends_with(suffix) {
+                out.push(path);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_create_user() {
         let auth = AuthService::new();
 
         let result = auth.create_user("testuser", "password123", Some("test@example.com")).await;
         assert!(result.is_ok());
+    }
+
+    /// Regression: REST and gRPC both built `AuthService::new()`, which keeps
+    /// users in memory only, so a server started with `--auth` lost every
+    /// registered administrator on restart. `with_persistence` existed but was
+    /// never wired up.
+    #[tokio::test]
+    async fn test_users_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        let user_id = {
+            let auth = AuthService::with_persistence(root);
+            auth.create_user("alice", "hunter2", None).await.unwrap()
+        };
+
+        // The file the constructor documents.
+        let path = std::path::Path::new(root).join("metadata").join("auth.json");
+        assert!(path.exists(), "auth.json should be written under <data_dir>/metadata/");
+
+        // Exactly one auth.json. The REST/gRPC servers hand `with_persistence`
+        // the directory that already contains `metadata/`, so a second join
+        // would have produced a competing copy elsewhere in the tree.
+        let mut found = Vec::new();
+        collect_named(std::path::Path::new(root), "auth.json", &mut found);
+        assert_eq!(
+            found.len(),
+            1,
+            "there must be exactly one auth.json, found: {:?}",
+            found
+        );
+
+        // Atomic write leaves no temp file behind.
+        let mut leftovers = Vec::new();
+        collect_suffix(std::path::Path::new(root), ".tmp", &mut leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "temp files must be renamed away: {:?}",
+            leftovers
+        );
+
+        // A fresh instance over the same directory must know the user.
+        let reopened = AuthService::with_persistence(root);
+        assert_eq!(reopened.list_users().await.len(), 1, "user list must reload");
+        assert!(
+            reopened
+                .authenticate("alice", "hunter2")
+                .await
+                .is_ok(),
+            "the reloaded user must still authenticate"
+        );
+
+        // And a wrong password must still be rejected after reload — i.e. the
+        // hash came from disk, not from a stale in-memory copy.
+        assert!(
+            reopened.authenticate("alice", "wrong").await.is_err(),
+            "reloaded hash must be used for verification"
+        );
+
+        // Identity has to survive too: JWT `sub` is the user id.
+        let listed = reopened.list_users().await;
+        assert_eq!(listed[0].id, user_id, "user id must be stable across restarts");
     }
 
     /// Regression: `decode_jwt` claimed to only accept HS256 but never decoded

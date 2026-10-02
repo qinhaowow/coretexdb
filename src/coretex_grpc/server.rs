@@ -324,10 +324,24 @@ pub async fn start_grpc_server_shared(
     db: Arc<RwLock<CoreTexDB>>,
     config: GrpcConfig,
 ) -> Result<()> {
+    // Read the data dir before `db` is moved into the service.
+    //
+    // Auth users must survive a restart: `AuthService::new()` keeps them in
+    // memory only, so a server started with `--auth` lost every registered
+    // administrator on deploy. `with_persistence` existed but was never called
+    // here or in the REST layer.
+    let auth_data_dir = if config.enable_auth {
+        Some(db.read().await.config.data_dir.clone())
+    } else {
+        None
+    };
+
     let service = CoretexService::from_shared(db);
 
-    // 认证服务
-    let auth = Arc::new(AuthService::new());
+    let auth = Arc::new(match auth_data_dir {
+        Some(dir) => AuthService::with_persistence(&dir),
+        None => AuthService::new(),
+    });
 
     // 限流器
     let _rate_limiter = if config.rate_limit_per_minute > 0 {

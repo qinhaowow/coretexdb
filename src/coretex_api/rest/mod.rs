@@ -292,7 +292,26 @@ pub async fn start_server_with_db(
     config: ApiConfig,
     db: Arc<RwLock<CoreTexDB>>,
 ) -> Result<()> {
-    let auth = Arc::new(AuthService::new());
+    // Persist users under `<data_dir>/metadata/auth.json`.
+    //
+    // `AuthService::new()` keeps them in memory only, so every registered user
+    // vanished on restart — a server started with `--auth` lost its
+    // administrators on every deploy. `with_persistence` existed but was never
+    // called from here.
+    //
+    // The directory comes from the DB's own config, not from
+    // `ApiConfig::data_dir`: the latter is the install root the user passed to
+    // `--data-dir`, whereas `DbConfig::data_dir` is already `<root>/data/coretex`,
+    // which is where `init_metadata()` puts the placeholder auth.json. Using the
+    // install root produced a second, competing auth.json one level up.
+    //
+    // Only pay for it when auth is on; otherwise every default deployment would
+    // create a metadata dir it never uses.
+    let auth = Arc::new(if config.enable_auth {
+        AuthService::with_persistence(&db.read().await.config.data_dir)
+    } else {
+        AuthService::new()
+    });
     let rate_limiter = if config.rate_limit_per_minute > 0 {
         Some(Arc::new(RateLimiter::new(config.rate_limit_per_minute, 60)))
     } else {
@@ -307,6 +326,7 @@ pub async fn start_server_with_db(
     });
 
     let mut app = Router::new()
+        .route("/console", get(serve_console))
         .route("/health", get(health_check))
         .route("/api/auth/login", post(login))
         .route("/api/auth/register", post(register))
@@ -402,6 +422,7 @@ pub async fn start_server_with_db(
     println!("Auth enabled: {}", config.enable_auth);
     println!("Rate limit: {} req/min", config.rate_limit_per_minute);
     println!("API endpoints:");
+    println!("  GET  /console                              - Browser console");
     println!("  GET  /health                              - Health check");
     println!("  POST /api/auth/login                      - Login");
     println!("  POST /api/auth/register                   - Register");
@@ -425,6 +446,30 @@ pub async fn start_server_with_db(
 }
 
 // =============== 认证中间件 ===============
+
+/// `GET /console` — 浏览器控制台。
+///
+/// The page is embedded rather than read from disk: the install root's
+/// `share/doc/console.html` is not necessarily next to the binary (and a
+/// single-file deployment may not ship it at all), so a file read here would
+/// make the route work only in some layouts. Same-origin serving also sidesteps
+/// the cross-origin block that stops a `file://` page from calling the API.
+///
+/// It is a static, dependency-free client for the routes below — no database
+/// access, no state, nothing to authenticate against beyond what the API
+/// itself requires.
+async fn serve_console() -> Response {
+    const PAGE: &str = include_str!("../../../share/doc/console.html");
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/html; charset=utf-8",
+        )],
+        PAGE,
+    )
+        .into_response()
+}
 
 /// 从请求中提取客户端 IP，优先使用 X-Forwarded-For（首个有效 IP），
 /// 再回退 X-Real-IP，最后回退到 Authorization 标识。
@@ -467,7 +512,11 @@ async fn auth_middleware(
     // 白名单：登录、注册、健康检查、复制数据面不需要认证
     // 注意：/api/auth/register 在 register handler 内部会强制要求 admin token
     // （或首次启动时无用户时放开），这里仍放行至 handler。
+    //
+    // /console 是静态页面，不触碰任何数据；放行它只是为了浏览器能打开。
+    // 它发出的每个 API 请求仍各自经过这里的认证检查。
     if path == "/health" || path == "/api/auth/login" || path == "/api/auth/register"
+        || path == "/console"
         || path.starts_with("/replication/") {
         return Ok(next.run(req).await);
     }
