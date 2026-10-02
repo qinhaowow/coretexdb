@@ -440,13 +440,32 @@ impl AuthService {
             return Err("Invalid token format".to_string());
         }
 
-        let header = parts[0];
+        let header_b64 = parts[0];
         let payload_b64 = parts[1];
         let provided_sig = parts[2];
 
+        // 解析 header 并强制算法为 HS256。
+        //
+        // 这段检查之前根本不存在 —— 注释声称"只接受 HS256"并把 `header` 取了出来，
+        // 却从未 base64 解码它。`alg=none` 实际会被下面的 HMAC 校验挡下（签名对不上），
+        // 但"算法替换"防护是缺失的：如果将来引入支持多算法的依赖，一个
+        // 声明 `alg` 不同的 header 会被照单签收。
+        let header_json = base64_decode(header_b64).map_err(|e| e.to_string())?;
+        let header: serde_json::Value =
+            serde_json::from_slice(&header_json).map_err(|e| e.to_string())?;
+        match header.get("alg").and_then(|a| a.as_str()) {
+            Some("HS256") => {}
+            Some(other) => {
+                return Err(format!(
+                    "Unsupported JWT algorithm: {other} (only HS256 is accepted)"
+                ))
+            }
+            None => return Err("JWT header is missing \"alg\"".to_string()),
+        }
+
         // 安全修复：解码时必须验证 HMAC 签名，防止攻击者伪造任意 JWT
         // 任意拼接 base64 header.payload 后用任意签名都会在这里被拒绝。
-        let signing_input = format!("{}.{}", header, payload_b64);
+        let signing_input = format!("{}.{}", header_b64, payload_b64);
         let expected_sig = self.hmac_sha256(&signing_input);
 
         // 使用常量时间比较，避免签名比较的时序侧信道。
@@ -456,9 +475,6 @@ impl AuthService {
 
         let payload = base64_decode(payload_b64).map_err(|e| e.to_string())?;
         let claims: TokenClaims = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
-
-        // 额外校验：算法必须为 HS256，避免 alg=none 攻击或算法替换攻击。
-        // 这里我们只接受 HS256 编码的 token。
 
         Ok(claims)
     }
@@ -668,9 +684,63 @@ use crate::coretex_core::Result;
     #[tokio::test]
     async fn test_create_user() {
         let auth = AuthService::new();
-        
+
         let result = auth.create_user("testuser", "password123", Some("test@example.com")).await;
         assert!(result.is_ok());
+    }
+
+    /// Regression: `decode_jwt` claimed to only accept HS256 but never decoded
+    /// the header, so no algorithm check existed at all. This pins the check.
+    #[tokio::test]
+    async fn test_decode_jwt_rejects_non_hs256_algorithm() {
+        let auth = AuthService::new();
+
+        let claims = TokenClaims {
+            sub: "user_abc".to_string(),
+            username: "alice".to_string(),
+            roles: vec!["admin".to_string()],
+            exp: u64::MAX,
+            iat: 0,
+            iss: "coretex".to_string(),
+        };
+
+        // Forge a token whose header advertises `alg: none`, signed with the real
+        // key so that the HMAC check alone would have accepted it.
+        let header_none = base64_encode(b"{\"alg\":\"none\",\"typ\":\"JWT\"}");
+        let payload = base64_encode(serde_json::to_string(&claims).unwrap().as_bytes());
+        let forged_sig = auth.hmac_sha256(&format!("{}.{}", header_none, payload));
+        let forged = format!("{}.{}.{}", header_none, payload, forged_sig);
+
+        let err = auth
+            .decode_jwt(&forged)
+            .expect_err("alg=none must be rejected");
+        assert!(
+            err.contains("Unsupported JWT algorithm"),
+            "expected an algorithm rejection, got: {}",
+            err
+        );
+
+        // A header with no `alg` at all is equally unacceptable.
+        let header_missing = base64_encode(b"{\"typ\":\"JWT\"}");
+        let payload2 = base64_encode(serde_json::to_string(&claims).unwrap().as_bytes());
+        let sig2 = auth.hmac_sha256(&format!("{}.{}", header_missing, payload2));
+        let no_alg = format!("{}.{}.{}", header_missing, payload2, sig2);
+        let err = auth
+            .decode_jwt(&no_alg)
+            .expect_err("a header without alg must be rejected");
+        assert!(
+            err.contains("missing"),
+            "expected a missing-alg error, got: {}",
+            err
+        );
+
+        // And the legitimate HS256 token still round-trips.
+        let good = auth.encode_jwt(&claims).expect("encode");
+        let decoded = auth
+            .decode_jwt(&good)
+            .expect("HS256 token must still be accepted");
+        assert_eq!(decoded.sub, "user_abc");
+        assert_eq!(decoded.username, "alice");
     }
 
     #[tokio::test]

@@ -139,13 +139,23 @@ impl Interceptor for AuthInterceptor {
 
         match claims {
             Ok(claims) => {
-                // 注入 user_id 到 metadata
+                // 注入已认证主体到 metadata。
+                //
+                // 这里原本是 `claims.sub.parse::<u64>()`，但 create_user 生成的 id 是
+                // `format!("user_{}", uuid_simple())`（见 AuthService::create_user），
+                // 永远无法解析成 u64 —— 于是 `x-user-id` 从未被插入，认证通过的调用
+                // 在服务端侧仍不带任何身份信息。原代码用 `if let Ok(...)` 静默跳过，
+                // 不留任何痕迹。
+                //
+                // 现在直接透传 sub 字符串本身，不假设 id 的格式。
                 let mut req = request;
-                if let Ok(user_id) = claims.sub.parse::<u64>() {
-                    req.metadata_mut().insert(
-                        "x-user-id",
-                        user_id.to_string().parse().unwrap_or_else(|_| "0".parse().unwrap()),
-                    );
+                // `MetadataValue` has no Default, and a non-ASCII value would
+                // silently vanish, so insert only when the string parses.
+                if let Ok(v) = claims.sub.parse() {
+                    req.metadata_mut().insert("x-user-id", v);
+                }
+                if let Ok(v) = claims.username.parse() {
+                    req.metadata_mut().insert("x-username", v);
                 }
                 Ok(req)
             }
