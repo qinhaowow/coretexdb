@@ -59,11 +59,17 @@ mod wal_integration_tests {
 
         assert_eq!(ids, vec!["k1"]);
 
-        // WAL should have the entry
+        // WAL should contain the insert. Note `create_collection` now also
+        // journals a `CreateCollection` entry, so the insert is not at index 0
+        // — search for it by key instead of assuming position.
         let entries = wal.read_all_entries().await.unwrap();
-        assert!(!entries.is_empty(), "WAL should contain insert entry");
-        assert_eq!(entries[0].entry_type, WalEntryType::Insert);
-        assert_eq!(entries[0].key, "k1");
+        let insert = entries
+            .iter()
+            .find(|e| e.entry_type == WalEntryType::Insert && e.key == "k1")
+            .unwrap_or_else(|| {
+                panic!("WAL should contain an Insert entry for k1, got {:?}", entries)
+            });
+        assert_eq!(insert.entry_type, WalEntryType::Insert);
 
         // Data should be in memory
         let record = dm.get_vector("test", "k1").await.unwrap();

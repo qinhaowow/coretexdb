@@ -412,6 +412,48 @@ impl WriteAheadLog {
     /// Replay all WAL entries through a handler.
     /// Transactions are grouped: if an entry has a transaction_id,
     /// all entries for that txn are passed together.
+    /// Highest sequence assigned so far (restored from the segments on
+    /// `init`).
+    ///
+    /// Replication reads this as the primary's log position: it comes from
+    /// the same counter `append` increments, so anything written after this
+    /// read carries a higher sequence and is picked up by a later
+    /// [`Self::read_entries_since`].
+    pub async fn last_sequence(&self) -> u64 {
+        *self.sequence_counter.read().await
+    }
+
+    /// Entries with `sequence > since`, in order, plus whether the answer is
+    /// still *continuous* from `since`.
+    ///
+    /// `truncated` is true when entries between `since` and the oldest
+    /// surviving sequence are gone (segments discarded, or the log was reset
+    /// and the client's position now lies beyond it). A replication client
+    /// must then fall back to a full resync instead of silently skipping
+    /// history.
+    pub async fn read_entries_since(
+        &self,
+        since: u64,
+    ) -> std::io::Result<(Vec<WalEntry>, bool)> {
+        let entries = self.read_all_entries().await?;
+        let last = *self.sequence_counter.read().await;
+        let truncated = match entries.first() {
+            // A hole below `since`, or a position ahead of everything this
+            // log ever produced (the log was reset under the client).
+            Some(oldest) => {
+                oldest.sequence > since.saturating_add(1) || since > last
+            }
+            // Empty log: any non-zero position has seen entries this log can
+            // no longer produce.
+            None => since > 0,
+        };
+        let after: Vec<WalEntry> = entries
+            .into_iter()
+            .filter(|e| e.sequence > since)
+            .collect();
+        Ok((after, truncated))
+    }
+
     pub async fn replay(
         &self,
         handler: &(dyn Fn(&[WalEntry]) -> Result<(), String> + Send + Sync),
@@ -909,5 +951,104 @@ mod tests {
             let new_seq = wal.append(&mut entry).await.unwrap();
             assert_eq!(new_seq, 4);
         }
+    }
+
+    #[tokio::test]
+    async fn test_read_entries_since_filters_and_reports_continuity() {
+        let (_dir, wal) = setup_wal().await;
+        for i in 0..5 {
+            let mut entry = WalEntry::new(
+                WalEntryType::Insert,
+                "c",
+                &format!("k{i}"),
+                serde_json::json!({}),
+            );
+            wal.append(&mut entry).await.unwrap();
+        }
+
+        assert_eq!(wal.last_sequence().await, 5);
+
+        // Continuous tail: everything strictly after position 2, nothing truncated.
+        let (batch, truncated) = wal.read_entries_since(2).await.unwrap();
+        let seqs: Vec<u64> = batch.iter().map(|e| e.sequence).collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
+        assert!(!truncated);
+
+        // Caught up: no new entries, still continuous.
+        let (batch, truncated) = wal.read_entries_since(5).await.unwrap();
+        assert!(batch.is_empty());
+        assert!(!truncated);
+
+        // Position ahead of everything the log produced = the log was reset
+        // under the client; a full resync is required.
+        let (batch, truncated) = wal.read_entries_since(99).await.unwrap();
+        assert!(batch.is_empty());
+        assert!(truncated);
+
+        // Fresh log, position 0: an empty log is a legitimate full answer.
+        let (_dir2, wal2) = setup_wal().await;
+        let (batch, truncated) = wal2.read_entries_since(0).await.unwrap();
+        assert!(batch.is_empty());
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn test_read_entries_since_reports_discarded_segments() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().as_ref().to_string();
+
+        // One entry per segment. Note `append` rotates *before* writing, so the
+        // segment created by `init` (wal-000001.log) stays empty forever and
+        // sequence N lands in segment N+1.
+        let wal = Arc::new(WriteAheadLog::new(&path).with_max_segment_size(1));
+        wal.init().await.unwrap();
+        for i in 0..4 {
+            let mut entry = WalEntry::new(
+                WalEntryType::Insert,
+                "c",
+                &format!("k{i}"),
+                serde_json::json!({}),
+            );
+            wal.append(&mut entry).await.unwrap();
+        }
+        assert!(wal.segment_count().await >= 5);
+
+        // Discard segments holding nothing, sequence 1 and sequence 2, so
+        // 1..=2 are gone for good and 3..=4 survive.
+        {
+            let mut segments = wal.segments.write().await;
+            let victims: Vec<_> = segments.drain(..3).collect();
+            drop(segments);
+            for victim in victims {
+                std::fs::remove_file(victim).unwrap();
+            }
+        }
+
+        // Re-init over the surviving segments (restart after GC).
+        let wal = Arc::new(WriteAheadLog::new(&path));
+        wal.init().await.unwrap();
+
+        let (batch, truncated) = wal.read_entries_since(0).await.unwrap();
+        assert!(
+            truncated,
+            "hole below position 0 must be reported; oldest surviving sequence is {:?}",
+            batch.first().map(|e| e.sequence),
+        );
+        let seqs: Vec<u64> = batch.iter().map(|e| e.sequence).collect();
+        assert_eq!(
+            seqs,
+            vec![3, 4],
+            "only the surviving sequences come back, in order"
+        );
+
+        // Position 1 still has a hole (2 is gone).
+        let (_, truncated) = wal.read_entries_since(1).await.unwrap();
+        assert!(truncated);
+
+        // The surviving entries must still be reachable when the caller
+        // admits to having seen up to 2 — no hole at or below that position.
+        let (batch, truncated) = wal.read_entries_since(2).await.unwrap();
+        assert!(!truncated, "no hole at or below position 2");
+        assert_eq!(batch.len(), 2);
     }
 }
