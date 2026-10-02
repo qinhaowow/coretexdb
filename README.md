@@ -1,20 +1,30 @@
-# CoreTexDB V0.2.4 — 多模态向量数据库 · 操作手册
+# CoreTexDB V0.2.4 — 向量数据库 · 操作手册
 
 [![Build](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml/badge.svg)](https://github.com/qinhaowow/coretexdb/actions/workflows/build.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-blue.svg)](https://www.rust-lang.org/)
-![Tests](https://img.shields.io/badge/tests-485%20passed%20%2F%200%20failed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-537%20passed%20%2F%200%20failed-brightgreen)
 
 > 开发者: qinhaowo@126.com
 > 辅助工具: MiMo v2.5 大语言模型
 
 ---
 
-**CoreTexDB** is a multimodal vector database written in Rust. It ships as a
+**CoreTexDB** is a vector database written in Rust. It ships as a
 **single `coretex` binary** and provides ANN indexes (`brute_force`, `hnsw`,
-`ivf`, `pq`), WAL-backed durability with last-write-wins recovery, index
-persistence with checksum-verified load-or-rebuild, TTL, metadata filtering,
-B-C-D-D (`.cdb`) encryption, and REST / GraphQL / gRPC / WebSocket interfaces.
+`ivf`, `pq`), append-only-log durability, index persistence with
+checksum-verified load-or-rebuild, TTL, metadata filtering, B-C-D-D (`.cdb`)
+encryption, and **REST + gRPC** server interfaces.
+
+On durability: every write lands in an append-only log under `data/coretex/store/`,
+fsynced by default (`DbConfig::sync_writes`). A separate WAL journal also exists
+and is selected by `--wal-dir`, but it is **off by default** — the store log
+already is the durability mechanism, so a second journal would only duplicate it.
+Last-write-wins recovery is what you get; there is no multi-version rollback.
+
+**Not every module in this repository is reachable from the CLI, REST or gRPC.**
+Read [§0 能力状态](#0-能力状态) before trusting a feature name you saw in the
+source tree.
 
 源码仓库：[GitHub](https://github.com/qinhaowow/coretexdb) ·
 [Gitee 镜像](https://gitee.com/HaoqinOW/coretexdb)
@@ -23,7 +33,8 @@ B-C-D-D (`.cdb`) encryption, and REST / GraphQL / gRPC / WebSocket interfaces.
 
 | 想做什么 | 去哪里 |
 | --- | --- |
-| 30 秒跑起来 | [`cargo run --example quickstart`](examples/quickstart.rs) |
+| 30 秒跑起来 | [`cargo run --example mvp`](examples/mvp.rs) — 最小可运行链路，每步带断言 |
+| 其他示例 | [`examples/quickstart.rs`](examples/quickstart.rs) · [`filter_search`](examples/filter_search.rs) · [`persistence`](examples/persistence.rs) |
 | 过滤搜索、持久化示例 | [`examples/`](examples/) |
 | 了解分层、数据流与锁顺序 | [`docs/architecture.md`](docs/architecture.md) |
 | 参与开发 / 找活干 | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`docs/roadmap.md`](docs/roadmap.md) |
@@ -34,17 +45,78 @@ B-C-D-D (`.cdb`) encryption, and REST / GraphQL / gRPC / WebSocket interfaces.
 
 ## 目录
 
+0. [能力状态（哪些真能用）](#0-能力状态)
 1. [安装与启动](#1-安装与启动)
 2. [核心概念](#2-核心概念)
 3. [服务器模式（服务端 + 客户端连接）](#3-服务器模式)
 4. [CLI 命令大全](#4-cli-命令大全)
 5. [REST API](#5-rest-api)
-6. [GraphQL API](#6-graphql-api)
+6. [GraphQL API（⚠️ 未接线）](#6-graphql-api-)
 7. [gRPC API](#7-grpc-api)
 8. [SQL 查询](#8-sql-查询)
 9. [B-C-D-D 加密（.cdb 文件）](#9-b-c-d-d-加密)
 10. [数据目录结构](#10-数据目录结构)
 11. [常见问题排查](#11-常见问题排查)
+
+---
+
+## 0. 能力状态
+
+仓库里有相当多模块尚未接线。这里按「你能不能真的用上」分类，不按代码量分类。
+未接线的模块仍在 `src/` 里、仍有 doc comment 和单元测试，甚至从 `lib.rs`
+`pub use` 导出——但**没有任何 CLI / REST / gRPC 入口能到达它们**。看到源码里有
+某个类型，不等于产品里有这个功能。
+
+### ✅ 可用
+
+| 能力 | 入口 |
+| --- | --- |
+| 向量索引 `brute_force` / `hnsw` / `ivf` / `pq` | CLI · REST · gRPC |
+| append-only log 持久化、启动恢复 | 自动 |
+| 索引持久化（校验和匹配则加载，否则重建） | 自动 · `coretex index save\|list` |
+| TTL `set` / `remove` / `purge` | CLI · REST |
+| metadata 过滤 + 倒排过滤索引 | CLI · REST |
+| hybrid 搜索（向量 + BM25 → RRF 融合） | REST `/hybrid-search` |
+| 两阶段 rerank | `CoreTexDB::hybrid_search_reranked`（库 API，CLI/REST 尚未暴露 `--rerank`） |
+| SQL 查询 | CLI `coretex sql` |
+| 备份 / 恢复 | CLI · REST |
+| 认证 + 限流 | REST · gRPC |
+| B-C-D-D（`.cdb`）加密 | CLI `encrypt` / `decrypt` |
+| REST · gRPC 服务端 | `coretex server` |
+| C FFI（13 个 `extern "C"`） | `include/coretexdb.h` + `libcoretexdb` |
+| Python SDK | `python/` |
+| 复制**读**接口（主库侧） | REST `/replication/{status,snapshot,entries}` |
+
+### ⚠️ 未接线（代码在仓库里，够不到）
+
+| 模块 | 现状 |
+| --- | --- |
+| GraphQL API | `start_graphql_server` 无调用者，`coretex server` 不启动它 |
+| WebSocket | 无 TCP listener；`handle_search` 恒返回空，`handle_insert`/`handle_delete` 不落库（结构体里没有 `db` 字段）；认证只判断 token 非空 |
+| Raft / 主备切换 | `FailoverManager` / `LogReplicator` 从未被实例化。**原 `POST /raft/append_entries` 是个返回硬编码 `success: true` 的假桩（且免认证），已从路由表移除**；`request_vote` / `heartbeat` / `install_snapshot` 从未注册 |
+| 冷热分层 lakehouse | `DataManager.lakehouse` 恒为 `None`，`attach_lakehouse` 无调用者 |
+| Prometheus / `/metrics` | 无该路由；`coretex admin metrics` 是手写 `println!` |
+| 多模态：GIS / 时序 / embedding / 文档解析 / 生信 | 无任何入口调用。5 个模态的 embedding 实现是 `hash` 冒充模型；UDF 对未知函数静默返回 `args.sum()` |
+| 增量索引 `IncrementalIndex` | `IndexType::HNSW/IVF/PQ` 三个实现体是 `BruteForceIndex` 的复制粘贴，构造参数全丢弃 |
+| GRPO 强化学习 | "梯度" = `权重 × loss × 0.01`，非反向传播；`kl_divergence`、`learning_progress` 恒为 0 |
+| CDC（MySQL / PostgreSQL / MongoDB） | binlog / 逻辑复制 / OP_MSG 的**协议解析是真的**，但 `connect()` 只 `eprintln!("connected")` 并伪造位点，从不建连 |
+| 端侧 `EdgeDB` | `flush()` 真落盘，但**没有任何 load 路径**，重启必空；`EdgeConfig` 五个 builder 字段无消费者 |
+| 审计日志 | `data/logs/audit/` **会被创建，但永远是空的**——`AuditLogger`（`coretex_security`）没有任何入口实例化，且它的 `storage_path` 是相对路径 `audit_log.json`，没走 `--data-dir`。想看操作记录得接 `coretex_security`，目前没有 |
+| ONNX 推理 | `ort` 版本与代码 API 不匹配（`cannot find Session in ort`），**从 `full` 移出**。`coretex_onnx` 与 `coretex_embedding/text_embedding.rs` 的 ONNX 引擎都无法编译 |
+| Tantivy 全文检索 | tantivy 0.22 API 变化（`Option`→`Result`、`Field` 无 `Default`），**从 `full` 移出**。`coretex_tantivy` 296 行、零调用点 |
+| 端侧/wasm（`embedded`/`wasm` feature） | `coretex_edge` 编译不过（本 crate 的 `Result<T>` 别名遮蔽 + 缺 `From<EdgeError>`），**从 `full` 移出** |
+
+> **为什么 `full` 不再包含所有 feature**：`onnx` / `tantivy` / `embedded` / `wasm`
+> 这四组的代码**从未通过编译**，错误已存在很久无人发现（`full` 的 CI job 此前
+> 因 `s3` 编译错误先失败，`cargo test` 那一步从未执行到）。对应的模块又全部
+> 零生产调用点，为它们做 API 迁移等于给死代码做维护。修好后应加回，并给
+> `full` 补一条「必须编译通过」的门禁，否则同类腐化会再次静默发生。
+
+逐项进度与取舍见 [`docs/roadmap.md`](docs/roadmap.md)。
+
+> 上面的分类不是免责声明，而是待办清单：`coretex_cli` 对尚未实现的参数一律
+> 显式报错（见 `--compression` / `--incremental` / `--target-time`），宁可报错也
+> 不收下参数然后忽略。这里沿用同一条原则——README 不该承诺够不到的东西。
 
 ---
 
@@ -97,7 +169,7 @@ CoreTexDB-V0.2.4/                      # 程序安装根目录
     │   └── store/
     ├── wal/
     ├── backup/{full,incremental,snapshots}/
-    ├── logs/audit/
+    ├── logs/audit/          # 创建但恒为空（审计模块未接线，见 §0）
     ├── temp/
     └── versions/
 ```
@@ -162,7 +234,7 @@ coretex.exe server --data-dir D:\mydb
 | `-a, --address` | 监听地址 | `0.0.0.0` |
 | `-p, --port` | REST 端口 | `5000` |
 | `--grpc-port` | gRPC 端口（0=禁用） | `50051` |
-| `--ws-port` | WebSocket 端口（0=禁用） | `8080` |
+| `--ws-port` | WebSocket 端口 — **接受但未实现**，见 §0 | `8080` |
 | `--auth` | 启用认证 | 关闭 |
 | `--rate-limit` | 每分钟请求限制（0=不限） | `0` |
 
@@ -172,7 +244,7 @@ coretex.exe server --data-dir D:\mydb
 Starting CoreTexDB server on 0.0.0.0:5000
 gRPC: port 50051
 Starting gRPC server on 0.0.0.0:50051
-Starting CortexDB API server on http://0.0.0.0:5000
+Starting CoreTexDB API server on http://0.0.0.0:5000
 ```
 
 ### 3.2 客户端如何连接
@@ -426,7 +498,7 @@ coretex admin stats
 :: 健康检查
 coretex admin health
 
-:: Prometheus 指标
+:: 统计信息（手写输出，非 Prometheus 格式；见 §0）
 coretex admin metrics
 
 :: 配置查看/设置
@@ -490,9 +562,13 @@ coretex benchmark --count 1000 --dimension 128 --queries 100 --k 10
 :: 查看存储/WAL 文件（可读格式）
 coretex dump store
 coretex dump store --file /path/to/store-000000.log --limit 100
-coretex dump store --format json
+coretex dump store --output json
 coretex dump wal
-coretex dump wal --limit 20 --format json
+coretex dump wal --limit 20 --output json
+
+:: 注意：`store` / `wal` 是**位置参数**，不是 `--type`：
+::   正确 → coretex dump store --file xxx.log
+::   错误 → coretex dump --type store --file xxx.log
 ```
 
 ---
@@ -528,7 +604,14 @@ coretex dump wal --limit 20 --format json
 | POST | `/api/admin/backup` | 创建备份 |
 | POST | `/api/admin/restore` | 恢复备份 |
 | GET | `/api/admin/backup/list` | 列出备份 |
-| POST | `/raft/append_entries` | Raft 复制 |
+| POST | `/api/collections/:name/hybrid-search` | 混合搜索（向量 + BM25 → RRF） |
+| GET | `/replication/status` | 本节点日志位点 / 是否只读 |
+| GET | `/replication/snapshot` | 全量同步载荷 |
+| GET | `/replication/entries?since=N` | 增量日志尾部 |
+
+> 复制接口只覆盖**主库侧的读取**。`ReplicaSync` 客户端只被集成测试调用，
+> 二进制里不会跑——即「能当主库被拉，不能当从库去拉」。Raft 主备切换未实现，
+> 见 §0。
 
 ### 5.2 调用示例
 
@@ -554,7 +637,12 @@ curl -X POST http://localhost:5000/api/collections/mydb/search ^
 
 ---
 
-## 6. GraphQL API
+## 6. GraphQL API（⚠️ 未接线）
+
+schema 已实现（`src/coretex_api/graphql/`），但 **`coretex server` 不会启动它**——
+`start_graphql_server` 在全仓库没有调用者。下面是 schema 提供的方法，
+**当前没有任何方式访问**（无端口、无 CLI 开关、无 REST 转发）。需要时请自行接线，
+或直接用 REST / gRPC。
 
 | 类型 | 操作 |
 |------|------|
@@ -569,7 +657,13 @@ curl -X POST http://localhost:5000/api/collections/mydb/search ^
 - 默认端口：`50051`
 - Proto 文件：`src/coretex_grpc/coretex.proto`
 - 服务方法：`CreateCollection`, `DeleteCollection`, `ListCollections`, `InsertVectors`, `SearchVectors`, `GetVector`, `DeleteVectors`, `GetCollectionInfo`, `HealthCheck`
-- 支持：JWT 认证拦截器、限流拦截器、指标拦截器、TLS、优雅关闭
+- 支持：JWT 认证拦截器（已接入）、指标采集（已接入，每 60 秒打印一次 `[gRPC Metrics]`）、TLS、优雅关闭
+- **限流未接入**：`GrpcConfig::rate_limit_per_minute` 与 CLI `--rate-limit` 目前只作用于 REST；gRPC 侧的限流拦截器已实现但没有挂进服务链，启动横幅打印的 `Rate limit:` 数值不生效
+
+> 指标说明：gRPC 指标走 tower `MetricsLayer`，按请求统计 total / success / failed /
+> avg_latency。它只统计**到达 gRPC 服务的方法调用**；未认证请求被
+> `AuthInterceptor` 挡下时不计入（拦截器在内层）。要判断服务是否被调用过，
+> 看 `total` 即可。
 
 ---
 
@@ -786,7 +880,7 @@ coretex doctor                                 # 诊断检查
 
 ```cmd
 coretex dump store --limit 50
-coretex dump wal --limit 20 --format json
+coretex dump wal --limit 20 --output json
 ```
 
 ### Q7: gRPC 端口没有监听
@@ -810,7 +904,8 @@ netstat -ano | findstr :50051
 - 版本：V0.2.4
 - 开发者：qinhaowo@126.com
 - 辅助工具：MiMo v2.5 大语言模型
-- 测试状态：485 通过 / 0 失败（`cargo test`）
+- 测试状态：537 通过 / 0 失败（`cargo test --features full`，含 455 单元 + 82 集成）
+- CI 门禁：10 个 feature 逐个编译 + `full --all-targets`；4 个 example 真跑
 - 许可证：[AGPL-3.0](LICENSE)
 - 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md) · 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - 架构与设计：[docs/architecture.md](docs/architecture.md) · 路线图：[docs/roadmap.md](docs/roadmap.md)

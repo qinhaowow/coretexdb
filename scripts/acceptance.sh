@@ -320,7 +320,7 @@ if [ "${BIN##*.}" = "exe" ]; then
         >"$WORK/server.log" 2>&1 &
     SRV_PID=$!
     sleep 6
-    if kill -0 "$SRV_PID" 2>/dev/null && grep -q "Starting CortexDB API server" "$WORK/server.log"; then
+    if kill -0 "$SRV_PID" 2>/dev/null && grep -q "Starting CoreTexDB API server" "$WORK/server.log"; then
         _pass "server 在 Windows 上启动并打印监听地址"
     elif grep -qE "AddrInUse|10048" "$WORK/server.log"; then
         _fail "端口 $PORT 被占用（可能是上次失败留下的 server 进程）"
