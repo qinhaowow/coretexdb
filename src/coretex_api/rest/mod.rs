@@ -413,7 +413,7 @@ pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result
     };
 
     let state = Arc::new(ApiState {
-        db,
+        db: db.clone(),
         auth: auth.clone(),
         rate_limiter: rate_limiter.clone(),
         enable_auth: config.enable_auth,
@@ -465,8 +465,26 @@ pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result
         // and heartbeats 404 as well. See docs/roadmap.md C2.
         .route("/replication/status", get(replication_status))
         .route("/replication/snapshot", get(replication_snapshot))
-        .route("/replication/entries", get(replication_entries))
-        .with_state(state.clone());
+        .route("/replication/entries", get(replication_entries));
+
+    // GraphQL, mounted under the same server so it inherits this process's
+    // `AuthService` — its five auth mutations used to build a private, empty
+    // one, so users registered over REST did not exist there and accounts
+    // created there did nothing.
+    //
+    // It is deliberately NOT in the auth whitelist: the mutation root carries
+    // `deleteUser`, `assignRole` and `revokeToken`. The GraphQL router does its
+    // own bearer check (mirroring `enable_auth`), and its auth mutations
+    // additionally require the Admin role.
+    {
+        use crate::coretex_api::graphql;
+        let schema = graphql::build_schema_with_auth(db.clone(), auth.clone());
+        let gql: axum::Router<Arc<ApiState>> =
+            graphql::graphql_router(schema, auth.clone(), config.enable_auth);
+        app = app.nest("/graphql", gql);
+    }
+
+    let mut app = app.with_state(state.clone());
 
     // 启用认证中间件
     if config.enable_auth {

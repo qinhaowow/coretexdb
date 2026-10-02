@@ -12,7 +12,6 @@ use async_graphql::{
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::{
-    extract::State,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -541,6 +540,9 @@ impl MutationRoot {
         email: Option<String>,
     ) -> FieldResult<AuthUserResult> {
         let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        // Grants access to the whole system, so it is not for every logged-in
+        // user.
+        require_admin(ctx, &auth).await?;
         match auth.create_user(&username, &password, email.as_deref()).await {
             Ok(user_id) => Ok(AuthUserResult {
                 success: true,
@@ -588,6 +590,7 @@ impl MutationRoot {
         user_id: String,
     ) -> FieldResult<bool> {
         let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        require_admin(ctx, &auth).await?;
         Ok(auth.delete_user(&user_id).await)
     }
 
@@ -599,6 +602,7 @@ impl MutationRoot {
         role: String,
     ) -> FieldResult<AuthUserResult> {
         let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        require_admin(ctx, &auth).await?;
         match auth.assign_role(&user_id, &role).await {
             Ok(()) => Ok(AuthUserResult {
                 success: true,
@@ -620,6 +624,7 @@ impl MutationRoot {
         token: String,
     ) -> FieldResult<bool> {
         let auth = ctx.data::<Arc<crate::coretex_auth::AuthService>>()?;
+        require_admin(ctx, &auth).await?;
         Ok(auth.revoke_token(&token).await)
     }
 
@@ -681,11 +686,25 @@ impl SubscriptionRoot {
 
 pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 
-/// 构建完整 GraphQL schema（含订阅广播器）
-pub fn build_schema(db: Arc<RwLock<CoreTexDB>>) -> AppSchema {
+/// Build a schema backed by a caller-supplied [`AuthService`].
+///
+/// The original `build_schema` constructed its own `AuthService::new()`, so the
+/// five auth mutations (`createUser`, `login`, `deleteUser`, `assignRole`,
+/// `revokeToken`) operated on a private, in-memory, immediately-discarded
+/// service: users registered through REST did not exist there, and accounts
+/// created there did nothing. They were inert by accident, not by design — and
+/// inert is the only reason wiring this endpoint up had not yet handed an
+/// unauthenticated caller `deleteUser`.
+///
+/// Passing the shared instance makes them real. It also makes them
+/// *dangerous*, which is why [`start_graphql_server`] and the `/graphql` route
+/// authenticate before executing anything.
+pub fn build_schema_with_auth(
+    db: Arc<RwLock<CoreTexDB>>,
+    auth: Arc<crate::coretex_auth::AuthService>,
+) -> AppSchema {
     let (tx, _rx) = broadcast::channel::<DataChangeEvent>(10000);
     let broadcaster = Arc::new(tx);
-    let auth = Arc::new(crate::coretex_auth::AuthService::new());
     Schema::build(QueryRoot::default(), MutationRoot, SubscriptionRoot)
         .data(db)
         .data(broadcaster)
@@ -693,16 +712,24 @@ pub fn build_schema(db: Arc<RwLock<CoreTexDB>>) -> AppSchema {
         .finish()
 }
 
+/// Build a schema with a throwaway authentication service.
+///
+/// Kept for embedding callers that have no `AuthService` to share. The five auth
+/// mutations will work against that private service and have no effect on
+/// anything else — prefer [`build_schema_with_auth`].
+pub fn build_schema(db: Arc<RwLock<CoreTexDB>>) -> AppSchema {
+    build_schema_with_auth(db, Arc::new(crate::coretex_auth::AuthService::new()))
+}
+
 /// 启动 GraphQL HTTP 服务
 pub async fn start_graphql_server(
     db: Arc<RwLock<CoreTexDB>>,
     addr: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let schema = build_schema(db);
-    let app = Router::new()
-        .route("/", post(graphql_handler).get(graphql_playground))
-        .route("/ws", get(graphql_ws_handler))
-        .with_state(schema);
+    let auth = Arc::new(crate::coretex_auth::AuthService::new());
+    let schema = build_schema_with_auth(db, auth.clone());
+    // Standalone server has no REST config to inherit, so it authenticates.
+    let app: Router<()> = graphql_router(schema, auth, true);
 
     println!("GraphQL server running at http://{}/", addr);
     println!("GraphQL playground at http://{}/", addr);
@@ -712,11 +739,124 @@ pub async fn start_graphql_server(
     Ok(())
 }
 
+/// Who is calling, as determined by the transport layer before the query runs.
+///
+/// Inserted as GraphQL data by the handler so resolvers can read it with
+/// `ctx.data_opt::<GraphQlCaller>()`. Absent when authentication is disabled or
+/// the token did not verify — every reader treats it as optional.
+#[derive(Clone, Debug)]
+pub struct GraphQlCaller {
+    pub user_id: String,
+}
+
+/// Shared between [`graphql_handler`] and [`graphql_ws_handler`].
+///
+/// Held as a layer extension rather than axum state so the same router works
+/// whether it is mounted standalone or nested under the REST app, whose state
+/// type is `Arc<ApiState>`.
+#[derive(Clone)]
+pub struct GraphQlAuth {
+    pub auth: Arc<crate::coretex_auth::AuthService>,
+    /// When false the endpoint is open — matching a REST deployment started
+    /// without `--auth`.
+    pub enable_auth: bool,
+}
+
+/// Require a verified caller holding the Admin role.
+///
+/// Used by the five auth mutations: they are the only operations here that can
+/// grant or revoke access to the whole system, so an ordinary authenticated
+/// user must not reach them.
+pub(crate) async fn require_admin(
+    ctx: &async_graphql::Context<'_>,
+    auth: &Arc<crate::coretex_auth::AuthService>,
+) -> FieldResult<String> {
+    let Some(caller) = ctx.data_opt::<GraphQlCaller>() else {
+        return Err(async_graphql::Error::new(
+            "this operation requires an authenticated administrator",
+        ));
+    };
+    if !auth
+        .has_permission(&caller.user_id, crate::coretex_auth::Permission::Admin)
+        .await
+    {
+        return Err(async_graphql::Error::new(
+            "this operation requires the Admin role",
+        ));
+    }
+    Ok(caller.user_id.clone())
+}
+
+/// Build the GraphQL router, mounted at `/`.
+///
+/// The schema and the auth handle travel as layer extensions rather than axum
+/// state so the same router can carry any state type — that is what lets the
+/// REST app nest it under `/graphql` while keeping its own `Arc<ApiState>`.
+///
+/// `S: Clone + Send + Sync + 'static` is axum's requirement for a nestable
+/// state type, not an oversight.
+///
+/// `enable_auth` mirrors the REST deployment: a server started without `--auth`
+/// serves GraphQL open too, which is consistent, not a special case.
+pub fn graphql_router<S>(
+    schema: AppSchema,
+    auth: Arc<crate::coretex_auth::AuthService>,
+    enable_auth: bool,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route("/", post(graphql_handler).get(graphql_playground))
+        .route("/ws", get(graphql_ws_handler))
+        .layer(axum::Extension(schema))
+        .layer(axum::Extension(GraphQlAuth { auth, enable_auth }))
+        .with_state(std::marker::PhantomData::<S>)
+}
+
+/// Verify the bearer token, if the deployment requires one.
+///
+/// Returns the caller on success. An absent or invalid token is a hard 401 —
+/// not a GraphQL error — because executing the query with no identity is exactly
+/// what must not happen: the mutation root carries `deleteUser`,
+/// `assignRole` and `revokeToken`.
+async fn authenticate_async(
+    gql_auth: &GraphQlAuth,
+    headers: &axum::http::HeaderMap,
+) -> std::result::Result<Option<GraphQlCaller>, axum::http::StatusCode> {
+    if !gql_auth.enable_auth {
+        return Ok(None);
+    }
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_start_matches("Bearer ").trim())
+        .unwrap_or("");
+
+    if token.is_empty() {
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    match gql_auth.auth.verify_token(token).await {
+        Ok(claims) => Ok(Some(GraphQlCaller {
+            user_id: claims.sub.clone(),
+        })),
+        Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
+    }
+}
+
 async fn graphql_handler(
-    State(schema): State<AppSchema>,
+    axum::Extension(schema): axum::Extension<AppSchema>,
+    axum::Extension(gql_auth): axum::Extension<GraphQlAuth>,
+    headers: axum::http::HeaderMap,
     req: GraphQLRequest,
-) -> GraphQLResponse {
-    schema.execute(req.into_inner()).await.into()
+) -> std::result::Result<GraphQLResponse, axum::http::StatusCode> {
+    let caller = authenticate_async(&gql_auth, &headers).await?;
+    let mut inner = req.into_inner();
+    if let Some(c) = caller {
+        inner = inner.data(c);
+    }
+    Ok(schema.execute(inner).await.into())
 }
 
 /// 订阅端点：GraphQL over HTTP 的 multipart/mixed 流式响应。
@@ -725,25 +865,36 @@ async fn graphql_handler(
 /// `IntoResponse`，需要经 `create_multipart_mixed_stream` 包装成
 /// multipart 分块流，并显式声明与内部 `--graphql` 分隔符一致的 content-type。
 /// 流元素先包成 `Result` 以满足 axum `Body::from_stream` 的 `TryStream` 约束。
+///
+/// Authenticated exactly like the query endpoint: a subscription is still a
+/// query, and `allDataChanges` streams every collection's writes.
 async fn graphql_ws_handler(
-    State(schema): State<AppSchema>,
+    axum::Extension(schema): axum::Extension<AppSchema>,
+    axum::Extension(gql_auth): axum::Extension<GraphQlAuth>,
+    headers: axum::http::HeaderMap,
     req: GraphQLRequest,
-) -> Response {
+) -> std::result::Result<Response, axum::http::StatusCode> {
     use futures_util::StreamExt;
 
+    let caller = authenticate_async(&gql_auth, &headers).await?;
+    let mut inner = req.into_inner();
+    if let Some(c) = caller {
+        inner = inner.data(c);
+    }
+
     let stream = async_graphql::http::create_multipart_mixed_stream(
-        schema.execute_stream(req.into_inner()),
+        schema.execute_stream(inner),
         std::time::Duration::from_secs(15),
     )
     .map(Ok::<_, std::convert::Infallible>);
 
-    Response::builder()
+    Ok(Response::builder()
         .header(
             axum::http::header::CONTENT_TYPE,
             "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"",
         )
         .body(axum::body::Body::from_stream(stream))
-        .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
+        .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
 }
 
 async fn graphql_playground() -> impl IntoResponse {
