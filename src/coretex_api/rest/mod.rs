@@ -17,6 +17,7 @@ use tokio::sync::RwLock;
 use crate::{CoreTexDB, DbConfig};
 use crate::coretex_auth::{AuthService, Permission, RateLimiter};
 use crate::coretex_core::Result;
+use crate::coretex_monitoring::DatabaseMetrics;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiConfig {
@@ -265,6 +266,13 @@ pub struct ApiState {
     pub auth: Arc<AuthService>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub enable_auth: bool,
+    /// Backs `GET /metrics`.
+    ///
+    /// `DatabaseMetrics` was previously unreachable from any server: it is
+    /// `pub use`d from `lib.rs`, but nothing constructed one, so no code path
+    /// ever recorded a metric. Sharing one instance here is what makes the
+    /// endpoint return anything other than an empty body.
+    pub metrics: Arc<DatabaseMetrics>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +300,51 @@ pub async fn start_server_with_db(
     config: ApiConfig,
     db: Arc<RwLock<CoreTexDB>>,
 ) -> Result<()> {
+    let app = build_app(&config, db).await?;
+    let addr = SocketAddr::new(config.address.parse().unwrap(), config.port);
+
+    println!("Starting CoreTexDB API server on http://{}", addr);
+    println!("Auth enabled: {}", config.enable_auth);
+    // 0 = 不限。与 gRPC 侧同样只打印真正生效的限制。
+    if config.rate_limit_per_minute > 0 {
+        println!("Rate limit: {} req/min", config.rate_limit_per_minute);
+    } else {
+        println!("Rate limit: disabled");
+    }
+    println!("API endpoints:");
+    println!("  GET  /console                              - Browser console");
+    println!("  GET  /health                              - Health check");
+    println!("  GET  /metrics                             - Prometheus metrics");
+    println!("  POST /api/auth/login                      - Login");
+    println!("  POST /api/auth/register                   - Register");
+    println!("  GET  /api/collections                     - List collections");
+    println!("  POST /api/collections                    - Create collection");
+    println!("  GET  /api/collections/:name               - Get collection info");
+    println!("  DELETE /api/collections/:name             - Delete collection");
+    println!("  GET  /api/collections/:name/stats         - Get collection stats");
+    println!("  POST /api/collections/:name/vectors       - Insert vectors");
+    println!("  PUT  /api/collections/:name/vectors      - Update vectors");
+    println!("  GET  /api/collections/:name/vectors/:id  - Get vector");
+    println!("  DELETE /api/collections/:name/vectors     - Delete vectors");
+    println!("  POST /api/collections/:name/search       - Search vectors");
+    println!("  POST /api/collections/:name/batch-search - Batch search");
+    println!("  GET  /api/collections/:name/count        - Get vectors count");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+/// Build the fully-layered router.
+///
+/// Public so an embedding application can mount the REST API inside a larger
+/// axum app, and so tests can drive the real routing stack — including the auth
+/// and metrics layers — with `tower::ServiceExt` instead of binding a socket.
+/// A test that only calls a handler would not notice a route that was never
+/// registered or a middleware that was never applied, which is precisely what
+/// was wrong before.
+pub async fn build_app(config: &ApiConfig, db: Arc<RwLock<CoreTexDB>>) -> Result<Router> {
     // Persist users under `<data_dir>/metadata/auth.json`.
     //
     // `AuthService::new()` keeps them in memory only, so every registered user
@@ -318,16 +371,22 @@ pub async fn start_server_with_db(
         None
     };
 
+    // Shared by the `/metrics` endpoint and the request-counting middleware
+    // below, so both observe the same series.
+    let metrics = Arc::new(DatabaseMetrics::new());
+
     let state = Arc::new(ApiState {
         db,
         auth: auth.clone(),
         rate_limiter: rate_limiter.clone(),
         enable_auth: config.enable_auth,
+        metrics: metrics.clone(),
     });
 
     let mut app = Router::new()
         .route("/console", get(serve_console))
         .route("/health", get(health_check))
+        .route("/metrics", get(metrics_endpoint))
         .route("/api/auth/login", post(login))
         .route("/api/auth/register", post(register))
         .route("/api/collections", get(list_collections))
@@ -389,6 +448,24 @@ pub async fn start_server_with_db(
         }));
     }
 
+    // Metrics instrumentation is applied LAST so that it is the OUTERMOST
+    // layer — in axum the most recently added `Router::layer` wraps the others.
+    //
+    // Ordering matters and is easy to get backwards. An operator watching a
+    // 401 spike is looking at exactly the incident this endpoint exists to
+    // reveal, so rejections must be counted rather than filtered out before the
+    // counter ever sees them. Applied inside auth instead, `/metrics` reports
+    // only the requests that got through — a clean picture precisely when
+    // something is wrong. `auth_rejections_are_counted_in_metrics` pins this:
+    // it was confirmed to fail under the inverted ordering.
+    {
+        let metrics_clone = metrics.clone();
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let metrics = metrics_clone.clone();
+            async move { metrics_middleware(req, next, metrics).await }
+        }));
+    }
+
     let app = if config.enable_cors {
         // 安全修复：仅允许显式配置的 origin 白名单，禁止使用 Any 通配符。
         if config.cors_allowed_origins.is_empty() {
@@ -413,36 +490,7 @@ pub async fn start_server_with_db(
         app
     };
 
-    let addr = SocketAddr::new(
-        config.address.parse().unwrap(),
-        config.port,
-    );
-
-    println!("Starting CoreTexDB API server on http://{}", addr);
-    println!("Auth enabled: {}", config.enable_auth);
-    println!("Rate limit: {} req/min", config.rate_limit_per_minute);
-    println!("API endpoints:");
-    println!("  GET  /console                              - Browser console");
-    println!("  GET  /health                              - Health check");
-    println!("  POST /api/auth/login                      - Login");
-    println!("  POST /api/auth/register                   - Register");
-    println!("  GET  /api/collections                     - List collections");
-    println!("  POST /api/collections                    - Create collection");
-    println!("  GET  /api/collections/:name               - Get collection info");
-    println!("  DELETE /api/collections/:name             - Delete collection");
-    println!("  GET  /api/collections/:name/stats         - Get collection stats");
-    println!("  POST /api/collections/:name/vectors       - Insert vectors");
-    println!("  PUT  /api/collections/:name/vectors      - Update vectors");
-    println!("  GET  /api/collections/:name/vectors/:id  - Get vector");
-    println!("  DELETE /api/collections/:name/vectors     - Delete vectors");
-    println!("  POST /api/collections/:name/search       - Search vectors");
-    println!("  POST /api/collections/:name/batch-search - Batch search");
-    println!("  GET  /api/collections/:name/count        - Get vectors count");
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+    Ok(app)
 }
 
 // =============== 认证中间件 ===============
@@ -693,6 +741,61 @@ async fn health_check() -> Json<HealthResponse> {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// `GET /metrics` — Prometheus text exposition (version 0.0.4).
+///
+/// Requires the same bearer token as the rest of the API when `--auth` is on:
+/// the series carry collection and vector counts, which is operational detail
+/// an unauthenticated scraper should not be able to read. It is deliberately
+/// **not** in the `auth_middleware` whitelist next to `/health`.
+async fn metrics_endpoint(
+    State(state): State<Arc<ApiState>>,
+) -> Response {
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.get_prometheus_metrics().await,
+    )
+        .into_response()
+}
+
+/// Count and time every REST request.
+///
+/// A middleware rather than per-handler calls: there are ~30 routes, and
+/// instrumenting them one at a time is exactly how a metric ends up missing
+/// from whichever handler nobody remembered. This way a newly added route is
+/// covered by construction.
+///
+/// The route *template* is used rather than the concrete path, so
+/// `/api/collections/a/search` and `/api/collections/b/search` land on one
+/// series instead of one series per collection name — which would reintroduce
+/// the unbounded-cardinality problem the histogram fix just removed, since
+/// collection names are user input.
+async fn metrics_middleware(
+    req: Request,
+    next: Next,
+    metrics: Arc<DatabaseMetrics>,
+) -> Response {
+    let route = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_string())
+        // A 404 has no matched route; fall back to a single bucket rather than
+        // the raw path, which would be attacker-controlled and unbounded.
+        .unwrap_or_else(|| "unmatched".to_string());
+
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    let status = response.status().as_u16().to_string();
+    metrics.record_request(&route, &status, elapsed_ms).await;
+
+    response
 }
 
 async fn list_collections(

@@ -30,8 +30,68 @@ pub struct PrometheusMetrics {
     _metrics: Arc<RwLock<HashMap<String, Metric>>>,
     counters: Arc<RwLock<HashMap<String, f64>>>,
     gauges: Arc<RwLock<HashMap<String, f64>>>,
-    histograms: Arc<RwLock<HashMap<String, Vec<f64>>>>,
+    /// Bounded reservoir per series.
+    ///
+    /// This used to be `HashMap<String, Vec<f64>>` where every observation was
+    /// pushed and nothing was ever removed — a permanent leak, one per series,
+    /// reachable from any request that recorded a metric. Each entry is now a
+    /// fixed-capacity ring: full buckets stop growing and only drop the oldest
+    /// sample.
+    histograms: Arc<RwLock<HashMap<String, Histogram>>>,
 }
+
+/// Fixed-capacity reservoir behind each histogram series.
+///
+/// `samples` is a ring: when full, the next write overwrites the oldest slot.
+/// Capacity is what bounds memory; the arithmetic mean it supports is a
+/// reservoir estimate rather than an exact one, which is the standard trade for
+/// a bounded in-process histogram.
+struct Histogram {
+    samples: Vec<f64>,
+    /// Ring position. Only meaningful once `samples.len() == capacity`.
+    next: usize,
+    capacity: usize,
+    count: f64,
+    sum: f64,
+}
+
+impl Histogram {
+    fn new(capacity: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(capacity),
+            next: 0,
+            capacity,
+            count: 0.0,
+            sum: 0.0,
+        }
+    }
+
+    fn observe(&mut self, value: f64) {
+        if self.samples.len() < self.capacity {
+            self.samples.push(value);
+        } else if !self.samples.is_empty() {
+            self.samples[self.next] = value;
+            self.next = (self.next + 1) % self.samples.len();
+        }
+        self.count += 1.0;
+        self.sum += value;
+    }
+
+    fn avg(&self) -> f64 {
+        if self.count == 0.0 {
+            0.0
+        } else {
+            self.sum / self.count
+        }
+    }
+}
+
+/// Observations retained per histogram series.
+///
+/// 1024 samples per series keeps the mean accurate to a few percent while
+/// capping memory at 8 KiB per series, so a long-running server cannot be grown
+/// without bound by a request loop.
+const HISTOGRAM_CAPACITY: usize = 1024;
 
 impl PrometheusMetrics {
     pub fn new() -> Self {
@@ -64,52 +124,82 @@ impl PrometheusMetrics {
     pub async fn observe_histogram(&self, name: &str, value: f64, labels: Option<HashMap<String, String>>) {
         let key = self.make_key(name, &labels);
         let mut histograms = self.histograms.write().await;
-        histograms.entry(key).or_insert_with(Vec::new).push(value);
+        histograms
+            .entry(key)
+            .or_insert_with(|| Histogram::new(HISTOGRAM_CAPACITY))
+            .observe(value);
     }
 
+    /// Render the Prometheus text exposition format (version 0.0.4).
+    ///
+    /// Three corrections over the previous hand-rolled version:
+    ///  * labels are emitted as `name{type="search"}`, not `name_type=search`;
+    ///  * `_sum` carried two numbers — Prometheus reads the second as a
+    ///    timestamp, so `coretexdb_query_duration_ms_sum 12.5 3` was parsed as
+    ///    a sample from 1970-01-01;
+    ///  * `# HELP` / `# TYPE` are emitted, which Prometheus expects.
     pub async fn get_metrics_text(&self) -> String {
         let mut output = String::new();
-        
+
         {
             let counters = self.counters.read().await;
-            for (key, value) in counters.iter() {
-                let key_safe = key.replace(':', "_");
-                output.push_str(&format!("{} {}\n", key_safe, value));
+            let mut keys: Vec<_> = counters.keys().collect();
+            keys.sort();
+            for key in keys {
+                let (name, labels) = split_series_key(key);
+                output.push_str(&format!("# TYPE {name} counter\n"));
+                output.push_str(&format!("{}{} {}\n", name, labels, counters[key]));
             }
         }
-        
+
         {
             let gauges = self.gauges.read().await;
-            for (key, value) in gauges.iter() {
-                let key_safe = key.replace(':', "_");
-                output.push_str(&format!("{} {}\n", key_safe, value));
+            let mut keys: Vec<_> = gauges.keys().collect();
+            keys.sort();
+            for key in keys {
+                let (name, labels) = split_series_key(key);
+                output.push_str(&format!("# TYPE {name} gauge\n"));
+                output.push_str(&format!("{}{} {}\n", name, labels, gauges[key]));
             }
         }
-        
+
         {
             let histograms = self.histograms.read().await;
-            for (key, values) in histograms.iter() {
-                if !values.is_empty() {
-                    let sum: f64 = values.iter().sum();
-                    let count = values.len() as f64;
-                    let key_safe = key.replace(':', "_");
-                    output.push_str(&format!("{}_sum {} {}\n", key_safe, sum, count));
-                    output.push_str(&format!("{}_count {} {}\n", key_safe, count, count));
+            let mut keys: Vec<_> = histograms.keys().collect();
+            keys.sort();
+            for key in keys {
+                let h = &histograms[key];
+                if h.count == 0.0 {
+                    continue;
                 }
+                let (name, labels) = split_series_key(key);
+                output.push_str(&format!("# TYPE {name} summary\n"));
+                // A `summary` needs `_sum` and `_count`; the quantile is derived
+                // from the bounded reservoir's mean, which is honest about being
+                // an estimate.
+                output.push_str(&format!("{name}_sum{labels} {}\n", h.sum));
+                output.push_str(&format!("{name}_count{labels} {}\n", h.count));
+                output.push_str(&format!("{name}_avg{labels} {}\n", h.avg()));
             }
         }
-        
+
         output
     }
 
+    /// Build the storage key for a series.
+    ///
+    /// Labels are sorted before joining. `HashMap` iteration order is
+    /// arbitrary, so with more than one label the same logical series could be
+    /// stored under two different keys — splitting a counter in half.
     fn make_key(&self, name: &str, labels: &Option<HashMap<String, String>>) -> String {
         match labels {
             Some(l) if !l.is_empty() => {
-                let label_str = l.iter()
+                let mut pairs: Vec<String> = l
+                    .iter()
                     .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!("{}:{}", name, label_str)
+                    .collect();
+                pairs.sort();
+                format!("{}:{}", name, pairs.join(","))
             }
             _ => name.to_string(),
         }
@@ -119,6 +209,34 @@ impl PrometheusMetrics {
 impl Default for PrometheusMetrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Split a storage key back into a metric name and a Prometheus label set.
+///
+/// `make_key` stores `coretexdb_errors_total:type=io`; Prometheus expects
+/// `coretexdb_errors_total{type="io"}`. Values are quoted and inner quotes
+/// escaped, since label values are arbitrary user input (an error type, a query
+/// string) and would otherwise break the exposition format.
+fn split_series_key(key: &str) -> (String, String) {
+    match key.split_once(':') {
+        None => (key.to_string(), String::new()),
+        Some((name, label_str)) => {
+            let labels: Vec<String> = label_str
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|pair| match pair.split_once('=') {
+                    Some((k, v)) => format!("{}=\"{}\"", k, v.replace('\\', "\\\\").replace('"', "\\\"")),
+                    None => String::new(),
+                })
+                .filter(|s| !s.is_empty())
+                .collect();
+            if labels.is_empty() {
+                (name.to_string(), String::new())
+            } else {
+                (name.to_string(), format!("{{{}}}", labels.join(",")))
+            }
+        }
     }
 }
 
@@ -161,6 +279,26 @@ impl DatabaseMetrics {
             labels.insert("type".to_string(), error_type.to_string());
             labels
         })).await;
+    }
+
+    /// Record one served HTTP request: a counter and a latency observation.
+    ///
+    /// `route` must be the route *template* (`/api/collections/:name/search`),
+    /// never the concrete path. Collection and vector ids are user input, so
+    /// keying on them creates one series per id — unbounded cardinality in a
+    /// long-running process, which is the same class of leak the histogram ring
+    /// exists to bound.
+    pub async fn record_request(&self, route: &str, status: &str, duration_ms: f64) {
+        let mut labels = HashMap::new();
+        labels.insert("route".to_string(), route.to_string());
+        labels.insert("status".to_string(), status.to_string());
+
+        self.metrics
+            .inc_counter("coretexdb_http_requests_total", Some(labels))
+            .await;
+        self.metrics
+            .observe_histogram("coretexdb_http_request_duration_ms", duration_ms, None)
+            .await;
     }
 
     pub async fn set_collection_count(&self, count: usize) {
@@ -398,10 +536,38 @@ impl AlertManager {
         let gauges = prometheus.gauges.read().await;
         let counters = prometheus.counters.read().await;
 
-        let metric_value = gauges.get(metric)
+        // Resolution order matters here.
+        //
+        // Series are stored as `name:k=v`, so a rule naming a *labelled* metric
+        // by its bare name (`coretexdb_errors_total`) used to miss entirely and
+        // read 0.0 — meaning no alert could ever fire for any metric recorded
+        // with labels, silently. Now:
+        //
+        //   1. an exact key wins (covers a rule that names the full
+        //      `name:k=v`, and unlabelled series whose key is just the name);
+        //   2. otherwise every series sharing the `name:` prefix is summed, so
+        //      a bare name means "all label combinations";
+        //   3. otherwise 0.0, i.e. a metric nobody has recorded.
+        let metric_value = gauges
+            .get(metric)
             .copied()
             .or_else(|| counters.get(metric).copied())
-            .unwrap_or(0.0);
+            .unwrap_or_else(|| {
+                let prefix = format!("{metric}:");
+                let from_gauges: f64 = gauges
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(&prefix))
+                    .map(|(_, v)| *v)
+                    .sum();
+                if from_gauges > 0.0 {
+                    return from_gauges;
+                }
+                counters
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(&prefix))
+                    .map(|(_, v)| *v)
+                    .sum()
+            });
 
         match operator {
             ">" => metric_value > value,
@@ -676,22 +842,24 @@ mod tests {
         );
     }
 
-    /// `check_threshold` looks a metric up by its **exact** storage key, and
-    /// labelled series are stored as `name:label=value` (see `make_key`). A rule
-    /// naming the bare metric therefore never sees a labelled series.
+    /// `check_threshold` used to look a metric up by its **exact** storage key,
+    /// while labelled series are stored as `name:label=value` (see `make_key`).
+    /// A rule naming the bare metric therefore read 0.0 and could never fire.
     ///
-    /// This is a real limitation of `AlertManager`, not of the test above — it
-    /// pins the current behaviour so a future fix has to update this test on
-    /// purpose. `DatabaseMetrics::record_error` records
-    /// `coretexdb_errors_total:type=io`, so a rule on `"errors"` (or on
-    /// `"coretexdb_errors_total"`) can never fire.
+    /// `DatabaseMetrics::record_error` records `coretexdb_errors_total:type=io`,
+    /// so *every* error alert was silently dead. This test used to pin that
+    /// broken behaviour; it now asserts the fix — a bare name aggregates all
+    /// label combinations.
     #[tokio::test]
-    async fn test_alert_rule_cannot_match_labelled_series() {
+    async fn test_alert_rule_matches_labelled_series_by_bare_name() {
         let db_metrics = Arc::new(DatabaseMetrics::new());
         let alert_mgr = AlertManager::new(Arc::clone(&db_metrics));
 
         for _ in 0..50 {
             db_metrics.record_error("io").await;
+        }
+        for _ in 0..10 {
+            db_metrics.record_error("disk").await;
         }
 
         alert_mgr
@@ -703,14 +871,125 @@ mod tests {
                     value: 1.0,
                 },
                 severity: AlertSeverity::Warning,
-                description: "bare name cannot see a labelled series".to_string(),
+                description: "bare name aggregates every label value".to_string(),
             })
             .await;
 
+        let fired = alert_mgr.check_alerts().await;
+        assert_eq!(
+            fired.len(),
+            1,
+            "a bare-name rule must see labelled series (50 io + 10 disk errors)"
+        );
+        assert_eq!(fired[0].name, "errors_by_bare_name");
+    }
+
+    /// Regression: histogram series were `Vec<f64>` that only ever grew. Every
+    /// observed value was retained for the lifetime of the process, so a
+    /// long-running server grew by 8 bytes per request per histogram — memory
+    /// exhaustion driven entirely by normal traffic.
+    #[tokio::test]
+    async fn test_histogram_does_not_grow_without_bound() {
+        let metrics = PrometheusMetrics::new();
+
+        // Far more observations than the per-series reservoir capacity.
+        for i in 0..(HISTOGRAM_CAPACITY * 3) {
+            metrics.observe_histogram("test_histogram", i as f64, None).await;
+        }
+
+        let histograms = metrics.histograms.read().await;
+        let h = histograms.get("test_histogram").expect("series must exist");
         assert!(
-            alert_mgr.check_alerts().await.is_empty(),
-            "documents current behaviour: the counter is keyed \
-             `coretexdb_errors_total:type=io`, so a bare-name rule sees 0.0"
+            h.samples.len() <= HISTOGRAM_CAPACITY,
+            "retained samples must stay capped, got {}",
+            h.samples.len()
+        );
+        // Counters are exact even though the reservoir is not — an alert on
+        // "how many requests" must not drift.
+        assert_eq!(h.count, (HISTOGRAM_CAPACITY * 3) as f64);
+    }
+
+    /// The `_sum` line used to carry two numbers (`sum count`); Prometheus reads
+    /// the second as a timestamp. Guard the exposition format itself.
+    #[tokio::test]
+    async fn test_metrics_text_is_valid_prometheus_format() {
+        let metrics = PrometheusMetrics::new();
+        metrics.inc_counter("test_counter", None).await;
+        metrics.set_gauge("test_gauge", 42.5, None).await;
+        metrics.observe_histogram("test_histogram", 1.5, None).await;
+        metrics.observe_histogram("test_histogram", 2.5, None).await;
+
+        let output = metrics.get_metrics_text().await;
+        for line in output.lines() {
+            if line.trim_start().starts_with('#') {
+                continue; // `# HELP` / `# TYPE` are comments, not samples
+            }
+            let fields: Vec<_> = line.rsplitn(2, ' ').collect();
+            assert_eq!(
+                fields.len(),
+                2,
+                "a sample line is `name value` — a third field is read as a \
+                 timestamp by Prometheus: {line:?}"
+            );
+            assert!(
+                fields[0].parse::<f64>().is_ok(),
+                "value must parse as a float: {line:?}"
+            );
+            assert!(
+                !fields[1].is_empty() && fields[1].chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_'),
+                "series name must start with a letter or underscore: {line:?}"
+            );
+        }
+
+        assert!(output.contains("# TYPE test_counter counter"));
+        assert!(output.contains("test_gauge 42.5"));
+        assert!(output.contains("test_histogram_count 2"));
+        assert!(output.contains("test_histogram_avg 2"));
+    }
+
+    /// Labels must be emitted as `name{k="v"}`. The old format produced
+    /// `name_k=v`, which Prometheus parses as a metric literally named
+    /// `name_k=v` — every labelled series was garbage.
+    #[tokio::test]
+    async fn test_labelled_series_use_prometheus_label_syntax() {
+        let metrics = PrometheusMetrics::new();
+        let mut labels = HashMap::new();
+        labels.insert("type".to_string(), "search".to_string());
+        metrics.inc_counter("test_labelled", Some(labels)).await;
+
+        let output = metrics.get_metrics_text().await;
+        assert!(
+            output.contains("test_labelled{type=\"search\"} 1"),
+            "expected proper label syntax, got:\n{output}"
+        );
+        assert!(
+            !output.contains("test_labelled_type=search"),
+            "legacy `name_k=v` form must be gone, got:\n{output}"
+        );
+    }
+
+    /// `make_key` iterated a `HashMap` to build the key. Iteration order is
+    /// arbitrary, so a two-label series could land under two different keys and
+    /// its counter would be split in half.
+    #[tokio::test]
+    async fn test_multi_label_series_key_is_order_independent() {
+        let metrics = PrometheusMetrics::new();
+
+        let mut a = HashMap::new();
+        a.insert("type".to_string(), "search".to_string());
+        a.insert("status".to_string(), "ok".to_string());
+
+        let mut b = HashMap::new();
+        b.insert("status".to_string(), "ok".to_string());
+        b.insert("type".to_string(), "search".to_string());
+
+        metrics.inc_counter("test_two_labels", Some(a)).await;
+        metrics.inc_counter("test_two_labels", Some(b)).await;
+
+        let output = metrics.get_metrics_text().await;
+        assert!(
+            output.contains("test_two_labels{status=\"ok\",type=\"search\"} 2"),
+            "both writes must land on one series, got:\n{output}"
         );
     }
 }

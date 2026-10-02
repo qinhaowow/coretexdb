@@ -582,6 +582,8 @@ coretex dump wal --limit 20 --output json
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
+| GET | `/metrics` | Prometheus 指标（文本格式 0.0.4；开启 `--auth` 时需 token） |
+| GET | `/console` | 浏览器控制台 |
 | POST | `/api/auth/login` | 用户登录 |
 | POST | `/api/auth/register` | 用户注册 |
 | GET | `/api/collections` | 列出所有集合 |
@@ -613,11 +615,19 @@ coretex dump wal --limit 20 --output json
 > 二进制里不会跑——即「能当主库被拉，不能当从库去拉」。Raft 主备切换未实现，
 > 见 §0。
 
+> `/raft/*` **不存在**。此前 `/raft/append_entries` 硬编码返回 `success: true`
+> 并在认证白名单内，等于告诉 leader「日志已复制」而实际什么都没写。该端点已
+> 删除而非打桩：没有任何代码构造 `FailoverManager`，handler 只能回显常量。
+
 ### 5.2 调用示例
 
 ```cmd
 :: 健康检查
 curl http://localhost:5000/health
+
+:: Prometheus 指标（开启 --auth 时需带 token）
+curl http://localhost:5000/metrics ^
+  -H "Authorization: Bearer <token>"
 
 :: 创建集合
 curl -X POST http://localhost:5000/api/collections ^

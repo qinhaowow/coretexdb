@@ -122,13 +122,22 @@
     <button class="sec" onclick="hybrid()">混合检索</button>
   </div>
 
+  <h2>运行指标</h2>
+  <div class="row">
+    <button class="sec" onclick="showMetrics()">抓取 /metrics</button>
+  </div>
+  <div class="hint">Prometheus 文本格式（0.0.4）。开启 <code>--auth</code> 时需要先登录。<br>
+    标签使用<b>路由模板</b>（如 <code>/api/collections/:name/search</code>）而非具体路径，
+    避免集合名撑爆 series 基数。</div>
+
   <h2>修复验收</h2>
   <div class="checks">
     <div class="chk" id="c1">待检：/raft/append_entries 应 404</div>
     <div class="chk" id="c2">待检：/replication/status 应 200</div>
     <div class="chk" id="c3">待检：/api/collections 应 200 或 401</div>
+    <div class="chk" id="c4">待检：/metrics 应 200 且含 http_requests_total</div>
   </div>
-  <button class="sec" onclick="runChecks()">运行三项检查</button>
+  <button class="sec" onclick="runChecks()">运行四项检查</button>
   <div class="hint">假 Raft 端点返回 404 = 修复生效（此前返回 success:true）；<br>
     混合检索需记录含 <code>text</code> 字段的 metadata。</div>
 
@@ -177,7 +186,10 @@ async function call(method, path, body) {
   if (r.status === 401) {
     if (getToken()) { setToken(''); renderAuth(); }
   }
-  return { code: r.status, data };
+  // `raw` is the unparsed body. `data` falls back to it for non-JSON
+  // responses, but relying on that is obscure — /metrics is Prometheus text,
+  // so callers that need the verbatim output should read `raw`.
+  return { code: r.status, data, raw: text };
 }
 
 // ── token store ──────────────────────────────────────────────────────────
@@ -313,6 +325,38 @@ function mark(id, ok, msg) {
   e.textContent = (ok ? '✓ ' : '✗ ') + msg;
 }
 
+async function showMetrics() {
+  await guard(async () => {
+    const r = await call('GET', '/metrics');
+    if (r.code !== 200) {
+      show(`/metrics -> HTTP ${r.code}\n` +
+           (r.code === 401 ? '需要先在上方「认证」区登录。'
+                           : r.raw));
+      return;
+    }
+    const text = r.raw;
+    const lines = text.split('\n').filter(Boolean);
+    const series = lines.filter(l => !l.startsWith('#'));
+    const routes = series.filter(l => l.includes('http_requests_total{')).sort();
+    const latency = series.filter(l => l.includes('duration_ms_')).sort();
+
+    // Surface the parts most likely to be wrong first, instead of making the
+    // user read the raw dump.
+    show([
+      `HTTP ${r.code}  ·  样本行 ${series.length} 条`,
+      '',
+      '--- 请求计数（路由模板 + 状态码）---',
+      routes.length ? routes.join('\n') : '（暂无流量，先操作左侧功能再回来抓取）',
+      '',
+      '--- 请求延迟 ---',
+      latency.length ? latency.join('\n') : '（无）',
+      '',
+      '--- 完整输出 ---',
+      text,
+    ].join('\n'));
+  });
+}
+
 async function runChecks() {
   await guard(async () => {
     const log = [];
@@ -334,6 +378,21 @@ async function runChecks() {
                                   : '通过（认证未开启，或已带有效 token）';
     mark('c3', ok3, `/api/collections -> ${cols.code}  ${why}`);
     log.push(`[3] /api/collections = ${cols.code}  ${JSON.stringify(cols.data)}`);
+
+    // /metrics is not in the auth whitelist, so 401 is a legitimate answer when
+    // auth is on and no token was attached. Accept both, but additionally
+    // require real content — a 200 with an empty body would mean the endpoint
+    // is registered but nothing is instrumented, which is the actual bug this
+    // guards against.
+    const met = await call('GET', '/metrics');
+    const raw = met.code === 200 ? (met.raw || '') : '';
+    const ok4 = met.code === 401 || (met.code === 200 && raw.includes('http_requests_total'));
+    mark('c4', ok4, met.code === 401
+      ? '/metrics -> 401（认证已开启且未登录，符合预期）'
+      : `/metrics -> ${met.code}  ${raw.includes('http_requests_total')
+          ? '含 http_requests_total，埋点生效'
+          : '返回 200 但无请求计数 = 端点存在却未埋点'}`);
+    log.push(`[4] /metrics = ${met.code}  ${raw.slice(0, 400)}`);
 
     out.textContent = log.join('\n\n') + '\n\n' + out.textContent;
   });
