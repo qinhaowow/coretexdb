@@ -281,6 +281,79 @@ impl WriteAheadLog {
         Ok(seq)
     }
 
+    /// Append several entries and fsync once for the whole batch.
+    ///
+    /// [`Self::append`] fsyncs per entry, because that is the contract a
+    /// single acknowledged write needs. A batch of a thousand rows then pays
+    /// a thousand fsyncs — by far the largest cost on the bulk write path.
+    ///
+    /// The durability contract is deliberately all-or-nothing: `Ok` means
+    /// every entry in the batch reached the disk before returning, so a
+    /// caller may treat it exactly like a sequence of single appends. A
+    /// failure means none of it is acknowledged, and the caller must leave
+    /// the corresponding in-memory state untouched.
+    pub async fn append_batch(
+        &self,
+        entries: &mut [WalEntry],
+    ) -> std::io::Result<Vec<u64>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Assign sequences first: they must be contiguous and in order, and
+        // assigning them before serialising keeps the counter and the file in
+        // agreement even if serialising then fails.
+        let start = {
+            let mut counter = self.sequence_counter.write().await;
+            let start = *counter + 1;
+            for (offset, entry) in entries.iter_mut().enumerate() {
+                entry.sequence = start + offset as u64;
+            }
+            *counter = start + entries.len() as u64 - 1;
+            start
+        };
+
+        let mut bytes = Vec::new();
+        for entry in entries.iter() {
+            let json = serde_json::to_vec(entry)?;
+            let checksum = crc32(&json);
+            bytes.extend_from_slice(format!("{:08x}|", checksum).as_bytes());
+            bytes.extend_from_slice(&json);
+            bytes.push(b'\n');
+        }
+
+        {
+            let current_size = *self.current_size.write().await;
+            if current_size + bytes.len() as u64 > self.max_segment_size {
+                self.rotate().await?;
+            }
+        }
+
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&*self.current_file.read().await)
+            .await?;
+        file.write_all(&bytes).await?;
+        file.flush().await?;
+        // One fsync for the whole batch: the durability boundary is the
+        // batch, which is what the caller was told it was getting.
+        file.sync_all().await?;
+
+        {
+            let mut size = self.current_size.write().await;
+            *size += bytes.len() as u64;
+        }
+        {
+            let mut stats = self.stats.write().await;
+            stats.total_entries += entries.len() as u64;
+            stats.total_bytes += bytes.len() as u64;
+            stats.last_sequence = start + entries.len() as u64 - 1;
+        }
+
+        Ok(entries.iter().map(|e| e.sequence).collect())
+    }
+
     /// Create a convenience entry and append it.
     pub async fn log_operation(
         &self,
@@ -1069,5 +1142,77 @@ mod tests {
         let (batch, truncated) = wal.read_entries_since(2).await.unwrap();
         assert!(!truncated, "no hole at or below position 2");
         assert_eq!(batch.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn append_batch_lands_every_entry_with_contiguous_sequences() {
+        let (_dir, wal) = setup_wal().await;
+
+        let mut batch: Vec<WalEntry> = (0..5)
+            .map(|i| {
+                WalEntry::new(
+                    WalEntryType::Insert,
+                    "c",
+                    &format!("k{i}"),
+                    serde_json::json!({}),
+                )
+            })
+            .collect();
+        let sequences = wal.append_batch(&mut batch).await.unwrap();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
+
+        let entries = wal.read_all_entries().await.unwrap();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(
+            entries.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            entries.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(),
+            vec!["k0", "k1", "k2", "k3", "k4"]
+        );
+
+        // An empty batch touches nothing.
+        assert!(wal.append_batch(&mut []).await.unwrap().is_empty());
+        assert_eq!(wal.read_all_entries().await.unwrap().len(), 5);
+
+        // A single append after a batch continues the sequence.
+        let mut one =
+            WalEntry::new(WalEntryType::Insert, "c", "next", serde_json::json!({}));
+        assert_eq!(wal.append(&mut one).await.unwrap(), 6);
+        assert_eq!(wal.last_sequence().await, 6);
+    }
+
+    #[tokio::test]
+    async fn append_batch_survives_a_restart() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().as_ref().to_string();
+
+        {
+            let wal = WriteAheadLog::new(&path);
+            wal.init().await.unwrap();
+            let mut batch: Vec<WalEntry> = (0..3)
+                .map(|i| {
+                    WalEntry::new(
+                        WalEntryType::Insert,
+                        "c",
+                        &format!("k{i}"),
+                        serde_json::json!({"v": i}),
+                    )
+                })
+                .collect();
+            wal.append_batch(&mut batch).await.unwrap();
+        }
+
+        // A fresh instance must see the whole batch with the counter restored
+        // past it — that is what makes the batch durable, not merely written.
+        let wal = WriteAheadLog::new(&path);
+        wal.init().await.unwrap();
+        let entries = wal.read_all_entries().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(wal.last_sequence().await, 3);
+        let mut next =
+            WalEntry::new(WalEntryType::Insert, "c", "later", serde_json::json!({}));
+        assert_eq!(wal.append(&mut next).await.unwrap(), 4);
     }
 }

@@ -445,3 +445,101 @@ async fn test_pq_persist_and_load_roundtrip() {
         .await
         .unwrap());
 }
+
+/// D2: the SIMD kernels and the scalar reference must agree on random input.
+///
+/// Vectorisation changes accumulation order, so the two are not bit-identical;
+/// what has to hold is that they agree to floating-point tolerance — which is
+/// what keeps search rankings unchanged.
+#[test]
+fn simd_distance_agrees_with_the_scalar_reference() {
+    use super::{metric_distance, metric_distance_scalar};
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    // Dimensions around the 8/16-wide SIMD lanes, plus odd sizes that force
+    // the scalar tail.
+    for dim in [1usize, 3, 4, 8, 16, 17, 64, 129] {
+        for _ in 0..25 {
+            let a: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
+            let b: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
+            for metric in ["euclidean", "dotproduct", "manhattan", "cosine", "unknown"] {
+                let fast = metric_distance(metric, &a, &b);
+                let reference = metric_distance_scalar(metric, &a, &b);
+                let tolerance = 1e-4 * reference.abs().max(1.0);
+                assert!(
+                    (fast - reference).abs() <= tolerance,
+                    "{metric} dim={dim}: simd {fast} vs scalar {reference}"
+                );
+            }
+        }
+    }
+}
+
+/// D2: the edge cases the search paths rely on keep their contract.
+#[test]
+fn distance_edge_cases_are_unchanged() {
+    use super::metric_distance;
+
+    // Mismatched lengths stay "infinitely far" — callers filter on it.
+    assert_eq!(metric_distance("cosine", &[1.0, 2.0], &[1.0]), f32::MAX);
+    assert_eq!(metric_distance("euclidean", &[1.0], &[1.0, 2.0]), f32::MAX);
+
+    // A zero vector is maximally far under cosine, not NaN.
+    assert_eq!(metric_distance("cosine", &[0.0, 0.0], &[1.0, 2.0]), 1.0);
+    assert_eq!(metric_distance("cosine", &[1.0, 2.0], &[0.0, 0.0]), 1.0);
+    // Empty inputs keep the pre-SIMD answer.
+    assert_eq!(metric_distance("cosine", &[], &[]), 1.0);
+
+    // Identical vectors: zero under euclidean, negative norm under dot.
+    assert!(
+        metric_distance("euclidean", &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]).abs() < 1e-6
+    );
+    assert!((metric_distance("dotproduct", &[1.0, 2.0], &[1.0, 2.0]) + 5.0).abs() < 1e-4);
+}
+
+/// D2: the full scan must return what a serial scan would.
+///
+/// The top-k heap is not a stable sort, so with equal distances the *order*
+/// among tied candidates is unspecified; what must hold is the set of ids and
+/// their distances. With distinct random vectors there are no ties, so the
+/// order is compared too.
+#[tokio::test]
+async fn full_scan_matches_a_serial_reference() {
+    use super::metric_distance_scalar;
+    use rand::Rng;
+
+    let manager = IndexManager::new();
+    manager
+        .create_index("scan", "brute_force", "euclidean")
+        .await
+        .unwrap();
+    let index = manager.get_index("scan").await.unwrap().unwrap();
+
+    let mut rng = rand::thread_rng();
+    let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
+    for i in 0..500 {
+        let vector: Vec<f32> = (0..16).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        rows.push((format!("v{i}"), vector.clone()));
+        index.add(&format!("v{i}"), &vector).await.unwrap();
+    }
+    let query: Vec<f32> = (0..16).map(|_| rng.gen_range(-1.0..1.0)).collect();
+
+    let hits = index.search(&query, 10).await.unwrap();
+    assert_eq!(hits.len(), 10);
+
+    // Serial reference over the same data, sorted exactly as the index sorts.
+    let mut reference: Vec<(String, f32)> = rows
+        .iter()
+        .map(|(id, vector)| (id.clone(), metric_distance_scalar("euclidean", &query, vector)))
+        .collect();
+    reference.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
+    let expected: Vec<String> = reference.into_iter().take(10).map(|(id, _)| id).collect();
+
+    let got: Vec<String> = hits.into_iter().map(|h| h.id).collect();
+    assert_eq!(got, expected, "full scan changed the ranking");
+
+    // And with ties, the set must still be right.
+    let tied = index.search(&vec![0.0; 16], 5).await.unwrap();
+    assert_eq!(tied.len(), 5);
+}

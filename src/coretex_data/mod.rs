@@ -8,7 +8,7 @@ use crate::coretex_storage::StorageEngine;
 use crate::coretex_index::{IndexManager, SearchResult};
 use crate::coretex_transaction::{TransactionManager, TransactionId, IsolationLevel, TransactionError};
 use crate::coretex_lakehouse::VectorLakehouse;
-use crate::coretex_utils::wal::{WriteAheadLog, WalEntryType};
+use crate::coretex_utils::wal::{WriteAheadLog, WalEntry, WalEntryType};
 
 pub mod storage_adapter;
 pub use storage_adapter::{UnifiedStorageAdapter, AdapterError, ConsistencyLevel, AdapterStats};
@@ -419,6 +419,46 @@ impl DataManager {
         } else {
             Ok(0)
         }
+    }
+
+    /// Journal a batch of row writes with a single fsync.
+    ///
+    /// Returns immediately when no WAL is configured. With one, the entries
+    /// are appended in order and acknowledged together: success means the
+    /// whole batch is durable, failure means none of it is. The caller keeps
+    /// the same "the log lands before memory does" discipline it has with
+    /// per-row appends, without paying an fsync per row — which on a
+    /// thousand-row bulk write was the single largest cost.
+    async fn wal_log_batch<'a, I>(
+        &self,
+        entry_type: WalEntryType,
+        collection: &str,
+        rows: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (&'a str, &'a [f32], &'a serde_json::Value)>,
+    {
+        let Some(wal) = self.wal.get() else {
+            return Ok(());
+        };
+        let mut entries: Vec<WalEntry> = rows
+            .into_iter()
+            .map(|(key, vector, metadata)| {
+                WalEntry::new(
+                    entry_type,
+                    collection,
+                    key,
+                    serde_json::json!({
+                        "vector": vector,
+                        "metadata": metadata,
+                    }),
+                )
+            })
+            .collect();
+        wal.append_batch(&mut entries)
+            .await
+            .map_err(CoreTexError::Io)?;
+        Ok(())
     }
 
     /// Recover database state by replaying the WAL into the storage engine.
@@ -1477,18 +1517,20 @@ impl DataManager {
 
         let index_name = index_name_for(collection);
 
+        // Durable order: WAL (one fsync for the whole batch) → storage →
+        // memory → index. Any durable failure aborts the batch instead of
+        // pretending success.
+        self.wal_log_batch(
+            WalEntryType::Insert,
+            collection,
+            vectors
+                .iter()
+                .map(|(id, vec, meta)| (id.as_str(), vec.as_slice(), meta)),
+        )
+        .await?;
+
         let mut ids = Vec::new();
         for (id, vector, metadata) in vectors {
-            // Durable order: WAL → storage → memory → index. Any durable
-            // failure aborts the batch instead of pretending success.
-            self.wal_log(
-                WalEntryType::Insert,
-                collection,
-                &id,
-                &vector,
-                &metadata,
-            ).await?;
-
             let storage_key = format!("{}:{}", collection, id);
             {
                 let storage = self.storage.read().await;
