@@ -143,6 +143,10 @@ pub struct DataManager {
     /// replication replay go through [`Self::write_data_unchecked`] and are
     /// unaffected — a replica must still apply what the primary sends.
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// Optional Pub/Sub fan-out (see [`crate::coretex_pubsub`]). `None`
+    /// until [`Self::set_event_bus`] attaches one, and the write path does
+    /// no extra work in that case.
+    event_bus: OnceLock<Arc<crate::coretex_pubsub::EventBus>>,
 }
 
 impl DataManager {
@@ -253,6 +257,7 @@ impl DataManager {
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
             read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            event_bus: OnceLock::new(),
         }
     }
 
@@ -274,6 +279,7 @@ impl DataManager {
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
             read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            event_bus: OnceLock::new(),
         }
     }
 
@@ -296,6 +302,7 @@ impl DataManager {
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
             read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            event_bus: OnceLock::new(),
         }
     }
 
@@ -320,6 +327,7 @@ impl DataManager {
             data_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             filter_index_cache: Arc::new(RwLock::new(HashMap::new())),
             read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            event_bus: OnceLock::new(),
         }
     }
 
@@ -352,6 +360,37 @@ impl DataManager {
     /// Uses OnceLock — can only be called once.
     pub fn set_wal(&self, wal: Arc<WriteAheadLog>) -> Result<()> {
         self.wal.set(wal).map_err(|_| CoreTexError::Other("WAL already set".to_string()))
+    }
+
+    /// Attach the Pub/Sub event bus. Optional: with no bus the write path
+    /// does no extra work, and once attached every successful mutation
+    /// announces itself. Uses OnceLock — one bus per node.
+    pub fn set_event_bus(&self, bus: Arc<crate::coretex_pubsub::EventBus>) -> Result<()> {
+        self.event_bus
+            .set(bus)
+            .map_err(|_| CoreTexError::Other("event bus already set".to_string()))
+    }
+
+    /// The attached event bus, if any.
+    pub fn event_bus(&self) -> Option<Arc<crate::coretex_pubsub::EventBus>> {
+        self.event_bus.get().cloned()
+    }
+
+    /// Announce a change to the Pub/Sub bus.
+    ///
+    /// Never fails and never blocks: with no bus this is a no-op, and a
+    /// missing or lagging subscriber must not turn a write that already
+    /// succeeded into an error.
+    fn emit_change(
+        &self,
+        collection: &str,
+        event_type: &str,
+        ids: &[String],
+        metadata: Option<serde_json::Value>,
+    ) {
+        if let Some(bus) = self.event_bus.get() {
+            bus.publish_change(collection, event_type, ids, metadata);
+        }
     }
 
     /// Check if WAL is enabled.
@@ -1085,6 +1124,7 @@ impl DataManager {
             .await
             .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
 
+        self.emit_change(name, "create_collection", &[], None);
         Ok(())
     }
 
@@ -1145,6 +1185,7 @@ impl DataManager {
             storage.delete(&key).await?;
         }
 
+        self.emit_change(name, "delete_collection", &[], None);
         Ok(())
     }
 
@@ -1246,6 +1287,12 @@ impl DataManager {
             }
         }
 
+        self.emit_change(
+            &name,
+            "import_collection",
+            &[],
+            Some(serde_json::json!({ "records": chunk.records.len() })),
+        );
         Ok(chunk.records.len())
     }
 
@@ -1341,6 +1388,12 @@ impl DataManager {
             }
         }
 
+        self.emit_change(
+            new_name,
+            "rename_collection",
+            &[],
+            Some(serde_json::json!({ "from": old_name })),
+        );
         Ok(())
     }
 
@@ -1414,6 +1467,7 @@ impl DataManager {
             }
         }
 
+        self.emit_change(collection, "insert", &ids, None);
         Ok(ids)
     }
 
@@ -1434,6 +1488,7 @@ impl DataManager {
             .ok_or(CoreTexError::CollectionNotFound(collection.to_string()))?;
 
         let mut deleted = 0;
+        let mut removed_ids: Vec<String> = Vec::new();
         for id in ids {
             if !collection_data.contains_key(id) {
                 continue;
@@ -1462,8 +1517,10 @@ impl DataManager {
             }
 
             deleted += 1;
+            removed_ids.push(id.clone());
         }
 
+        self.emit_change(collection, "delete", &removed_ids, None);
         Ok(deleted)
     }
 
@@ -1777,6 +1834,7 @@ impl DataManager {
             let _ = index.add(id, &vector).await;
         }
 
+        self.emit_change(collection, "update", std::slice::from_ref(&id.to_string()), None);
         Ok(true)
     }
 
@@ -2188,6 +2246,7 @@ impl DataManager {
         }
         drop(wal);
 
+        self.emit_change(collection, "insert", &ids, None);
         Ok(ids)
     }
 
@@ -2230,6 +2289,7 @@ impl DataManager {
         }
         drop(wal);
 
+        self.emit_change(collection, "delete", ids, None);
         Ok(deleted)
     }
 
@@ -2285,6 +2345,7 @@ impl DataManager {
         }).map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
         drop(wal);
 
+        self.emit_change(collection, "update", std::slice::from_ref(&id.to_string()), None);
         Ok(true)
     }
 
@@ -2586,6 +2647,7 @@ impl DataManager {
             });
         }
 
+        self.emit_change(collection, "insert", &ids, None);
         Ok(ids)
     }
 
@@ -2654,6 +2716,7 @@ impl DataManager {
         self.transaction_manager.commit(txn_id).await
             .map_err(|e| CoreTexError::TransactionError(e.to_string()))?;
 
+        self.emit_change(collection, "delete", ids, None);
         Ok(deleted)
     }
 

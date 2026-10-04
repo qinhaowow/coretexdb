@@ -650,6 +650,34 @@ impl WebSocketServer {
         to_disconnect
     }
 
+    /// 把 C3 事件总线接到本 server：数据变更推给订阅了对应集合的连接。
+    ///
+    /// 这补上了长期空缺的一环——订阅/推送机制齐全，却没有任何东西触发
+    /// 推送。挂上总线后，写路径的每一次成功变更都会走到
+    /// [`Self::broadcast_to_collection`]。返回后台任务句柄；总线关闭时任务
+    /// 自行退出。
+    pub fn attach_event_bus(
+        self: &Arc<Self>,
+        bus: Arc<crate::coretex_pubsub::EventBus>,
+    ) -> tokio::task::JoinHandle<()> {
+        let server = Arc::clone(self);
+        let mut events = bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let collection = event.collection.clone();
+                        let _ = server.broadcast_to_collection(&collection, event).await;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        log::warn!("websocket pub/sub 落后，错过 {missed} 个事件");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    }
+
     /// 启动心跳后台任务
     pub fn start_heartbeat_task(server: Arc<Self>) {
         tokio::spawn(async move {
@@ -670,6 +698,18 @@ impl WebSocketServer {
     pub async fn reconnect(&self, resume_token: &str) -> Option<String> {
         let tokens = self.resume_tokens.read().await;
         tokens.get(resume_token).cloned()
+    }
+
+    /// 程序化订阅：把 `connection_id` 注册为 `collection` 的订阅者。
+    ///
+    /// 消息循环里的 `handle_subscribe` 维护的是同一张表；这个入口让库内
+    /// 消费者（测试、内部桥接）不必伪造一条 WebSocket 消息就能订阅。
+    pub async fn subscribe_connection(&self, connection_id: &str, collection: &str) {
+        let mut subs = self.subscriptions.write().await;
+        let entry = subs.entry(collection.to_string()).or_default();
+        if !entry.iter().any(|c| c == connection_id) {
+            entry.push(connection_id.to_string());
+        }
     }
 
     pub async fn get_stats(&self) -> WebSocketStats {
