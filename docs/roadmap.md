@@ -57,11 +57,11 @@
 
 ---
 
-## 阶段 C：Redis 级系统能力 ⬜
+## 阶段 C：Redis 级系统能力 🔄
 
 | # | 项 | 预估 |
 | --- | --- | ---: |
-| C1 | **主从复制**：WAL 传输、全量 + 增量同步、只读副本 | +3.0k 行 |
+| C1 | **主从复制**：WAL 传输、全量 + 增量同步、只读副本 | ✅ 真实 WAL 数据面（不用 `coretex_failover` 的半接线 KV 抽象）：**wal** `last_sequence` + `read_entries_since(since) → (tail, truncated)`（连续性覆盖段丢弃与日志重置，+2 单测）；**data 层** 只读守卫（`write_data` 拆出 `write_data_unchecked` 供恢复/回放豁免 + schema 三入口检查）、Create/DeleteCollection **锁内进 WAL**（增量携带 schema 变更）、`replication_snapshot`（位置→schema→记录 的读序保证接缝无缺口）/ `apply_replication_snapshot` / `apply_replicated_entries`（幂等、副本回写本地 WAL）；**coretex_replication** `ReplicationSnapshot`/`EntriesBatch`/`ReplicationStatus` + Transport trait（`HttpTransport`/`InProcessTransport`）+ `ReplicaSync`（全量→增量→追平、`replica_state.json` 原子持久、`spawn_loop`、apply 后 `persist_manifest` 保重启恢复）；**REST** `GET /replication/{status,snapshot,entries}`（auth skip 同 `/raft/*`）；**tests** `tests/replication.rs` 8 例（周期/只读拒绝/schema 与删除传播/幂等重放/状态续传/断尾回退/副本重启恢复/快照-尾部接缝） |
 | C2 | **分片/集群**：slot 路由、节点发现、迁移 | +4.0k 行 |
 | C3 | **Pub/Sub**：频道订阅 + 推送 | +1.0k 行 |
 | C4 | **快照与后台重写**：AOF/RDB 式格式 + 崩溃恢复演练 | +2.0k 行 |
