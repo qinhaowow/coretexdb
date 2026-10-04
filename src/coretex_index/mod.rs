@@ -175,12 +175,6 @@ impl BruteForceIndex {
             metric: metric.to_string(),
         }
     }
-    
-    /// Calculate distance between two vectors
-    /// Distance between two vectors under this index's metric.
-    fn calculate_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        metric_distance(&self.metric, a, b)
-    }
 }
 
 impl HNSWIndex {
@@ -382,18 +376,22 @@ impl ScalarIndex {
             .map(|(id, value)| (*value, id.clone()))
             .collect::<Vec<_>>();
 
+        // Ties break by id, so the snapshot is a function of the data rather
+        // than of the hash map's iteration order.
         sorted.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0).unwrap_or_else(|| {
-                if a.0.is_nan() && b.0.is_nan() {
-                    std::cmp::Ordering::Equal
-                } else if a.0.is_nan() {
-                    std::cmp::Ordering::Greater
-                } else if b.0.is_nan() {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
+            a.0.partial_cmp(&b.0)
+                .unwrap_or_else(|| {
+                    if a.0.is_nan() && b.0.is_nan() {
+                        std::cmp::Ordering::Equal
+                    } else if a.0.is_nan() {
+                        std::cmp::Ordering::Greater
+                    } else if b.0.is_nan() {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| a.1.cmp(&b.1))
         });
 
         sorted
@@ -448,10 +446,14 @@ impl Ord for HeapEntry<'_> {
         match (self.distance.is_nan(), other.distance.is_nan()) {
             (true, false) => std::cmp::Ordering::Greater,
             (false, true) => std::cmp::Ordering::Less,
-            _ => self
+            _ => match self
                 .distance
                 .partial_cmp(&other.distance)
-                .unwrap_or(std::cmp::Ordering::Equal),
+                .unwrap_or(std::cmp::Ordering::Equal)
+            {
+                std::cmp::Ordering::Equal => other.id.cmp(self.id),
+                order => order,
+            },
         }
     }
 }
@@ -512,10 +514,16 @@ impl VectorIndex for BruteForceIndex {
                 distance: entry.distance,
             })
             .collect();
+        // Ties are broken by id. Without this the order among equal distances comes
+        // from the hash map's iteration order, which changes with the table's
+        // layout — so a restart could return the same rows in a different
+        // order, and two replicas fed the same data could disagree on their
+        // rankings. Ids make the result a function of the data alone.
         results.sort_by(|a, b| {
             a.distance
                 .partial_cmp(&b.distance)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
         Ok(results)
     }
@@ -571,7 +579,10 @@ impl VectorIndex for HNSWIndex {
                 // neighbours. Rank by distance and keep the closest `m`.
                 let mut ranked: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
                 ranked.sort_by(|a, b| {
-                    a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+                    a.distance
+                        .partial_cmp(&b.distance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
                 });
                 ranked.truncate(self.m);
                 let neighbors: Vec<String> = ranked.into_iter().map(|r| r.id).collect();
@@ -680,7 +691,12 @@ impl VectorIndex for HNSWIndex {
 
         let (results, _) = self.search_layer(&current_entry, query, self.ef_search.max(k), 0, &vectors, &graph);
         let mut final_results: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
-        final_results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        final_results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         final_results.truncate(k);
 
         Ok(final_results)
@@ -720,7 +736,10 @@ impl VectorIndex for HNSWIndex {
                         // Keep the closest `m`, not the heap's arbitrary first `m`.
                         let mut ranked: Vec<SearchResult> = results.into_iter().map(|r| r.0).collect();
                         ranked.sort_by(|a, b| {
-                            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+                            a.distance
+                                .partial_cmp(&b.distance)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.id.cmp(&b.id))
                         });
                         ranked.truncate(self.m);
                         let neighbors: Vec<String> = ranked.into_iter().map(|r| r.id).collect();
@@ -899,7 +918,12 @@ impl VectorIndex for IVFIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         results.truncate(k);
 
         Ok(results)
@@ -1101,7 +1125,12 @@ impl VectorIndex for ScalarIndex {
             .collect();
         
         // Sort by distance (ascending)
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         
         // Take top k results
         Ok(results.into_iter().take(k).collect())
@@ -1791,7 +1820,10 @@ impl VectorIndex for PQIndex {
                 })
                 .collect();
             results.sort_by(|a, b| {
-                a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.id.cmp(&b.id))
             });
             results.truncate(k);
             return Ok(results);
@@ -1815,7 +1847,10 @@ impl VectorIndex for PQIndex {
             });
         }
         results.sort_by(|a, b| {
-            a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
         results.truncate(k);
 
