@@ -79,6 +79,7 @@ pub mod coretex_replication;
 pub mod coretex_cluster;
 pub mod coretex_pubsub;
 pub mod coretex_snapshot;
+pub mod coretex_stats;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -103,6 +104,7 @@ pub use coretex_replication::{ReplicationSnapshot, EntriesBatch, ReplicationStat
 pub use coretex_cluster::{slot_of, SLOT_COUNT, CollectionChunk, NodeInfo, ClusterNodeHealth, NodeRouting, ClusterInfo, ClusterRouter, ClusterTransport, LocalNodeTransport, ClusterMigrator, MigrationOutcome};
 pub use coretex_pubsub::{EventBus, EventReceiver};
 pub use coretex_snapshot::{SnapshotArchive, SnapshotMeta, BackgroundSnapshotter, CompactionReport, compact_wal};
+pub use coretex_stats::{OperationObserver, OperationTimer, CommandStat, CommandStats, CollectionInfo, ServerInfo, collect_info};
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
 pub use coretex_storage::{StorageEngine, MemoryStorage, FileStorage};
@@ -197,6 +199,10 @@ pub struct CoreTexDB {
     /// [`DataManager::data_version`] so no write can leave a stale index
     /// behind. Guards are never held across an `.await`.
     bm25_cache: std::sync::RwLock<std::collections::HashMap<(String, String), CachedBm25>>,
+    /// Optional command-statistics / slow-query observer (C5). `None`
+    /// until [`CoreTexDB::set_operation_observer`]; while unset the entry
+    /// points do no timing work at all.
+    operation_observer: std::sync::OnceLock<Arc<coretex_stats::OperationObserver>>,
 }
 
 /// Parameters for [`CoreTexDB::hybrid_search`].
@@ -474,6 +480,7 @@ impl CoreTexDB {
             wal: None,
             persistence,
             bm25_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            operation_observer: std::sync::OnceLock::new(),
         }
     }
 
@@ -769,7 +776,12 @@ impl CoreTexDB {
     }
 
     pub async fn insert_vectors(&self, collection: &str, vectors: Vec<(String, Vec<f32>, serde_json::Value)>) -> Result<Vec<String>> {
-        let ids = self.data_manager.insert_vectors(collection, vectors.clone()).await?;
+        let timer = self.op_timer("insert_vectors", collection, || format!("n={}", vectors.len()));
+        let ids = self.data_manager.insert_vectors(collection, vectors.clone()).await;
+        if let Some(timer) = timer {
+            timer.finish(ids.is_ok()).await;
+        }
+        let ids = ids?;
         // Mirror writes into PersistenceManager (data/coretex/collections/<name>/).
         if let Some(ref p) = self.persistence {
             for (id, vec, meta) in &vectors {
@@ -779,14 +791,51 @@ impl CoreTexDB {
         Ok(ids)
     }
 
-    pub async fn get_vector(&self, collection: &str, id: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>> {
-        self.data_manager.get_vector(collection, id).await.map(|opt| {
-            opt.map(|r| (r.vector, r.metadata))
+    /// Attach a command-statistics / slow-query observer (C5).
+    ///
+    /// Optional and one-shot. Until an observer is attached the entry points
+    /// do no clock reads and take no locks: [`Self::op_timer`] returns `None`
+    /// without even evaluating the parameter description.
+    pub fn set_operation_observer(
+        &self,
+        observer: Arc<coretex_stats::OperationObserver>,
+    ) -> Result<()> {
+        self.operation_observer.set(observer).map_err(|_| {
+            CoreTexError::Other("operation observer already set".to_string())
         })
     }
 
+    /// Begin observing one operation. `params` is a closure so the
+    /// description is only built when someone is listening.
+    fn op_timer<'a>(
+        &'a self,
+        command: &str,
+        collection: &str,
+        params: impl FnOnce() -> String,
+    ) -> Option<coretex_stats::OperationTimer<'a>> {
+        self.operation_observer.get()?.timer(command, collection, &params())
+    }
+
+    pub async fn get_vector(&self, collection: &str, id: &str) -> Result<Option<(Vec<f32>, serde_json::Value)>> {
+        let timer = self.op_timer("get_vector", collection, || format!("id={id}"));
+        let result = self
+            .data_manager
+            .get_vector(collection, id)
+            .await
+            .map(|opt| opt.map(|r| (r.vector, r.metadata)));
+        if let Some(timer) = timer {
+            timer.finish(result.is_ok()).await;
+        }
+        result
+    }
+
     pub async fn delete_vectors(&self, collection: &str, ids: &[String]) -> Result<usize> {
-        let n = self.data_manager.delete_vectors(collection, ids).await?;
+        let timer = self.op_timer("delete_vectors", collection, || format!("n={}", ids.len()));
+        let deleted = self.data_manager.delete_vectors(collection, ids).await;
+        if let Some(timer) = timer {
+            timer.finish(deleted.is_ok()).await;
+        }
+        let n = deleted?;
         // Mirror deletes into PersistenceManager.
         if let Some(ref p) = self.persistence {
             for id in ids {
@@ -837,7 +886,14 @@ impl CoreTexDB {
     }
 
     pub async fn search(&self, collection: &str, query: Vec<f32>, k: usize, filter: Option<serde_json::Value>) -> Result<Vec<SearchResult>> {
-        self.data_manager.search(collection, query, k, filter).await
+        let timer = self.op_timer("search", collection, || {
+            format!("k={k}, dim={}, filtered={}", query.len(), filter.is_some())
+        });
+        let result = self.data_manager.search(collection, query, k, filter).await;
+        if let Some(timer) = timer {
+            timer.finish(result.is_ok()).await;
+        }
+        result
     }
 
     /// Hybrid search: fuse ANN neighbours with BM25 text matches using
