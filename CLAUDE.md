@@ -8,20 +8,25 @@
 |----|-----|
 | 版本 | **0.2.4**（`VERSION` / `Cargo.toml` / `Cargo.lock` / `RELEASE_NOTES.md` 一致） |
 | 工作分支 | `release/v0.2.1-base`（默认分支仍 `master`） |
-| 最新 commit | `15290ee` — `test(replication): C1 end-to-end coverage; mark the roadmap item done` |
+| 最新 commit | `dd04926` — `feat(stats): C5 command statistics, slow-query logging and INFO` |
 | tag | `v0.2.4` → `53292cd`（已推远端）；历史 `v0.2.3`→`c14e486`、`v0.2.2`→`e12b6f6` |
-| 工作区 | **ahead 3**：`603da0a` audit 测试、`b8c844a` graphql 端点（并行会话）+ `15290ee` C1 测试与 roadmap（我）。**13 文件未提交 WIP 属并行会话**：`CHANGELOG.md`、`README.md`、`src/coretex_api/rest/mod.rs`（error_http_status 中间件）、cli/compression/crypto/`distributed/http_rpc`/index/`lakehouse/s3_http`/persistence/security/sql、`coretex_grpc/server.rs`、`tests/rest_metrics.rs` |
+| 工作区 | **ahead 8**（我 5：`15290ee` C1 测试 / `671187d` 记忆 / `202b5c0` C2 / `c17208f` C3 / `568831c` C4 / `dd04926` C5；并行会话 2：`603da0a` audit 测试、`b8c844a` graphql）。**13 文件未提交 WIP 属并行会话**：`CHANGELOG.md`、`README.md`、`src/coretex_api/rest/mod.rs`（error_http_status 中间件）、cli/compression/crypto/`distributed/http_rpc`/index/`lakehouse/s3_http`/persistence/security/sql、`coretex_grpc/server.rs`、`tests/rest_metrics.rs` |
 
-### 近期完成（2026-10-04，C1 主从复制收口）
+### 近期完成（2026-10-04，阶段 C「Redis 级系统能力」全收口 C1-C5）
 
-1. **C1 主从复制** ✅ 走**真实 WAL 数据面**（明确不复用 `coretex_failover` 的半接线 Raft KV 抽象）：
-   - `wal.rs`：`last_sequence()`（读 append 用的同一 counter，init 后 `stats.last_sequence` 不恢复所以不能用它）+ `read_entries_since(since) -> (tail, truncated)`；连续性判定 = `oldest > since+1`（段丢弃留洞）或 `since > last`（日志在客户端脚下被重置）或 `空日志 && since>0`
-   - `coretex_data`：**只读守卫** —— `write_data()` 拆出 `write_data_unchecked()`（启动恢复/复制回放豁免）+ 6 处 schema/TTL/清理入口显式检查；**CreateCollection/DeleteCollection 进 WAL 且在 collections 写锁内**（此前三处 `wal_log` 只覆盖 insert/delete/update，schema 变更不进日志 → 增量复制会丢 schema）；`replication_snapshot()` 读序 **位置 → schemas → records**（记录写持 data 写锁跨 WAL append、schema 写持 collections 锁跨 WAL append，两条纪律共同保证"快照 + 尾部无缺口、无丢失，且重放幂等"）；`apply_replication_snapshot`（清空 → 灌 storage → 走 `restore_from_storage` 正常恢复路径重建 schema/内存/索引）、`apply_replicated_entries`（幂等回放 + 回写副本**自己**的 WAL）
-   - `src/coretex_replication.rs`：`ReplicationSnapshot`/`EntriesBatch`（`lsn` 由**已发出条目**推导，绝不信另采样的水位）/`ReplicationStatus` + `ReplicationTransport` trait（`HttpTransport` **由并行会话补了 HTTP status 检查**、`InProcessTransport` 同进程双实例）+ `ReplicaSync`（全量→增量→追平、`replica_state.json` 原子持久、`spawn_loop`、`persist_manifest` 保证重启后 schema 可恢复）
-   - REST：`GET /replication/{status,snapshot,entries}`（auth skip 同 `/raft/*`；未 push 前属内部通道，部署方需网络层保护）
-   - **测试**：`tests/replication.rs` 8 例（全量→增量→追平周期 / 只读拒绝 / schema 与删除传播 / 幂等重放 / 状态文件续传 / 无日志断尾回退 / 副本重启本地恢复 / 快照-尾部接缝）全绿
-2. **并行会话的提交序列**（我的 6 个 B 线提交已被 push 并入历史）：`bc1a4a7` auth 用户持久化、`ddbddd8`+/`b8c844a` `/console` 与 `/graphql` 端点、`adc70ac` 限流器封顶 + gRPC 限流、`2f62bfe` `/metrics`（修了三处会撒谎的实现）、`462a506` **提交了我的复制模块**（lib.rs 已声明模块而文件未提交会让干净检出编译不过）并改进 `HttpTransport`、`59e4186`/`603da0a` 审计日志与其端到端测试、`e87c5c9` per-feature 编译门禁、`bd33d41`/`1dc9234` `--features full` 修复、`49a3430` 修我两个写不通的 WAL 测试
-3. **B4 用户拍板暂缓**：三孤立模块（ann/graph/tantivy 3.8k 行）零调用点、文档零承诺——C/D 后再定
+1. **C1 主从复制** ✅ 走**真实 WAL 数据面**（不复用 `coretex_failover` 半接线 KV 抽象）：`read_entries_since(since) -> (tail, truncated)`（连续性覆盖段丢弃与日志重置）；**只读守卫**（`write_data`/`write_data_unchecked` 拆分 + 6 处入口检查）；**CreateCollection/DeleteCollection 进 WAL 且在 collections 锁内**（此前 schema 变更不进日志 → 增量复制丢 schema）；**快照读序定理**（位置→schemas→records，配合两条"锁内 WAL"纪律保证无缺口且幂等）；`ReplicaSync` 全量→增量→追平 + `replica_state.json` + `persist_manifest`。核心模块由并行会话在 `462a506` 提交（并改进 `HttpTransport` 查 status），测试与 roadmap 由我 `15290ee` 收口。REST `/replication/{status,snapshot,entries}`
+2. **C2 分片/集群** ✅ `202b5c0` + `src/coretex_cluster.rs`：**集合级分片**（单集合跨节点要合并部分 ANN 结果，留后续）+ Redis 式 16384 槽（CRC16/XMODEM、`{hashtag}` 同槽、MOVED 语义错误含槽号）+ `ClusterRouter`（集合↔槽双向索引、区间分配、概览）+ `probe_all` 节点发现（无 transport 报 down 而非静默跳过）+ `CollectionChunk` 迁移（schema 逐字保真：维度/度量/索引类型）+ `ClusterMigrator` **先搬数据后切路由**（目标失败路由不动；源保留副本待显式清理）
+3. **C3 Pub/Sub** ✅ `c17208f` + `src/coretex_pubsub.rs`：补上长期空缺的**发布端**（websocket 订阅机制齐全却零触发点）。`EventBus`（tokio broadcast，可选挂载；发布永不失败永不阻塞，慢订阅者收 `Lagged` 而非反压写路径）；`DataManager::set_event_bus` + 10 处写路径 emit（含 tx 变体；**只广播成功落地的变更**，delete 只列真正存在的 id，clear 作为 delete 广播）；`WebSocketServer::attach_event_bus` 桥接既有订阅表 + `subscribe_connection` 程序化入口
+4. **C4 快照与后台重写** ✅ `568831c` + `src/coretex_snapshot.rs`：`coretex_backup` 是文件级拷贝（运行中拷 live 文件 ≠ 一致），改走 C1 同一条门取一致快照（锁内拷贝、锁外序列化）；容器 `CTSNAP01+长度+CRC32+payload`（与 WAL 同一套校验）+ 原子落盘 + 损坏/截断/非快照均拒绝并指明失败项；`SnapshotArchive`（save/load/list/latest/prune/restore_into）；`BackgroundSnapshotter` 定期 BGSAVE；**`compact_wal`** 折叠为每 key 最终状态写到**新目录**（绝不改活跃日志，遇缺口拒绝）。**演练抓出并修复真 bug**：`recover_from_wal` 丢弃 CreateCollection、靠首行向量猜 schema（恢复后度量/索引类型丢失）→ 现 schema 条目按序先于数据回放
+5. **C5 慢查询/命令统计/INFO** ✅ `dd04926` + `src/coretex_stats.rs`：`SlowQueryLogger` 此前完备但零调用点，现由库入口直连。`OperationObserver`（逐命令 calls/errors/total/max + 可选慢查询日志；**未挂观察者时连参数描述都不求值**）；`search`/`insert_vectors`/`get_vector`/`delete_vectors` 经 `op_timer` 插桩；`collect_info` 分段报告（Server/Replication/Keyspace/Stats/Cluster）+ Redis 风格文本渲染，**只读标志取自 C1 复制守卫**
+6. **并行会话动态**：他们替我提交过 C1 核心（发现 lib.rs 已声明模块而文件未提交会让干净检出编译不过），并修了我两个写不通的 WAL 测试（`49a3430`）；`DataChangeEvent` 根导出被他们改名为 `WsDataChangeEvent`（我走 `coretex_pubsub::DataChangeEvent`）；`WebSocketServer` 事件接收口叫 `event_receiver()`
+
+### C 线已知限制（有意留后续，记录在此免得重犯）
+- **HTTP 端点延后**：C2 节点端点/MOVED 响应、C3 WebSocket accept 路由、C5 INFO 端点与 CLI 命令——都因 `src/coretex_api/rest/mod.rs` 与 `src/coretex_cli/mod.rs` 属并行会话 WIP 而不混合改动。库层 API 全部齐备，接上端点即可
+- 事务写（`*_tx`）**不进 WAL**（既有缺陷）→ 既不被复制也不被本地恢复；`rename_collection` 不进 WAL（副本需全量重同步才跟上）
+- 复制端点与 `HttpTransport` **无认证**（部署方需网络层保护，同 Redis 复制默认做法）
+- 副本回放与迁移导入**不写本地 WAL**（持久性来自 storage + manifest，`persist_manifest` 由 `ReplicaSync`/`LocalNodeTransport` 负责）
+- `compact_wal` 的"日志有缺口则拒绝"分支**未直接测试**（缺口由 `read_entries_since` 的 wal 单测覆盖）
 
 ### 之前完成（2026-10-01，B 线主体收口）
 
@@ -39,7 +44,7 @@
 5. **B2a hybrid 搜索接线**：`CoreTexDB::hybrid_search`（向量 + BM25 → RRF 融合、单侧可用、filter 两侧生效）；BM25 缓存按 `data_version` 失效；`add_documents` 批量建 O(n)（原循环单加是 O(n²)）；**0 分命中过滤**。`tests/hybrid_search.rs` 7 例
 6. 索引持久化接线：`VectorIndex::persist` + `IndexManager::load_index`、原子写+校验和防陈旧索引、`restore_from_storage` 两阶段、CLI `coretex index save|list`
    - Windows 验收：`E:\Ubuntn24042\wintest` 脚本 `windows_acceptance.ps1 -Root <dir>`，**19/19 全绿**
-   - Linux 测试基线：**491** 全绿（0.2.3 时代）；此后 +ffi 7 +rerank 6 +filter_index 10 +replication 8；`--lib` 单测上次全量 449 绿 + 并行会话修好的 2 个 = **451**（全量待确认）
+   - Linux 测试基线：**491** 全绿（0.2.3 时代）；C 线收口后全量实测 **lib 482 + 13 个集成套件全绿**（persistence 26 / filtered_search 6 / hybrid_search 7 / rerank 3 / ffi_api 7 / filter_index 6 / ttl 2 / index_persistence 3 / replication 8 / cluster 8 / snapshot 5 / pubsub 6 / stats 6）
 
 ### 用户偏好 / 约束
 - **不要主动 push / 打 tag**，除非明确要求；push 前必须本地全量 `cargo test` 全绿（定向绿不算）
@@ -110,15 +115,15 @@ ReplicaSync ──(Transport: Http / InProcess)──> 主库
 
 ## 下次可能任务
 
-- [ ] **C2 分片/集群**（最大头，roadmap +4.0k）：slot 路由、节点发现、迁移。起点建议：`coretex_distributed`（`TwoPhaseCommit`/`DistributedLock` 已有半成品）+ `coretex_failover` 的概念对齐，但都未接线——先摸清无调用点再定设计
-- [ ] **C3 Pub/Sub**（+1.0k）：`coretex_websocket` 已有 WebSocketServer/订阅消息骨架，可能直接接线
-- [ ] **C4 快照与后台重写**（+2.0k）：`coretex_backup` + `coretex_persistence` 可复用；复制快照已是可导出的全量形态
-- [ ] **C5 慢查询/命令统计/INFO**（+1.0k）：`SlowQueryLogger`/`PrometheusMetrics` 已存在，缺 INFO 汇总面
-- [ ] **D1-D4 生产化**：观测/SIMD/测试/文档（**D5 clippy 归并行会话**，工作区 13 文件 WIP 中）
-- [ ] **推送 ahead 3**（`603da0a`、`b8c844a`、`15290ee`）：等并行会话 13 文件 WIP 收口 → 本地全量 `cargo test` 全绿（基线 451 lib + 集成，逐项确认）→ SSH443 push
-- [ ] **B3 余项**：分页参数、错误码统一（并行会话的 `error_http_status` 正是错误码方向，避免重复造）、CLI/REST `--rerank` 标志
+- [ ] **D1 可观测性统一出口**（+1.5k）：并行会话已上 `/metrics`（`PrometheusMetrics`）+ 代码里有零散 `tracing::info!`——缺一个统一门面：一次初始化同时接管 Prometheus 文本导出与 tracing 订阅，并把 C 线新能力（复制 LSN/延迟、集群槽分布、快照/压实耗时、命令统计）纳入同一出口。注意 `/metrics` 端点在 `coretex_api/rest/mod.rs`（对方 WIP）——先做库层门面
+- [ ] **D2 性能**（+2.0k）：`coretex_simd` 距离函数接线（现状：模块存在但搜索路径是否真走 SIMD 待查）、批量写入（`bulk_*` 已委托但无并行化）、并行扫描（storage 全量扫描）
+- [ ] **D3 Redis 级测试**（+15k，工作量最大）：故障注入（WAL 截断/段丢失/存储损坏 → 恢复行为断言）、崩溃一致性（快照+尾部接缝已有 8 例可扩展）、对拍（快照/复制/压实三条恢复路径互相结果一致）
+- [ ] **D4 文档**（+3.0k）：英文 README 完整版、故障恢复演练、运维手册、Python 文档。**注意 `README.md` 目前是对方 WIP**——先写新文件（`docs/OPERATIONS.md`/`docs/RECOVERY.md`）避免冲突
+- [ ] **推送 ahead 8**（我 6 + 对方 2）：等并行会话 13 文件 WIP 收口 → 本地全量 `cargo test` 全绿（基线 lib 482 + 13 套件）→ SSH443 push
+- [ ] **C 线延后项**（等 `rest/mod.rs`/`cli/mod.rs` 归属清晰后一并做）：C2 节点端点+MOVED 响应、C3 WebSocket accept 路由、C5 INFO 端点与 `coretex info` CLI
+- [ ] **B3 余项**：分页参数、错误码统一（对方 `error_http_status` 正是此方向，避免重复造）、CLI/REST `--rerank` 标志
 - [ ] B4 孤立模块：**暂缓**（用户拍板，C/D 后再定）
-- [ ] 遗留缺陷：`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；事务写不进 WAL（见上）
+- [ ] 遗留缺陷：`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；事务写不进 WAL（见 C 线限制）
 - [ ] 确认 Actions 是否 green（需用户看网页）；是否把分支改名 `release/v0.2.4`
 
 ## Git 身份
