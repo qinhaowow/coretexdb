@@ -1090,27 +1090,40 @@ impl DataManager {
 
     pub async fn delete_collection(&self, name: &str) -> Result<()> {
         self.ensure_writable()?;
+        self.delete_collection_inner(name, true).await
+    }
+
+    /// Drop a collection: schema, rows, index and persisted vectors.
+    ///
+    /// `journal` decides whether the removal is written to the WAL. The
+    /// replication snapshot discipline needs it (a tail must carry every
+    /// schema change); a migration import does not — a migrated collection
+    /// is not this node's replication history.
+    async fn delete_collection_inner(&self, name: &str, journal: bool) -> Result<()> {
         let mut collections = self.collections.write().await;
 
         if !collections.contains_key(name) {
             return Err(CoreTexError::CollectionNotFound(name.to_string()));
         }
 
-        // Replication: log the removal inside the collections lock, matching
-        // the create path — the tail must carry every schema change that a
-        // snapshot taken before this point does not.
-        self.wal_log(
-            WalEntryType::DeleteCollection,
-            name,
-            "",
-            &[],
-            &serde_json::json!({}),
-        )
-        .await?;
+        if journal {
+            // Replication: log the removal inside the collections lock,
+            // matching the create path — the tail must carry every schema
+            // change that a snapshot taken before this point does not.
+            self.wal_log(
+                WalEntryType::DeleteCollection,
+                name,
+                "",
+                &[],
+                &serde_json::json!({}),
+            )
+            .await?;
+        }
 
         collections.remove(name);
+        drop(collections);
 
-        let mut data = self.write_data().await?;
+        let mut data = self.write_data_unchecked().await;
         data.remove(name);
         drop(data);
 
@@ -1133,6 +1146,107 @@ impl DataManager {
         }
 
         Ok(())
+    }
+
+    /// One collection as a self-contained, transportable chunk — the unit a
+    /// cluster migration moves. `None` when the collection does not exist.
+    ///
+    /// Read order matches [`Self::replication_snapshot`]: log position first,
+    /// then schema, then rows, so anything written after `lsn` is absent
+    /// here rather than half-present.
+    pub async fn export_collection(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::coretex_cluster::CollectionChunk>> {
+        let lsn = self.replication_lsn().await;
+        let schema = {
+            let collections = self.collections.read().await;
+            collections.get(name).cloned()
+        };
+        let Some(schema) = schema else {
+            return Ok(None);
+        };
+        let records = {
+            let data = self.data.read().await;
+            data.get(name).cloned().unwrap_or_default()
+        };
+        Ok(Some(crate::coretex_cluster::CollectionChunk {
+            schema,
+            records,
+            lsn,
+        }))
+    }
+
+    /// Load `chunk` as a collection, replacing any collection of that name.
+    ///
+    /// Migration's receiving half. The schema is preserved verbatim —
+    /// dimension, metric and index type — rather than rebuilt from defaults,
+    /// then rows land in storage before memory and index. Re-importing the
+    /// same chunk is idempotent. Deliberately does not journal to the WAL
+    /// (see [`Self::delete_collection_inner`]); durability comes from
+    /// storage plus the manifest, which the caller persists — cluster
+    /// migration does that through `ClusterMigrator`.
+    pub async fn import_collection(
+        &self,
+        chunk: &crate::coretex_cluster::CollectionChunk,
+    ) -> Result<usize> {
+        let name = chunk.schema.name.clone();
+
+        if self.collection_exists(&name).await {
+            self.delete_collection_inner(&name, false).await?;
+        }
+
+        {
+            let mut collections = self.collections.write().await;
+            collections.insert(name.clone(), chunk.schema.clone());
+        }
+
+        // Durable first: a restart recovers rows from storage.
+        {
+            let storage = self.storage.read().await;
+            for (id, record) in &chunk.records {
+                storage
+                    .store(
+                        &format!("{}:{}", name, id),
+                        &record.vector,
+                        &record.metadata,
+                    )
+                    .await?;
+            }
+        }
+
+        let mut data = self.write_data_unchecked().await;
+        let map = data.entry(name.clone()).or_default();
+        map.clear();
+        for (id, record) in &chunk.records {
+            map.insert(id.clone(), record.clone());
+        }
+        drop(data);
+
+        // Index in the schema's own engine — a migrated collection must be
+        // searchable exactly like the original.
+        let index_name = index_name_for(&name);
+        let engine = chunk
+            .schema
+            .indexes
+            .first()
+            .map(|i| index_type_name(&i.index_type))
+            .unwrap_or(DEFAULT_INDEX_TYPE);
+        self.index_manager
+            .create_index(
+                &index_name,
+                engine,
+                metric_name(&chunk.schema.distance_metric),
+            )
+            .await
+            .map_err(|e| CoreTexError::IndexError(e.to_string()))?;
+        if let Ok(Some(index)) = self.index_manager.get_index(&index_name).await {
+            for (id, record) in &chunk.records {
+                let _ = index.add(id, &record.vector).await;
+            }
+        }
+
+        Ok(chunk.records.len())
     }
 
     pub async fn list_collections(&self) -> Result<Vec<String>> {

@@ -62,7 +62,7 @@
 | # | 项 | 预估 |
 | --- | --- | ---: |
 | C1 | **主从复制**：WAL 传输、全量 + 增量同步、只读副本 | ✅ 真实 WAL 数据面（不用 `coretex_failover` 的半接线 KV 抽象）：**wal** `last_sequence` + `read_entries_since(since) → (tail, truncated)`（连续性覆盖段丢弃与日志重置，+2 单测）；**data 层** 只读守卫（`write_data` 拆出 `write_data_unchecked` 供恢复/回放豁免 + schema 三入口检查）、Create/DeleteCollection **锁内进 WAL**（增量携带 schema 变更）、`replication_snapshot`（位置→schema→记录 的读序保证接缝无缺口）/ `apply_replication_snapshot` / `apply_replicated_entries`（幂等、副本回写本地 WAL）；**coretex_replication** `ReplicationSnapshot`/`EntriesBatch`/`ReplicationStatus` + Transport trait（`HttpTransport`/`InProcessTransport`）+ `ReplicaSync`（全量→增量→追平、`replica_state.json` 原子持久、`spawn_loop`、apply 后 `persist_manifest` 保重启恢复）；**REST** `GET /replication/{status,snapshot,entries}`（auth skip 同 `/raft/*`）；**tests** `tests/replication.rs` 8 例（周期/只读拒绝/schema 与删除传播/幂等重放/状态续传/断尾回退/副本重启恢复/快照-尾部接缝） |
-| C2 | **分片/集群**：slot 路由、节点发现、迁移 | +4.0k 行 |
+| C2 | **分片/集群**：slot 路由、节点发现、迁移 | ✅ 集合级分片（单集合跨节点需合并部分 ANN 结果，留后续）：`src/coretex_cluster.rs` —— **slot 路由**（Redis 式 16384 槽 + CRC16/XMODEM + `{hashtag}` 同槽，未分配报 MOVED 语义含 slot 号；`ClusterRouter` 集合↔槽双向索引、区间批量分配、概览）；**节点发现**（`ClusterTransport` + `probe_all` 报存活/集合数/记录数/LSN，无 transport 的节点报 down 而非静默跳过）；**迁移**（`CollectionChunk` = schema+行+位置，`DataManager::export_collection`/`import_collection` 逐字保真 schema 与索引类型；`ClusterMigrator` **先搬数据后切路由**，目标失败则路由不动，源保留副本待显式清理）。同进程 `LocalNodeTransport` + 8 集成例（路由/保真/幂等/迁移/失败不切/探测/目标重启恢复/概览）+ 4 单测（slot 稳定性与 hashtag、分布跨度、分配反查、区间与重复 id 校验）。**HTTP 侧（节点端点 + MOVED 响应）延后**：`coretex_api/rest/mod.rs` 属并行会话 WIP，不混入改动 |
 | C3 | **Pub/Sub**：频道订阅 + 推送 | +1.0k 行 |
 | C4 | **快照与后台重写**：AOF/RDB 式格式 + 崩溃恢复演练 | +2.0k 行 |
 | C5 | **慢查询日志 / 命令统计 / INFO** | +1.0k 行 |
