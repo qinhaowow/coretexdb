@@ -78,6 +78,7 @@ pub mod coretex_ffi;
 pub mod coretex_replication;
 pub mod coretex_cluster;
 pub mod coretex_pubsub;
+pub mod coretex_snapshot;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -101,6 +102,7 @@ pub use coretex_edge::{EdgeDB, EdgeConfig, EdgeStats, EdgeSearchResult};
 pub use coretex_replication::{ReplicationSnapshot, EntriesBatch, ReplicationStatus, ReplicationTransport, HttpTransport, InProcessTransport, ReplicaSync, SyncOutcome};
 pub use coretex_cluster::{slot_of, SLOT_COUNT, CollectionChunk, NodeInfo, ClusterNodeHealth, NodeRouting, ClusterInfo, ClusterRouter, ClusterTransport, LocalNodeTransport, ClusterMigrator, MigrationOutcome};
 pub use coretex_pubsub::{EventBus, EventReceiver};
+pub use coretex_snapshot::{SnapshotArchive, SnapshotMeta, BackgroundSnapshotter, CompactionReport, compact_wal};
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
 pub use coretex_storage::{StorageEngine, MemoryStorage, FileStorage};

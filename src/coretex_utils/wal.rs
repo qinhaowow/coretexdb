@@ -25,7 +25,7 @@ use tokio::sync::RwLock;
 
 /// Simple CRC32 implementation (IEEE 802.3 polynomial).
 /// Used to detect corruption in WAL entries.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFFFFFF;
     for &byte in data {
         crc ^= byte as u32;
@@ -677,6 +677,25 @@ impl RecoveryManager {
                     } else {
                         result.push(item);
                     }
+                }
+                WalEntryType::CreateCollection | WalEntryType::DeleteCollection => {
+                    // Schema changes belong to recovery: without them a
+                    // replayed database rebuilds collections by guessing
+                    // (dimension from the first row, default metric and
+                    // index), so it would hold the right rows under the
+                    // wrong schema. Carried through outside transaction
+                    // buffering — a collection change is not transactional.
+                    result.push((
+                        entry.entry_type,
+                        entry.collection.clone(),
+                        String::new(),
+                        Vec::new(),
+                        entry
+                            .data
+                            .get("metadata")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({})),
+                    ));
                 }
                 _ => {}
             }

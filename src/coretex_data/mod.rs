@@ -448,6 +448,42 @@ impl DataManager {
         let mut replayed = 0u64;
         let mut skipped = 0u64;
 
+        // Schema changes first, in log order. The row replay below collapses
+        // to data entries, so schema entries never reach it — and a row can
+        // only land in a collection that exists with the right metric and
+        // index type, not one guessed from the row itself.
+        for (entry_type, collection, _key, _vector, metadata) in &entries {
+            match entry_type {
+                WalEntryType::CreateCollection => {
+                    if !self.collection_exists(collection).await {
+                        if let Ok(schema) =
+                            serde_json::from_value::<CollectionSchema>(metadata.clone())
+                        {
+                            let engine = schema
+                                .indexes
+                                .first()
+                                .map(|i| index_type_name(&i.index_type))
+                                .unwrap_or(DEFAULT_INDEX_TYPE);
+                            let _ = self
+                                .create_collection_inner(
+                                    &schema.name,
+                                    schema.dimension,
+                                    metric_name(&schema.distance_metric),
+                                    engine,
+                                )
+                                .await;
+                        }
+                    }
+                }
+                WalEntryType::DeleteCollection => {
+                    if self.collection_exists(collection).await {
+                        let _ = self.delete_collection_inner(collection, false).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Collapse the WAL to the *final* operation per `collection:id`. The
         // WAL is append-only, so replaying every entry in order and applying it
         // one by one made the outcome depend on coincidences (e.g. Insert then
@@ -553,6 +589,10 @@ impl DataManager {
                         collection_data.remove(key);
                     }
                     replayed += 1;
+                }
+                WalEntryType::DeleteCollection => {
+                    // Applied in the schema pass above, before the data
+                    // collapse; a data entry cannot reach here.
                 }
                 _ => {}
             }
