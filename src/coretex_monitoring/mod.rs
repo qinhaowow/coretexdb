@@ -323,6 +323,22 @@ impl DatabaseMetrics {
         
         self.metrics.get_metrics_text().await
     }
+
+    /// Publish an arbitrary gauge on the shared recorder.
+    ///
+    /// The unified telemetry surface (D1) uses this to fold state the
+    /// database owns — replication position, cluster slots, command
+    /// statistics — into the same Prometheus text the `/metrics` endpoint
+    /// already serves, so there is one export instead of several
+    /// half-populated ones.
+    pub async fn publish_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: Option<HashMap<String, String>>,
+    ) {
+        self.metrics.set_gauge(name, value, labels).await;
+    }
 }
 
 impl Default for DatabaseMetrics {

@@ -80,6 +80,7 @@ pub mod coretex_cluster;
 pub mod coretex_pubsub;
 pub mod coretex_snapshot;
 pub mod coretex_stats;
+pub mod coretex_telemetry;
 
 #[cfg(test)]
 mod coretex_bm25_tests;
@@ -105,6 +106,7 @@ pub use coretex_cluster::{slot_of, SLOT_COUNT, CollectionChunk, NodeInfo, Cluste
 pub use coretex_pubsub::{EventBus, EventReceiver};
 pub use coretex_snapshot::{SnapshotArchive, SnapshotMeta, BackgroundSnapshotter, CompactionReport, compact_wal};
 pub use coretex_stats::{OperationObserver, OperationTimer, CommandStat, CommandStats, CollectionInfo, ServerInfo, collect_info};
+pub use coretex_telemetry::{Telemetry, TelemetryConfig};
 
 pub use coretex_core::{Vector, Document, CollectionSchema, IndexConfig, IndexType, CoreTexError, Result};
 pub use coretex_storage::{StorageEngine, MemoryStorage, FileStorage};

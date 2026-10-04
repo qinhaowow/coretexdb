@@ -69,11 +69,11 @@
 
 ---
 
-## 阶段 D：生产化 ⬜
+## 阶段 D：生产化 🔄
 
 | # | 项 | 预估 |
 | --- | --- | ---: |
-| D1 | 可观测性：Prometheus 指标 + OpenTelemetry tracing 统一出口 | +1.5k 行 |
+| D1 | 可观测性：Prometheus 指标 + OpenTelemetry tracing 统一出口 | ✅ `src/coretex_telemetry.rs`：三套指标栈并存（自研 `PrometheusMetrics`、包着它的 `DatabaseMetrics`——`/metrics` 端点实际用的那套、以及装了却从未使用的官方 `metrics` crate）、tracing 有事件无订阅者。`Telemetry::init` 是唯一开关：装 `EnvFilter` 订阅者（**进程内二次调用是幂等 no-op 而非报错**，`Cargo.toml` 给 `tracing-subscriber` 补 `env-filter` feature 才支持按模块过滤）、持有端点已在渲染的 `DatabaseMetrics`（**端点零改动即可工作**）、把 C5 命令统计挂到 db，并把 C 线状态**汇入同一份 Prometheus 文本**（复制 LSN / 只读标志 / WAL 开关 / 集合与行数 / 逐命令 calls·errors·mean / 慢查询数与最慢 / C2 集群每节点槽位与未分配槽，命名避开已有 12 个 `coretexdb_*` 防撞名）。5 单测（含真实库端到端：attach→查询→文本含全部 gauges） |
 | D2 | 性能：SIMD 距离、批量写入、并行扫描 | +2.0k 行 |
 | D3 | **测试覆盖到 Redis 级别**：故障注入、崩溃一致性、对拍测试 | +15k 行 |
 | D4 | 文档：英文 README 完整版、故障恢复演练、运维手册、Python 文档 | +3.0k 行 |
