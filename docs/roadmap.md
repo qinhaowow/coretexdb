@@ -159,6 +159,99 @@ node20，被强制跑在 node24 上）。强制 ≠ 支持，故全部升到原�
   `requires-python = ">=3.9"`。按声明改为 3.9+，并补上从 checkout 安装所需的
   stubs 生成步骤（原先一字未提，照着做只能装出一个 gRPC 不可用的包）。
 
+### 阶段 D 补充：runner 镜像固定（2026-10-09）
+
+GitHub 通知：`ubuntu-latest` 将在 **2026-10-19 至 11-19** 之间从 Ubuntu 24.04
+迁移到 26.04。迁移是**渐进**的——窗口期内同一条未改动的工作流，两次运行可能落在
+不同镜像上，于是「上次是绿的」不再说明任何问题。
+
+26.04 的变化（本项目暴露面很窄）：系统 Python 3.12→3.14、Node 22→24、
+Java 17→25、CMake 3.31→4.4，并移除 Miniconda、Swift、Julia、Pulumi、fastlane
+等预装工具。这些**都碰不到本项目**——Rust 由 `rust-toolchain` action 提供，
+Python 由 `setup-python` 指定 3.11，两者都自行下载而非读镜像；Java / CMake /
+Helm / Docker 一概未用。
+
+起初判断「真正碰得到的是 **C 库面**」，理由是 `Cargo.toml` 的注释写着
+`librocksdb-sys 0.10` 锁 RocksDB **7.9.2**。**这个判断是错的**，而且它差点
+导致一个错误的结论：加 Linux ARM64 目标时，发行版的 arm64 RocksDB 只有
+**8.9.1**，而 crate 锁 7.9.2，看起来必然编译失败，于是差点放弃这个目标。
+查 `Cargo.lock` 才看清：`librocksdb-sys 0.16.0+8.10.0` 的 `default = ["static"]`，
+它**自带 RocksDB 源码并静态链接**（706 个 `.cc`），根本不看系统装了什么版本。
+于是 ARM64 交叉编译只需要交叉编译器，`librocksdb-dev` 装了也是摆设。
+`Cargo.toml` 里那条过时注释正是错误判断的源头。
+
+处理方式：
+
+- **7 处 `runs-on: ubuntu-latest` 全部 pin 到 `ubuntu-24.04`**，并把原因、
+  日期、改回条件写进注释。发布路径（`release.yml` 三平台矩阵）同样 pin——
+  **不该用一条允许失败的探测腿去构建要发布的东西**。
+- **`build.yml` 的 `build` job 增加一条 `ubuntu-26.04` 探测腿**，配
+  `continue-on-error: ${{ matrix.os == 'ubuntu-26.04' }}`。这条腿变红不影响
+  workflow，因此可以一直留着；等它绿了，再把 label 主动改成 `ubuntu-26.04`。
+  这正是把「label 动了、发布流程炸了」换成「我们在自己的分支上、自己的时间点上
+  先看到」。
+- 探测腿的依赖步骤会打印 `image` / `rocksdb` / `openssl` / `protoc` 的实际版本，
+  这样它红的时候能直接从日志判断是哪个库动了，而不是重跑一遍去猜。
+- **顺带修掉三个会静默失效的条件判断**：原写法是
+  `if: matrix.os == 'ubuntu-latest'`。矩阵里一旦把 label 换掉，这个条件**恒为
+  假**，于是 Linux 的 `librocksdb-dev libssl-dev` 根本不会安装，编译在缺库处
+  失败——而日志里那个步骤显示为「已跳过」，不显示为「失败」。三处（Ubuntu /
+  macOS / Windows 依赖安装）全部改用 `runner.os`，与 label 无关。
+
+> `continue-on-error` 用表达式而非整 job 级开关，是为了让 26.04 的失败**显示在
+> 界面上但不阻断**；整 job 关掉的话，那条腿连红都不会红，就失去了探测意义。
+
+- **缓存键原本会让两条腿互相污染**：缓存键只含 `runner.os` 与 `Cargo.lock`
+  哈希，而 `ubuntu-24.04` 与 `ubuntu-26.04` 的 `runner.os` **都是 `Linux`**——
+  两者共用同一份 `target/` 缓存条目。一个发行版上编出来的产物被另一个取用时，
+  cargo 的 fingerprint **未必能察觉**：它跟踪工具链与 crate，不跟踪系统库的
+  ABI（librocksdb、OpenSSL 都不是）。症状是「后跑的那条腿」报一个莫名其妙的
+  链接错误，看起来像偶发失败而实际是缓存撞车。现把镜像名并入缓存键
+  （`${{ runner.os }}-${{ matrix.os || runner.os }}-...`），无矩阵的 job 回落
+  到 `runner.os`——它们本来就只有一条腿。
+
+### 阶段 D 补充：五平台发布线（2026-10-09）
+
+发布从「有人记得推 tag」改为「推 `release/v*` 分支即发布」：`release.yml` 改为
+监听分支，`create-release` 用 `tag_name: v<version>` + `commitish: ${{ github.sha }}`
+由流水线自己创建 tag。好处是 tag 指向**真正产出这些产物的那个提交**，而不是
+某人事先敲下的一个名字。
+
+矩阵扩到五个目标：
+
+| 平台 | target | runner | 说明 |
+| --- | --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | 原生 |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04` | **交叉编译** |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` | 原生 |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `macos-15` | 原生 |
+| macOS Intel | `x86_64-apple-darwin` | `macos-15-intel` | 原生，`macos-13` 已退役 |
+
+macOS runner 一并 pin：`macos-latest` 已在 2026 年 6 月迁到 macOS 26，而
+`macos-15-intel` 是 GitHub 最后一个 Intel 镜像（2027-08 退役）。发布产物的
+来源若取决于一个 label，就不可复现。
+
+配置过程中修掉三处会静默出错的地方：
+
+- **`body` 里的版本号一直是空的**。`create-release` job 没有
+  `Resolve version` 步骤，而 `body` 引用了 `steps.ver.outputs.v`——step 的输出
+  不跨 job 传递，于是渲染出来是「CoreTexDB V multi-platform packages」，版本号
+  那个位置什么都没有。**缺了版本号的句子仍然读得通**，所以没人会发现。
+- **`prerelease` 会恒为 `true`**。原表达式是
+  `!startsWith(github.ref, 'refs/tags/v')`，改成分支触发后
+  `github.ref` 是 `refs/heads/release/v0.2.5-base`，于是每次发布都被标成
+  「无正式版的预发布」。现改为由**版本号**决定：版本含 `-`（如 `0.2.5-rc1`）
+  才是预发布。
+- **`create-release` 没有 `tag_name`**，分支触发时 action 无从得知该挂到哪个
+  tag 上。
+
+另加一道**发布闸门**：`build.yml` 与 `release.yml` 在 push 时并行触发，两个
+workflow 之间无法直接依赖（除非用 `workflow_run` 绕一层），所以原样推分支
+**可能在测试还红着的时候就把包装出去**。现新增 `verify` job 先跑默认 features
+的测试套件，`build-release` 与 `build-python` 都 `needs: verify`，任一步红则
+不发布。`--features full` 的编译仍留在 build job 里——它失败同样通过 `needs`
+阻断发布。
+
 > 附带记一笔工具坑：`cargo test "$t"`（带引号）会把 `--test foo` 作为**单个**
 > argv 传入，匹配不到任何测试二进制，于是回退去跑 lib 目标并打印
 > `0 passed, N filtered out`——**退出码仍为 0**。本次差点据此把「全绿」写进

@@ -2,8 +2,11 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      # The release line. Pushing here builds all five packages and publishes
+      # them; the pipeline creates the v<version> tag from the commit that
+      # produced the artifacts.
+      - 'release/v*'
   workflow_dispatch:
 
 env:
@@ -11,28 +14,97 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: verify-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # No librocksdb-dev: librocksdb-sys vendors RocksDB and links it
+          # statically, and the default feature set does not include it anyway.
+          sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
+          echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+
+      # Default features, not `full`. The published binaries are built with
+      # `full`, and testing that combination is slow enough to make releases
+      # tedious; what this gate is for is stopping a broken library from being
+      # packaged, and the default-feature suite is the part that catches that.
+      # A failure to compile `full` blocks the release through the build job's
+      # `needs` instead.
+      - name: Run the test suite
+        run: |
+          cargo test --lib
+          cargo test --test version_consistency
+          cargo test --test stats
+          cargo test --test replication
+          cargo test --test cluster
+          cargo test --test snapshot
+          cargo test --test pubsub
+          cargo test --test fault_injection
+
   build-release:
     name: Build Release (${{ matrix.os }})
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Runners are pinned: `ubuntu-latest` migrates to 26.04 between 19 Oct
+          # and 19 Nov 2026, `macos-latest` moved to macOS 26 in June, and
+          # `windows-latest` moves when Microsoft ships an image. A package
+          # whose provenance depends on a label is not reproducible. The
+          # probe leg in build.yml is allowed to fail; what gets published is
+          # not, so it must not be built on an image still in that state.
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             bin_dir: target/x86_64-unknown-linux-gnu/release
             exe_suffix: ''
+            cross: 'false'
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            bin_dir: target/aarch64-unknown-linux-gnu/release
+            exe_suffix: ''
+            cross: 'true'
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
             bin_dir: target/x86_64-pc-windows-msvc/release
             exe_suffix: '.exe'
-          - os: macos-latest
+            cross: 'false'
+          # macos-15 is arm64; macos-15-intel is the only Intel image GitHub
+          # still offers (it retires in August 2027, and macos-13 already did).
+          - os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
             bin_dir: target/aarch64-apple-darwin/release
             exe_suffix: ''
+            cross: 'false'
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            bin_dir: target/x86_64-apple-darwin/release
+            exe_suffix: ''
+            cross: 'false'
 
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +121,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.os || runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install system dependencies (Ubuntu)
         if: runner.os == 'Linux'
@@ -84,6 +156,44 @@ jobs:
         uses: step-security/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      # aarch64-unknown-linux-gnu. Everything else in this file builds for the
+      # host; this leg sets up a cross toolchain.
+      - name: Set up aarch64 cross toolchain
+        if: matrix.cross == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # No librocksdb-dev:arm64 — librocksdb-sys compiles its vendored copy.
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+
+          T=aarch64-unknown-linux-gnu
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            # `cc` picks these up per target; RocksDB, zstd-sys and lz4-sys all
+            # build through it, and the C++ ones need the cross g++.
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            echo "RANLIB_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ranlib"
+            # librocksdb-sys calls bindgen against its vendored headers, so
+            # libclang must be found without guessing.
+            echo "LIBCLANG_PATH=$(dirname "$(ls /usr/lib/llvm-*/lib/libclang.so.1 | head -1)")"
+          } >> "$GITHUB_ENV"
+
+          echo "aarch64-linux-gnu-gcc: $(aarch64-linux-gnu-gcc --version | head -1)"
+          echo "aarch64-linux-gnu-g++: $(aarch64-linux-gnu-g++ --version | head -1)"
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+
+      # Building ~700 vendored C++ files for a foreign target is slow enough
+      # that the default job timeout is worth revisiting per run.
+      - name: Report the cross toolchain
+        if: matrix.cross == 'true'
+        run: |
+          aarch64-linux-gnu-gcc -print-sysroot
+          aarch64-linux-gnu-gcc -print-multiarch
 
       - name: Resolve version
         id: ver
@@ -182,7 +292,20 @@ jobs:
 
   build-python:
     name: Build Python distributions
-    runs-on: ubuntu-latest
+    needs: verify
+    needs: verify
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, since
+    # librocksdb-sys is a C++ dependency — but it vendors RocksDB and links it
+    # statically, so the distribution's version never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v7
@@ -251,11 +374,30 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [build-release, build-python]
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        # `cut` rather than a `sed` regex: Cargo.toml is checked out with CRLF
+        # line endings, where a `$` anchor never matches and the version comes
+        # out empty.
+        run: echo "v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
@@ -265,11 +407,28 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           draft: false
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          # The pipeline creates the tag, so it has to be told which one. The
+          # tag names the commit the artifacts were actually built from rather
+          # than a name someone typed earlier.
+          tag_name: v${{ steps.ver.outputs.v }}
+          commitish: ${{ github.sha }}
+          # Pre-release is a property of the version, not of the trigger. A
+          # `refs/heads/...` ref made the old `!startsWith(... 'tags/v')`
+          # expression permanently true, which would have published every
+          # branch release as a pre-release.
+          prerelease: ${{ contains(steps.ver.outputs.v, '-') }}
           generate_release_notes: true
           files: artifacts/**/*
           body: |
-            CoreTexDB V${{ steps.ver.outputs.v }} multi-platform packages (full install-root).
+            CoreTexDB V${{ steps.ver.outputs.v }} — full install-root packages.
+
+            | Platform | Target |
+            |---|---|
+            | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+            | Linux ARM64 | `aarch64-unknown-linux-gnu` (cross-compiled) |
+            | Windows x86_64 | `x86_64-pc-windows-msvc` |
+            | macOS Apple Silicon | `aarch64-apple-darwin` |
+            | macOS Intel | `x86_64-apple-darwin` |
 
             Each archive contains:
             - `bin/` coretex (single entrypoint: server / backup / restore / doctor / dump)

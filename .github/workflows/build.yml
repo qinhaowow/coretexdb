@@ -17,7 +17,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # `ubuntu-latest` migrates to 26.04 between 19 Oct and 19 Nov 2026, so
+        # it runs here to surface the incompatibilities on a branch, on our
+        # schedule. Nothing depends on this leg: a red 26.04 does not fail the
+        # workflow, which is what makes it safe to leave in place.
+        os: [ubuntu-24.04, ubuntu-26.04, windows-latest, macos-latest]
+
+    # `--features full` pulls in librocksdb-sys, which vendors and statically
+    # links ~700 C++ files, so this leg is where a toolchain or header move
+    # would show up first. Read the log before calling the leg merely flaky.
+    continue-on-error: ${{ matrix.os == 'ubuntu-26.04' }}
 
     steps:
     - uses: actions/checkout@v7
@@ -31,30 +40,39 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
       uses: actions/cache@v6
       with:
         path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo build
       uses: actions/cache@v6
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Install system dependencies (Ubuntu)
-      if: matrix.os == 'ubuntu-latest'
+    - name: Install system dependencies (Linux)
+      # Keyed on the runner, not the matrix label: the label is a moving target
+      # and a guard written against it turns "the label moved" into "the
+      # dependencies silently stopped being installed".
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
         echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
         echo "protoc path: $(which protoc)"
+        # The probe leg exists precisely because these can change under us, so
+        # record them where a failure can be read back from the log.
+        echo "image: $(. /etc/os-release && echo "$PRETTY_NAME")"
+        echo "rocksdb: $(dpkg-query -W -f='${Version}' librocksdb-dev 2>/dev/null || echo absent)"
+        echo "openssl: $(dpkg-query -W -f='${Version}' libssl-dev 2>/dev/null || echo absent)"
+        echo "protoc: $(protoc --version 2>/dev/null || echo absent)"
 
     - name: Install system dependencies (macOS)
-      if: matrix.os == 'macos-latest'
+      if: runner.os == 'macOS'
       run: |
         brew install rocksdb openssl protobuf
         # 确保 protoc 在 PATH 中
@@ -62,7 +80,7 @@ jobs:
         echo "protoc path: $(which protoc)"
 
     - name: Install protoc (Windows)
-      if: matrix.os == 'windows-latest'
+      if: runner.os == 'Windows'
       shell: pwsh
       run: |
         $protocVersion = "25.1"
@@ -80,7 +98,7 @@ jobs:
     # and the Node 24 PRs unmerged; step-security's is the maintained drop-in
     # and takes the same inputs.
     - name: Activate MSVC toolchain (Windows)
-      if: matrix.os == 'windows-latest'
+      if: runner.os == 'Windows'
       uses: step-security/msvc-dev-cmd@v1
       with:
         arch: x64
@@ -91,7 +109,7 @@ jobs:
     # passed without having checked anything — a build that later failed in
     # `cc` would have had no clue why.
     - name: Report MSVC toolchain (Windows)
-      if: matrix.os == 'windows-latest'
+      if: runner.os == 'Windows'
       shell: pwsh
       run: |
         $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
@@ -116,7 +134,7 @@ jobs:
         }
 
     - name: Install libclang (Windows)
-      if: matrix.os == 'windows-latest'
+      if: runner.os == 'Windows'
       shell: pwsh
       run: |
         pip install libclang
@@ -149,7 +167,18 @@ jobs:
   # （例如 coretex_security_tests.rs 的 test_tls_self_signed_cert_disabled）。
   test-default:
     name: Test (default features)
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v7
@@ -161,7 +190,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -180,7 +209,18 @@ jobs:
   # 回归时的第一道信号）。
   feature-gate:
     name: Feature gate (each feature must compile)
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v7
@@ -192,7 +232,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -233,7 +273,18 @@ jobs:
 
   build-python:
     name: Build Python Package
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v7
@@ -318,7 +369,18 @@ jobs:
   examples:
     # examples/ 是对外可运行的示例，必须一直能编译、能跑通，否则文档就是假的。
     name: Examples
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v7
@@ -330,7 +392,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -356,7 +418,18 @@ jobs:
     # 只 gate「deny 级」clippy lint（恒真比较、恒不循环的死循环、坏的 rustdoc 链接等）
     # 与 rustdoc 能否构建；普通 warning 暂不卡，见 docs/roadmap.md D5。
     name: Lint
-    runs-on: ubuntu-latest
+    # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
+    # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this
+    # workflow can land on different images. 26.04 bumps system Python to
+    # 3.14, Node to 24, Java to 25 and CMake to 4.x, and drops several
+    # preinstalled tools — none of which this project uses, because Rust comes
+    # from rust-toolchain and Python from setup-python with an explicit
+    # version. The C library surface looked like the exposure, but
+    # librocksdb-sys vendors its RocksDB and links it statically, so whatever
+    # version the distribution ships never enters into it.
+    # To move deliberately: run the 26.04 leg below until it is green, then
+    # change these labels back to `ubuntu-26.04`.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v7
@@ -370,7 +443,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |

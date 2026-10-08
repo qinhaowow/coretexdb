@@ -128,6 +128,38 @@ ReplicaSync ──(Transport: Http / InProcess)──> 主库
   模块名来自 `coretex.proto`，故是 `coretex_pb2` 而非 `coretexdb_pb2`。
 - 详见 `docs/roadmap.md` 的「阶段 D 补充：CI 与发布流程」。
 
+### runner 镜像（2026-10-09 pin）
+- `ubuntu-latest` 在 **2026-10-19 → 11-19** 渐进迁移到 Ubuntu 26.04。全部
+  `runs-on` 已 pin 到 **`ubuntu-24.04`**（build.yml 6 处 + release.yml 3 处），
+  注释里写了原因与改回条件。
+- `build.yml` 的 `build` job 多一条 **`ubuntu-26.04` 探测腿**，
+  `continue-on-error: ${{ matrix.os == 'ubuntu-26.04' }}` —— 它红不影响 workflow，
+  所以能一直留着当预警。等它绿了再把 label 主动改成 `ubuntu-26.04`。
+- 26.04 的真实风险是 `librocksdb-dev`（`librocksdb-sys 0.10` 锁 RocksDB
+  7.9.2）。系统 Python / Node / Java / CMake 的变化碰不到本项目——Rust 来自
+  `rust-toolchain` action，Python 来自 `setup-python`（显式 3.11），都自行下载。
+- **写 `if:` 条件不要用矩阵里的 label**，用 `runner.os`。原写法
+  `if: matrix.os == 'ubuntu-latest'` 在 label 一换就恒为假，依赖静默不装，
+  编译失败却报「步骤已跳过」。三处已改为 `runner.os`。
+- 探测腿会打印 image / rocksdb / openssl / protoc 的实际版本，便于直接读日志定位。
+- **缓存键已并入镜像名**（`${{ runner.os }}-${{ matrix.os || runner.os }}-...`）。
+  原因：24.04 与 26.04 的 `runner.os` 都是 `Linux`，原本共用一份 `target/` 缓存，
+  而 cargo 的 fingerprint 跟踪工具链与 crate、**不跟踪系统库 ABI**，
+  于是先跑的那条腿的产物会被后跑的取用，表现为一条腿报莫名的链接错误。
+
+### 发布线（2026-10-09）
+- 分支 `release/v*` 一推送即发布，`release.yml` 监听分支，`create-release` 用
+  `tag_name: v<version>` + `commitish: ${{ github.sha }}` **由流水线创建 tag**。
+  tag 指向真正产出产物的提交。
+- **五个目标**：linux-x86_64、linux-arm64（交叉编译）、windows-msvc、
+  macOS aarch64（`macos-15`）、macOS x86_64（`macos-15-intel`，GitHub 最后一个
+  Intel 镜像）。runner 全部 pin。
+- **发布闸门**：`verify` job 先跑测试，`build-release` 与 `build-python` 都
+  `needs: verify`。原先两个 workflow 并行触发，可能测试还红着就发布了。
+- **step 输出不跨 job**：`create-release` 的 `body` 曾引用
+  `steps.ver.outputs.v`，而该步骤只存在于 `build-release`——版本号一直渲染成
+  空串，且缺了版本号的句子仍然读得通。已在该 job 内自行解析。
+
 ### 工具坑（写脚本时反复踩到）
 - `cargo test "$t"`（带引号）把 `--test foo` 当**单个 argv**，匹配不到测试二进制 →
   回退去跑 lib 并打印 `0 passed, N filtered out`，**退出码仍为 0**。必须 `${t}` 不加引号。
