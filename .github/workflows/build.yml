@@ -40,19 +40,19 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
       uses: actions/cache@v6
       with:
         path: ~/.cargo/git
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo build
       uses: actions/cache@v6
       with:
         path: target
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Linux)
       # Keyed on the runner, not the matrix label: the label is a moving target
@@ -190,7 +190,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -232,7 +232,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -392,7 +392,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |
@@ -443,7 +443,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
-        key: ${{ runner.os }}-${{ matrix.os || runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install system dependencies (Ubuntu)
       run: |

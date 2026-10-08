@@ -252,6 +252,14 @@ workflow 之间无法直接依赖（除非用 `workflow_run` 绕一层），所�
 不发布。`--features full` 的编译仍留在 build job 里——它失败同样通过 `needs`
 阻断发布。
 
+> 附带记一笔**校验**的坑：`yaml.safe_load` **接受重复 key**（后者静默覆盖前者），
+> 而 GitHub 的 workflow 校验器直接拒绝整个文件。批量改 YAML 时「先遍历预检、
+> 再遍历实际替换」会替换两次——第二次的模式仍匹配得到（模式只覆盖了 `name:`
+> 那一行），于是 `needs: verify` 出现两次，推上远端后报
+> `Invalid workflow file ... 'needs' is already defined`，**两个 workflow 一个
+> 都没跑起来**。改用 `strict_yaml.py`（构造 mapping 时检查重复）作为发布前的
+> 固定检查。
+
 > 附带记一笔工具坑：`cargo test "$t"`（带引号）会把 `--test foo` 作为**单个**
 > argv 传入，匹配不到任何测试二进制，于是回退去跑 lib 目标并打印
 > `0 passed, N filtered out`——**退出码仍为 0**。本次差点据此把「全绿」写进

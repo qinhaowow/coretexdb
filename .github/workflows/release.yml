@@ -121,7 +121,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.os || runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.os }}-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install system dependencies (Ubuntu)
         if: runner.os == 'Linux'
@@ -292,7 +292,6 @@ jobs:
 
   build-python:
     name: Build Python distributions
-    needs: verify
     needs: verify
     # Pinned deliberately. GitHub moves `ubuntu-latest` from 24.04 to 26.04
     # between 19 Oct and 19 Nov 2026, and during that rollout two runs of this

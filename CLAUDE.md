@@ -166,6 +166,12 @@ ReplicaSync ──(Transport: Http / InProcess)──> 主库
 - `SUITES+=("--test" name)` 会分两次迭代，等于没跑。要 `SUITES+=("--test name")`。
 - `cargo.toml` 是 **CRLF**：解析版本别用依赖 `$` 锚点的 sed，会静默返回空串。用 `cut -d'"' -f2`。
 - 跑 cargo 前先 `pgrep -x cargo`——并发 cargo 会删测试 binary，导致全量假红。
+- **校验 workflow 不能只用 `yaml.safe_load`**：它接受重复 key（后者覆盖前者），
+  而 GitHub 的校验器直接拒绝整个文件。曾因此把重复的 `needs: verify` 推上远端，
+  报 `Invalid workflow file ... 'needs' is already defined`，**两个 workflow 全部
+  没跑起来**。用 `/home/qh/strict_yaml.py`（构造 mapping 时检查重复）。
+- 批量改 YAML 时，「先预检一遍、再实际替换一遍」这种写法会**替换两次**——
+  第二次的模式仍能匹配到（因为只匹配了 `name:` 那一行）。预检阶段不要动字符串。
 
 ## 关键文件
 
