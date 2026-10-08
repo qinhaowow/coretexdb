@@ -2,15 +2,16 @@
 
 > 下次干活先读本文件。路径：`/home/qh/CoreTexDB/CLAUDE.md`（WSL Ubuntu）
 
-## 当前状态（2026-10-04）
+## 当前状态（2026-10-08）
 
 | 项 | 值 |
 |----|-----|
-| 版本 | **0.2.4**（`VERSION` / `Cargo.toml` / `Cargo.lock` / `RELEASE_NOTES.md` 一致） |
+| 版本 | **0.2.5**（已提升，`Cargo.toml` 为唯一真源，`tests/version_consistency.rs` 守护） |
 | 工作分支 | `release/v0.2.1-base`（默认分支仍 `master`） |
-| 最新 commit | `dd04926` — `feat(stats): C5 command statistics, slow-query logging and INFO` |
-| tag | `v0.2.4` → `53292cd`（已推远端）；历史 `v0.2.3`→`c14e486`、`v0.2.2`→`e12b6f6` |
-| 工作区 | **ahead 8**（我 5：`15290ee` C1 测试 / `671187d` 记忆 / `202b5c0` C2 / `c17208f` C3 / `568831c` C4 / `dd04926` C5；并行会话 2：`603da0a` audit 测试、`b8c844a` graphql）。**13 文件未提交 WIP 属并行会话**：`CHANGELOG.md`、`README.md`、`src/coretex_api/rest/mod.rs`（error_http_status 中间件）、cli/compression/crypto/`distributed/http_rpc`/index/`lakehouse/s3_http`/persistence/security/sql、`coretex_grpc/server.rs`、`tests/rest_metrics.rs` |
+| 最新 commit | `2c86ad1` — `fix(index): D5 clippy for our files, and the two real defects behind it` |
+| tag | 仍是 `v0.2.4` → `53292cd`；**0.2.5 未打 tag**（不主动打）。历史 `v0.2.3`→`c14e486`、`v0.2.2`→`e12b6f6` |
+| 工作区 | 与 `origin/release/v0.2.1-base` **同步**（15 个提交 `59e4186..2c86ad1` 已推）。**12 文件未提交 WIP 属并行会话**：`CHANGELOG.md`、`README.md`、`src/coretex_api/rest/mod.rs`、`cli/compression/crypto`/`distributed/http_rpc`/`lakehouse/s3_http`/`persistence`/`sql`、`coretex_grpc/server.rs`、`tests/rest_metrics.rs` —— 内容为 GraphQL 端点 + 审计 + gRPC 指标接线 + clippy，`cargo check --all-targets` 通过、`tests/rest_metrics.rs` 13/13 绿 |
+| 版本机制 | `Cargo.toml` 为唯一真源。`release.yml` 用 `Resolve version` 步骤派生归档名；三个安装脚本从 `VERSION`/`Cargo.toml` 派生默认安装根。**`Cargo.toml` 本地为 CRLF**，故版本提取用 `cut` 而非 `sed` 的 `$` 锚点（后者静默返回空串） |
 
 ### 近期完成（2026-10-04，阶段 C「Redis 级系统能力」全收口 C1-C5）
 
@@ -72,9 +73,9 @@
 
 ## 架构速查
 
-### 安装根（V0.2.4）
+### 安装根（V0.2.5）
 ```
-CoreTexDB-V0.2.4/
+CoreTexDB-V0.2.5/
   bin/     coretex（单二进制，argv[0] 分发）
   lib/     libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib（crate-type: rlib+cdylib+staticlib）
   include/ coretexdb.h（手写 FFI 头，13 函数；`tests/ffi_api.rs` 守护一致）
@@ -102,10 +103,37 @@ ReplicaSync ──(Transport: Http / InProcess)──> 主库
 单 `[[bin]] coretex`（`src/main.rs` 按 argv[0] 分发子命令）  
 默认 features: `tokio, serde, compression, metrics`（`full` 含 rocksdb/onnx 等，CI 用默认）
 
-### 版本号来源
-- 运行时：`env!("CARGO_PKG_VERSION")` → 读 `Cargo.toml`
-- 安装默认路径：scripts/systemd 里的 `/opt/CoreTexDB-V0.2.2`
-- Python SDK：`python/coretexdb/version.py` = `1.0.12`（独立线，勿混改）
+### 版本号来源（2026-10-08 起单一真源）
+- **权威源：`Cargo.toml` 的 `version`**
+- 运行时：`env!("CARGO_PKG_VERSION")`，另有 `lib.rs` 的 `DB_VERSION` 常量（嵌入方读它）
+- 打包：`release.yml` 的 `Resolve version` 步骤从 `Cargo.toml` 派生 `STAGE`
+- 安装：`install.sh` / `uninstall.sh` / `secure_setup.sh` 从 `VERSION`（回退 `Cargo.toml`）派生默认 `/opt/CoreTexDB-V<version>`
+- `VERSION` 文件是安装根内的随附副本，`cat` 直接用于日志与 release body
+- 门禁：`tests/version_consistency.rs` 4 条断言（`VERSION`↔`Cargo.toml`、`DB_VERSION`、打包文件无字面量、`VERSION` 单行）
+- Python SDK：`python/coretexdb/version.py` = `1.0.12`（**独立线，勿混改**）
+- 遗留：`README.md` 有 6 处 `V0.2.4` 是当前值而非历史，属并行会话 WIP，**待其收口时改**
+
+### CI 与发布流程（2026-10-08 配置完毕）
+- **actions 全部原生 Node 24**：`checkout` v7 / `cache` v6 / `setup-python` v7 /
+  `upload-artifact` v6 / `download-artifact` v7 / `action-gh-release` v3。
+  `ilammy/msvc-dev-cmd` **已废弃且无法升级**（仍是 node20、无 v2、PR 悬置），
+  换成 drop-in 替代 `step-security/msvc-dev-cmd@v1`。
+- **发布产物用 `--features full`**，与 `build.yml` 编译测试的组合一致；
+  Ubuntu 需 `librocksdb-dev libssl-dev pkg-config`，macOS 需 `brew install rocksdb openssl`。
+- **Python SDK 会真打包**：PR 上构建 sdist+wheel、`twine check`、校验 wheel 含 stubs、
+  装 wheel 后从 site-packages 导入并断言 protobuf 可用；`release.yml` 有独立
+  `build-python` job，两个分发包作为 Release 资产。
+- **pb2 stubs 生成到 `python/coretexdb/` 内**（wheel 只打包 `coretexdb*`），
+  生成后须 `sed -i 's/^import coretex_pb2 as /from . import coretex_pb2 as /'`。
+  模块名来自 `coretex.proto`，故是 `coretex_pb2` 而非 `coretexdb_pb2`。
+- 详见 `docs/roadmap.md` 的「阶段 D 补充：CI 与发布流程」。
+
+### 工具坑（写脚本时反复踩到）
+- `cargo test "$t"`（带引号）把 `--test foo` 当**单个 argv**，匹配不到测试二进制 →
+  回退去跑 lib 并打印 `0 passed, N filtered out`，**退出码仍为 0**。必须 `${t}` 不加引号。
+- `SUITES+=("--test" name)` 会分两次迭代，等于没跑。要 `SUITES+=("--test name")`。
+- `cargo.toml` 是 **CRLF**：解析版本别用依赖 `$` 锚点的 sed，会静默返回空串。用 `cut -d'"' -f2`。
+- 跑 cargo 前先 `pgrep -x cargo`——并发 cargo 会删测试 binary，导致全量假红。
 
 ## 关键文件
 
@@ -115,16 +143,19 @@ ReplicaSync ──(Transport: Http / InProcess)──> 主库
 
 ## 下次可能任务
 
-- [ ] **D1 可观测性统一出口**（+1.5k）：并行会话已上 `/metrics`（`PrometheusMetrics`）+ 代码里有零散 `tracing::info!`——缺一个统一门面：一次初始化同时接管 Prometheus 文本导出与 tracing 订阅，并把 C 线新能力（复制 LSN/延迟、集群槽分布、快照/压实耗时、命令统计）纳入同一出口。注意 `/metrics` 端点在 `coretex_api/rest/mod.rs`（对方 WIP）——先做库层门面
-- [ ] **D2 性能**（+2.0k）：`coretex_simd` 距离函数接线（现状：模块存在但搜索路径是否真走 SIMD 待查）、批量写入（`bulk_*` 已委托但无并行化）、并行扫描（storage 全量扫描）
-- [ ] **D3 Redis 级测试**（+15k，工作量最大）：故障注入（WAL 截断/段丢失/存储损坏 → 恢复行为断言）、崩溃一致性（快照+尾部接缝已有 8 例可扩展）、对拍（快照/复制/压实三条恢复路径互相结果一致）
-- [ ] **D4 文档**（+3.0k）：英文 README 完整版、故障恢复演练、运维手册、Python 文档。**注意 `README.md` 目前是对方 WIP**——先写新文件（`docs/OPERATIONS.md`/`docs/RECOVERY.md`）避免冲突
-- [ ] **推送 ahead 8**（我 6 + 对方 2）：等并行会话 13 文件 WIP 收口 → 本地全量 `cargo test` 全绿（基线 lib 482 + 13 套件）→ SSH443 push
-- [ ] **C 线延后项**（等 `rest/mod.rs`/`cli/mod.rs` 归属清晰后一并做）：C2 节点端点+MOVED 响应、C3 WebSocket accept 路由、C5 INFO 端点与 `coretex info` CLI
+A-D 四阶段已全部收口（`docs/roadmap.md` 全部 ✅）。剩余项：
+
+- [ ] **发布 0.2.5**：等并行会话 12 文件 WIP 收口 → 全量 `cargo test` 全绿 → 提交 → SSH443 push。**不主动打 tag**（用户规矩），等用户明确要求
+- [ ] **`README.md` 的 6 处 `V0.2.4`**（L1 标题 / L127 / L130 / L786 / L789 / L940「版本：V0.2.4」）是当前值，属对方 WIP，收口时一并改成 0.2.5
+- [ ] **D5 余下**：70 个 clippy warning 全在并行会话文件（spatial_transaction 7 / grpc 5 / sql 4 / cost_model 4 / gis 4…）、`cargo fmt --check`、覆盖率上报
+- [ ] **工具链未固定**：无 `rust-toolchain.toml`、`Cargo.toml` 无 `rust-version`，`stable` 随上游漂移。会加 `rust-version` 约束，但**固定 toolchain 文件会改变依赖解析，须跑全量回归**
+- [ ] **Python 包不上传 PyPI**：`release.yml` 现已把 wheel + sdist 作为 GitHub Release 资产发布，`twine check` 也过了。若要上 PyPI 还需 `twine upload` 与仓库 token（**须用户提供 secret，不要写进 workflow**）
+- [ ] **`--features full` 的 Windows 可编译性未验证**：`build.yml` 的 windows job 已在用 full，但 Actions 是否 green 需用户在网页确认。本地无法验证（Linux 不能编 msvc 目标）
+- [ ] **C 线延后端点**（卡在 `rest/mod.rs`/`cli/mod.rs` 归属）：C2 节点端点+MOVED 响应、C3 WebSocket accept 路由、C5 INFO 端点与 `coretex info` CLI
 - [ ] **B3 余项**：分页参数、错误码统一（对方 `error_http_status` 正是此方向，避免重复造）、CLI/REST `--rerank` 标志
-- [ ] B4 孤立模块：**暂缓**（用户拍板，C/D 后再定）
-- [ ] 遗留缺陷：`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；事务写不进 WAL（见 C 线限制）
-- [ ] 确认 Actions 是否 green（需用户看网页）；是否把分支改名 `release/v0.2.4`
+- [ ] B4 孤立模块（ann/graph/tantivy 3.8k 行零调用点）：用户拍板 C/D 后再定，**至今未定**
+- [ ] 遗留缺陷：`insert_vectors` 持 `data.write()` 跨 storage IO；事务 abort 无 undo；事务写不进 WAL；`rename_collection` 不进 WAL；复制端点无认证；`compact_wal` 的「日志有缺口则拒绝」分支无直接测试；crypto 的 `handshake` 不验证 A 方身份且 `SessionKeys::derive` 忽略 `nonce_b`（均为死代码）
+- [ ] 确认 Actions 是否 green（需用户看网页）
 
 ## Git 身份
 

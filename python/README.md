@@ -17,8 +17,24 @@ pip install coretexdb
 From a checkout of this repository:
 
 ```bash
+# The gRPC stubs are generated, not committed. They go *into* the package,
+# because a wheel carries only `coretexdb*` — stubs left beside it would be
+# dropped, and the installed SDK would import fine while reporting protobuf as
+# unavailable and raising on the first gRPC call.
+pip install grpcio-tools
+python -m grpc_tools.protoc -I./src/coretex_grpc \
+  --python_out=./python/coretexdb --grpc_python_out=./python/coretexdb \
+  ./src/coretex_grpc/coretex.proto
+
+# protoc emits an absolute import; inside the package it must be relative.
+sed -i 's/^import coretex_pb2 as /from . import coretex_pb2 as /' \
+  python/coretexdb/coretex_pb2_grpc.py
+
 cd python && pip install -e .
 ```
+
+CI does the same two steps before packaging, in both `build.yml` and
+`release.yml`.
 
 Extras:
 
@@ -31,7 +47,7 @@ Extras:
 The gRPC clients ship in the base package; they need `grpcio` present at
 runtime, which the server's install root provides.
 
-Requires Python 3.8+ and `numpy`.
+Requires Python 3.9+ (per `requires-python`) and `numpy`.
 
 ---
 
@@ -282,5 +298,5 @@ surface, and the integrations' importability.
 ## Version
 
 `coretexdb.__version__` is `1.0.12` — an independent line from the Rust crate's
-`0.2.4`. `python/coretexdb/version.py` is the single source of truth; the
+`0.2.5`. `python/coretexdb/version.py` is the single source of truth; the
 `pyproject.toml` reads it rather than repeating the number.

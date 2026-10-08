@@ -1,6 +1,147 @@
-# CoreTexDB V0.2.4 Release Notes
+# CoreTexDB V0.2.5 Release Notes
 
-## Highlights (V0.2.4)
+## Highlights (V0.2.5)
+
+本版主题是**清除会撒谎的代码**，并把「已存在但从未接线」的模块接到对外
+接口上。`v0.2.4..HEAD` 共 39 个提交、84 文件、+17112 行。
+
+### 修复：会让运维看到假象的地方
+
+这些不是崩溃或性能问题，而是**代码在正常工作、但报告的不是真实情况**——
+排查时会被直接带偏：
+
+- **`/raft/append_entries` 恒返回 `success: true`**：告诉 leader「日志已复制」
+  而实际什么都没写。已删除而非打桩（`aba58f8`）。
+- **gRPC 指标结构性恒为 0**：`auth_failures` 与 `rate_limited` 两个字段从存在
+  起就没有任何代码写入，服务器拒绝掉全部请求时仍报告 0 次认证失败——而那正是
+  撞库时运维要看的数字（`ace4c20`）。
+- **`GET /metrics` 三处会撒谎**：端点此前不存在，`DatabaseMetrics` 被重导出
+  却无人填充（`2f62bfe`）。
+- **审计日志从未接线**：`AuditLogger` 被重导出、`init_metadata` 也建了
+  `logs/audit` 目录，但没有任何地方构造实例，安装树里那个目录一直是空的；
+  首条写 `[{...}]`、其后写 `,{...}`，产出的东西既非 JSON 也非 JSONL，
+  `serde_json` 会因第 2 行的前导逗号直接拒绝；事件 ID 是 `audit_{unix秒}`，
+  同一秒内全部事件共用一个 ID（`59e4186`）。现在由 `ApiState` 持有，
+  登录成功与失败、被拒的 token 都入账。
+- **`HttpTransport` 从不检查 HTTP 状态码**：503 的错误页被报成
+  "expected value"，指向 JSON 而非真正的原因；若错误体恰好是合法 JSON 形状
+  则**被静默接受**——replica 会套用假快照、把位置跳到从未收到的数据之后、
+  并报告成功。这是复制唯一无法自行恢复的失败模式（`462a506`）。
+- **认证用户只存内存**：每次重启抹掉全部账户（`bc1a4a7`）；HS256 未强制、
+  gRPC 调用方身份被丢弃（`0049571`）。
+- **限流器无界**，且方法白名单里有一个死方法（`adc70ac`）。
+
+### 修复：会产生错误结果的地方
+
+- **恢复时丢弃 `CreateCollection`**：`recover_from_wal` 重放日志时不读集合
+  schema，于是度量靠猜——恢复后 `euclidean` 可能变成 `cosine`（`568831c`）。
+- **manhattan SIMD 恒返回 0**：`_mm_andnot_ps` 用法错误使结果恒为零；
+  对拍测试首轮即抓出（`055d20f`）。
+- **等距向量的返回顺序不确定**：只按距离排序，等距时顺序取决于 `HashMap`
+  迭代序，重启后同一查询可能给出不同顺序、副本间排名可能不一致。
+  8 处排序补 id tie-break（`b5ef5a5`）。
+- **`SearchResult::Ord` 只比 distance**：而它正是 HNSW 搜索层
+  `BinaryHeap<Reverse<SearchResult>>` 的排序依据——上一条只修了显式
+  `sort_by`，堆路径漏了。另：派生的 `PartialEq` 比较 NaN 字段，与 `cmp`
+  把 NaN 判 Equal 矛盾，堆会自相矛盾（`2c86ad1`）。
+- **批量流式写入丢数据**、3 处同义反复断言、2 个不可能通过的 WAL 测试
+  （`86c45d3`、`49a3430`）。
+- **不可达的 CLI 子命令静默成功**：`cluster` / 用户吊销等未接线的子命令
+  退出码为 0（`157762d`）。
+- **`--features full` 编译不过**（`1dc9234`、`bd33d41`）。
+
+### 新能力
+
+| 领域 | 内容 |
+| --- | --- |
+| 检索 | 混合检索（BM25 + 向量，RRF 融合，`ee5b02e`）、二阶段 rerank（`91353e9`） |
+| 索引 | 倒排元数据索引，过滤预筛从 O(n·d) 降到亚线性（`8a6e6ee`、`25899d9`） |
+| 接口 | C ABI + 漂移守卫（`91353e9`）、浏览器控制台 `/console`（`ddbddd8`）、GraphQL `/graphql` + `/graphql/ws`（`b8c844a`） |
+| 分布式 | 拉复制 + 状态码校验（`462a506`）、16384 槽路由 / 节点发现 / 集合迁移（`202b5c0`）、Pub/Sub + WebSocket 订阅（`c17208f`） |
+| 运维 | 一致性快照 / 后台快照 / WAL 压实（`568831c`）、命令统计 + 慢查询日志 + INFO（`dd04926`）、审计日志接线（`59e4186`）、遥测一键开关（`9a89a8a`） |
+| 打包 | Python PEP 621 + 品牌一致命名与 pre-1.0 别名（`663b295`） |
+
+### 性能
+
+- SIMD 距离内核（`#[target_feature]` 特化 + 一次探测分发）：**4.9x / 5.4x**。
+- 批量 WAL 写入改为一次 fsync（原先每条一次）：**1048x**。
+- 全量扫描改为借用 id + 定容 max-heap，`O(n log k)`。
+- **并行扫描实测无收益，已回退**：数字写进了源码注释，以免日后有人再盲试一次。
+
+### 测试
+
+- 每 feature 独立编译门禁（`e87c5c9`）：`onnx` / `tantivy` 已知失败，
+  标记为 `continue-on-error` 只记录现状，不掩盖。
+- 故障注入（`tests/fault_injection.rs`，8 例）：按字节偏移截断、翻转校验和、
+  删段、半行 WAL。
+- 差分恢复对拍（`tests/differential.rs`）：五条恢复路径 × 四度量逐字段比对。
+- 审计端到端（`603da0a`）、`examples/mvp.rs` 作为可执行 MVP 定义并在 CI 真跑
+  （`7553826`）。
+
+### 版本号单一真源（本次）
+
+版本号此前散落 35 处，上一版发布改了 17 个文件才能对齐，且**没有任何机制
+会在漏改时报错**——`release.yml` 里写死 `V0.2.4`，真发布出一个装着 0.2.5
+二进制却叫 `CoreTexDB-V0.2.4-<target>` 的包，故障要等到装它的人手上才暴露。
+
+现在：
+
+- 权威源是 `Cargo.toml` 的 `version`；`release.yml` 从中派生归档名，
+  三个安装脚本从 `VERSION`（或 `Cargo.toml`）派生默认安装根。
+- `tests/version_consistency.rs` 把这条约定变成门禁：4 条断言覆盖
+  `VERSION` 与 `Cargo.toml` 一致、`DB_VERSION` 跟随、打包文件不出现字面量
+  版本、`VERSION` 只有一行。**四个负向用例逐一验证过会变红**——第一版实现
+  里那个检查函数写错了（needle 与扫描起点错位，永不命中），是这个验证抓出来的。
+- 顺带修掉 `release.yml` 的 SHA256 步骤静默失效：`$ASSET` 为空时原先跳过
+  而不报错，产物可以没有校验和就发布出去。
+
+> `Cargo.toml` 在本地以 CRLF 行尾检出，因此版本提取用 `cut` 而非依赖 `$`
+> 锚点的 `sed`——后者会静默返回空串，归档名变成 `CoreTexDB-V-<target>`。
+
+## What's changed since V0.2.4
+
+39 个提交。分组摘要（完整清单见 `git log v0.2.4..v0.2.5`）：
+
+| 领域 | 提交 |
+| --- | --- |
+| 清除会撒谎的代码 | `aba58f8` `ace4c20` `2f62bfe` `59e4186` `462a506` `bc1a4a7` `0049571` `adc70ac` |
+| 结果正确性 | `568831c` `055d20f` `b5ef5a5` `2c86ad1` `86c45d3` `49a3430` `157762d` |
+| 检索与索引 | `ee5b02e` `e122d80` `91353e9` `8a6e6ee` `25899d9` |
+| 分布式与运维 | `202b5c0` `c17208f` `dd04926` `9a89a8a` `d4f9dc8` `ddbddd8` `b8c844a` |
+| 构建与测试 | `1dc9234` `bd33d41` `e87c5c9` `7553826` `603da0a` |
+| 文档 | `57c6db4` `671187d` `3a8f3a1` `6706a3f` `8ef8b36` |
+
+测试：`cargo test` lib **489 passed / 0 failed**，17 个集成套件全绿。
+
+## Install-root layout (V0.2.5)
+
+```
+CoreTexDB-V0.2.5/
+  bin/          coretex                      # 单二进制（按 argv[0]/子命令分发）
+  lib/          libcoretexdb.so|.dylib|.a, coretexdb.dll|.lib
+  include/      coretexdb.h                  # C ABI（B1）
+  config/       coretex.toml, logging.yaml, backup.toml, security.toml, metrics.toml, {dev,staging,prod}/
+  share/        doc/, examples/
+  scripts/      start/stop/status/install/upgrade/uninstall/backup/restore/...
+  systemd/      coretexd.service + timers + tmpfiles
+  logrotate/    coretexd
+  data/         coretex/{collections,indexes,metadata,store}, wal, backup/{full,incremental,snapshots}, logs/audit, temp, versions
+```
+
+> 目录名里的版本由 `scripts/install.sh` 在运行时从 `VERSION` 派生，不再写死。
+
+## Upgrade
+
+Use `scripts/upgrade.sh` from the install root. See `share/doc/INSTALL.md`.
+
+从 V0.2.4 升级：安装根目录名从 `CoreTexDB-V0.2.4` 变为 `CoreTexDB-V0.2.5`，
+systemd 单元与 logrotate 路径已同步更新，升级后需 `systemctl daemon-reload`。
+
+---
+
+## 归档：V0.2.4 Release Notes
+
+### Highlights (V0.2.4)
 
 - **单二进制分发 / Single binary**：只剩 `coretex` 一个可执行文件，按
   `argv[0]` 与子命令承担 `server` / `backup` / `doctor` 等全部角色；
@@ -28,7 +169,7 @@
   Python 文档与测试 `import cortexdb`（模块实为 `coretexdb`）；
   5 个 deny 级 clippy error（含 `commit_up_to` 里恒不循环的死循环）。
 
-## What's changed since V0.2.3
+### What's changed since V0.2.3
 
 | 提交 | 说明 |
 | --- | --- |
@@ -43,7 +184,7 @@
 测试：`cargo test` **485 passed / 0 failed**；`cargo clippy --all-targets`
 **0 error**；`cargo doc --no-deps` 无 rustdoc 警告。
 
-## Install-root layout (V0.2.4)
+### Install-root layout (V0.2.4)
 
 ```
 CoreTexDB-V0.2.4/
@@ -58,7 +199,7 @@ CoreTexDB-V0.2.4/
   data/         coretex/{collections,indexes,metadata,store}, wal, backup/{full,incremental,snapshots}, logs/audit, temp, versions
 ```
 
-## Data layout (runtime)
+### Data layout (runtime)
 
 ```
 {base}/data/
@@ -70,7 +211,7 @@ CoreTexDB-V0.2.4/
   versions/
 ```
 
-## Upgrade
+### Upgrade
 
 Use `scripts/upgrade.sh` from the install root. See `share/doc/INSTALL.md`.
 

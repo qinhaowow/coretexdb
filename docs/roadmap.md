@@ -79,6 +79,94 @@
 | D4 | 文档：英文 README 完整版、故障恢复演练、运维手册、Python 文档 | ✅ 四个新文件（**`README.md` 属并行会话 WIP，故英文完整版写入 `docs/CAPABILITIES.md` 规避冲突**）：`docs/RECOVERY.md` 恢复演练手册（**每条命令与预期输出都对着 CLI 真实参数核对过**，含四个演练：批量写中断电/存储段截断/日志损坏与段丢失/五条恢复路径对拍；并解释生产恢复顺序为何是「冷启动→核对→才压实」——压实会把恢复出的状态（无论对错）固化进一份看起来整洁的日志）；区分两种长得像但本质不同的现象：坏行（安全、计数）与序列空洞（段丢失、必须全量重同步）；`docs/OPERATIONS.md` 运维手册（复制两端配置与健康判据、两种**故意**触发全量重同步的条件及「主库从备份恢复导致全量重同步一次」的解释、集群路由与迁移的先搬后切契约、快照与后台保存、日志压实、该告警的指标、Pub/Sub 接线，并明说三项能力暂无 HTTP 面及其等待对象）；`docs/CAPABILITIES.md` 能力与设计参考（**「刻意不做」的部分才是重点**：集合级分片的理由是跨节点需合并部分 ANN 结果、事务写不进复制日志（既有缺陷如实记录）、并行全量扫描实测后否决并把数字留在源码里）；`python/README.md` SDK 文档（B7 改名后的 `CoreTexDB*` 与 1.0 前别名、filter/hybrid 语义、四个客户端类、LangChain 与 HuggingFace 集成、1.0.x 独立版本线） |
 | D5 | CI 质量门升级：`cargo fmt --check`（需先全量格式化）、`clippy -D warnings`、覆盖率上报 | 🔄 **本会话负责的文件已清零**：`coretex_index` / `coretex_data` / `filter_index` / `coretex_snapshot` 共 15 个 warning → 0（lib 总体 85 → 70）。其中两个不是格式问题而是**真缺陷**：① `SearchResult` 的 `Ord` 只比 distance，而它正是 HNSW 搜索层 `BinaryHeap<Reverse<SearchResult>>` 的排序依据——**D3 修的是显式 sort_by，堆路径漏了**，等距候选顺序仍由堆布局决定；现改为 id tie-break，并让 `PartialEq` 与 `cmp` 一致（派生的 `PartialEq` 比较 NaN 字段，与 `cmp` 把 NaN 判 Equal 矛盾，会让堆自相矛盾）；② `matches_filter` 的 `!(a >= b)` / `!(a <= b)` 改为 `partial_cmp`——`>=` 在**相等时成立**，其否定恰为 `Less`（写成 `!= Some(Less)` 会把 Equal 误判为不通过，回归中 5 个 filter 套件立刻变红即是此因）。其余为 `Default` 实现、`push` after create、迭代代替索引、可见性等。**剩余 70 个全在并行会话的文件**（spatial_transaction 7 / grpc 5 / sql 4 / …），连同 `cargo fmt` 与覆盖率上报待其收口后统一处理 |
 
+### 阶段 D 补充：发布工程（2026-10-08，随版本升至 0.2.5 一并收口）
+
+不在原 A-D 计划内，但「发布一个版本」这件事本身暴露了 D5 想解决的那类问题
+——**失败发生在流程里而不是代码里，没有任何机制会报错**：
+
+- **版本号曾散落 35 处**（上一版发布改了 17 个文件才能对齐）。运行时已经是
+  `env!("CARGO_PKG_VERSION")`（生产代码本来就自动），断的是打包与安装层：
+  `release.yml` 三处写死 `V0.2.4`（归档名 ×2 + release body），`install.sh` /
+  `uninstall.sh` / `secure_setup.sh` 三处写死默认 `/opt/CoreTexDB-V0.2.4`。
+  真发布出去一个装着 0.2.5 二进制却叫 `CoreTexDB-V0.2.4-<target>` 的包，
+  故障要等到装它的人手上才暴露。现在 `Cargo.toml` 是唯一真源，`release.yml`
+  用 `Resolve version` 步骤派生归档名，三个安装脚本从 `VERSION`（回退
+  `Cargo.toml`）派生默认安装根，测试 fixture 也改读 `env!`。
+- **`tests/version_consistency.rs` 把约定变成门禁**：`VERSION` ↔ `Cargo.toml`
+  一致、`DB_VERSION` 跟随、打包文件不得出现字面量版本、`VERSION` 只有一行。
+  **四个负向用例逐一验证过会变红**——第一版实现里的检查函数写错了（needle 与
+  扫描起点错位，永不命中，等于放了个假门禁），是这个验证抓出来的。
+- **`Cargo.toml` 在本地以 CRLF 检出**，故版本提取用 `cut` 而非依赖 `$` 锚点的
+  `sed`：后者静默返回空串，归档名会变成 `CoreTexDB-V-<target>`。
+- **SHA256 步骤静默失效**：`release.yml` 里 `if [ -f "$ASSET" ]` 在 `$ASSET`
+  未设置时跳过而不报错，产物可以没有校验和就发布。现在缺 `ASSET` 或文件不存在
+  即失败。
+
+### 阶段 D 补充：CI 与发布流程（2026-10-08）
+
+GitHub 提示 Node.js 20 弃用（`actions/checkout@v4` / `setup-python@v5` 声明的是
+node20，被强制跑在 node24 上）。强制 ≠ 支持，故全部升到原生 node24 的版本：
+`checkout` v4→v7、`cache` v4→v6、`setup-python` v5→v7、`upload-artifact` v4→v6、
+`download-artifact` v4→v7、`softprops/action-gh-release` v2→v3。
+`ilammy/msvc-dev-cmd` 无法升——**该仓库已废弃**，master 仍是 node20、没有 v2、
+两个 Node 24 PR 悬置未合；改用 drop-in 替代 `step-security/msvc-dev-cmd`。
+
+配置过程中暴露的问题：
+
+- **发布产物的 feature 组合与被测试的不是同一个**：`release.yml` 用 default 构建，
+  而 `build.yml` 用 `--features full` 构建并测试，且其注释明写「full 是发布产物
+  使用的组合」。于是发布出去的二进制缺 `rocksdb / tls-gen / s3 / embedded /
+  wasm`，且发布路径从未以 full 组合被验证过。现统一为 `--features full`，
+  并补齐系统依赖（Ubuntu `librocksdb-dev libssl-dev pkg-config`、macOS
+  `brew install rocksdb openssl`）——`rocksdb` 走 `librocksdb-sys`，缺库会拖到
+  发布当天才链接失败。
+- **MSVC 验证步骤钉死年份**：`-version "[2026.0,2027.0)"` 在托管 runner 上返回
+  **空字符串**，步骤照样通过，等于什么都没检查。现改为报告实际工具链
+  （`cl.exe` 版本 + vswhere 查到的 VS 安装路径），`cl.exe` 不在 PATH 才失败。
+- **Python SDK 从来没有被打包过**：`build-python` 只做 `pip install -e .`，
+  证明的是「源码树可导入」，与「能否打包、能否从 wheel 安装」是两回事。
+  现改为在每个 PR 上构建 sdist + wheel、`twine check`、校验 wheel 内含 stubs
+  与版本模块、安装 wheel 后从 `site-packages` 导入并断言 protobuf 可用；
+  `release.yml` 新增 `build-python` job，把两个分发包作为 release 资产发布。
+- **Python SDK 的 gRPC 从来没有可用过**。链上有三个各自独立的缺陷，单看任何一个
+  都以为没事，合起来的效果是 `CORETEXDB_PROTOBUF_AVAILABLE` 恒为 `False`、
+  **每个 gRPC 调用都抛 ImportError**，而没有任何一处会报错：
+  1. **模块名根本对不上**：stubs 的名字由 proto 文件名决定，文件叫
+     `coretex.proto`，所以 protoc 产出 `coretex_pb2` / `coretex_pb2_grpc`。
+     `grpc_client.py` 导入的却是 `coretexdb_pb2` / `coretexdb_pb2_grpc`——
+     **没有任何生成器会产出这两个名字**。第一个 `try` 必抛，`except` 里的兜底
+     导入同样的名字，也必抛，于是赋 `None`。
+  2. **修 import 的 sed 从未生效**：规则是
+     `s/^import coretexdb_pb2 from /from /g`——既不是合法 Python，也不是 protoc
+     的输出（`import coretex_pb2 as coretex__pb2`），匹配不到任何东西，而
+     `|| true` 掩盖了这一点。CI 里「找不到 `coretexdb_pb2_grpc.py`」也只是
+     `echo Warning` 后继续，于是装出一个没有 stubs 的包（能 import、首次 gRPC
+     调用即失败）。
+  3. **wheel 不会带上 stubs**：即使前两条修好，stubs 生成在 `python/`——
+     package **旁边**——而 wheel 只打包 `coretexdb*`。editable 安装能用是因为
+     checkout 目录进了 `sys.path`。
+
+  现：stubs 生成到 `python/coretexdb/` 内；sed 改为
+  `s/^import coretex_pb2 as /from . import coretex_pb2 as /` 且不再吞错；
+  `grpc_client.py` 导入真实模块名并**别名回旧名**，其余代码不动；生成失败改为
+  `exit 1`；`.gitignore` 加入 `*_pb2.py` / `*_pb2_grpc.py`，免得把某次 protoc 的
+  输出固化进仓库。本机按 CI 的每一步实跑验证过：生成 → 修 import →
+  `python -m build` → `twine check` → 断言 wheel 内含 stubs → 从
+  `site-packages` 导入并断言 `CORETEXDB_PROTOBUF_AVAILABLE is True`。
+- `twine check` 曾报 `long_description` 缺失——wheel 根本没有描述文本，而那是
+  用户安装前在索引页读到的内容。`pyproject.toml` 现声明 `readme = "README.md"`。
+- `python/README.md` 说「Requires Python 3.8+」而 `pyproject.toml` 是
+  `requires-python = ">=3.9"`。按声明改为 3.9+，并补上从 checkout 安装所需的
+  stubs 生成步骤（原先一字未提，照着做只能装出一个 gRPC 不可用的包）。
+
+> 附带记一笔工具坑：`cargo test "$t"`（带引号）会把 `--test foo` 作为**单个**
+> argv 传入，匹配不到任何测试二进制，于是回退去跑 lib 目标并打印
+> `0 passed, N filtered out`——**退出码仍为 0**。本次差点据此把「全绿」写进
+> 提交。同类的还有 `SUITES+=("--test" name)` 分两次迭代。回归脚本因此改为
+> 「每个套件一个字符串、展开时不加引号」，并对每个套件校验确实产出了
+> `test result:` 行，否则判为失败。
+
+
 > 说明：本项目当前 Rust 代码约 5.4 万行（`src` + `tests`）。Redis 核心约 11 万行 C
 > （不含测试），要对齐量级，**测试与文档必须跟上**——否则只是把未接线的模块堆得更多，
 > 那正是本项目已知的历史教训。
