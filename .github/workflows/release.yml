@@ -163,13 +163,33 @@ jobs:
         if: matrix.cross == 'true'
         shell: bash
         run: |
-          set -euo pipefail
+          # `pipefail` deliberately not set: the reporting below pipes into
+          # `head -1`, and when `head` closes the pipe the writer takes SIGPIPE,
+          # which `pipefail` turns into exit 141. That would surface as an
+          # intermittent "the cross toolchain failed" that says nothing about
+          # the toolchain.
+          set -eu
           sudo apt-get update
           # No librocksdb-dev:arm64 — librocksdb-sys compiles its vendored copy.
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
-          T=aarch64-unknown-linux-gnu
+          # Resolve libclang first and fail here if it is missing, rather than
+          # exporting a path built from an empty `ls` and letting bindgen fail
+          # later with a message about something else entirely.
+          LIBCLANG="$(find /usr/lib/llvm-*/lib -maxdepth 1 -name 'libclang.so*' 2>/dev/null | head -1)"
+          if [ -z "$LIBCLANG" ]; then
+            echo "no libclang under /usr/lib/llvm-*/lib — librocksdb-sys runs bindgen and needs it" >&2
+            echo "looked for libclang.so* in:" >&2
+            ls -d /usr/lib/llvm-* 2>/dev/null >&2 || echo "  (no llvm directories at all)" >&2
+            exit 1
+          fi
+          LIBCLANG_DIR="$(dirname "$LIBCLANG")"
+
+          # Written to $GITHUB_ENV for the *following* steps; the values are
+          # also kept locally so this step can report what it set. Reading them
+          # back out of the environment instead is what the previous version
+          # did, and `set -u` turned the summary line into the build's failure.
           {
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
             # `cc` picks these up per target; RocksDB, zstd-sys and lz4-sys all
@@ -178,22 +198,17 @@ jobs:
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
             echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
             echo "RANLIB_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ranlib"
-            # librocksdb-sys calls bindgen against its vendored headers, so
-            # libclang must be found without guessing.
-            echo "LIBCLANG_PATH=$(dirname "$(ls /usr/lib/llvm-*/lib/libclang.so.1 | head -1)")"
+            echo "LIBCLANG_PATH=$LIBCLANG_DIR"
           } >> "$GITHUB_ENV"
 
-          echo "aarch64-linux-gnu-gcc: $(aarch64-linux-gnu-gcc --version | head -1)"
-          echo "aarch64-linux-gnu-g++: $(aarch64-linux-gnu-g++ --version | head -1)"
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
-
-      # Building ~700 vendored C++ files for a foreign target is slow enough
-      # that the default job timeout is worth revisiting per run.
-      - name: Report the cross toolchain
-        if: matrix.cross == 'true'
-        run: |
-          aarch64-linux-gnu-gcc -print-sysroot
-          aarch64-linux-gnu-gcc -print-multiarch
+          # Diagnostics only: a toolchain that declines to print its sysroot
+          # should not stop the release.
+          echo "aarch64-linux-gnu-gcc: $(aarch64-linux-gnu-gcc --version 2>&1 | head -1 || echo unknown)"
+          echo "aarch64-linux-gnu-g++: $(aarch64-linux-gnu-g++ --version 2>&1 | head -1 || echo unknown)"
+          echo "libclang: $LIBCLANG"
+          echo "LIBCLANG_PATH=$LIBCLANG_DIR"
+          echo "sysroot: $(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null || echo unknown)"
+          echo "multiarch: $(aarch64-linux-gnu-gcc -print-multiarch 2>/dev/null || echo unknown)"
 
       - name: Resolve version
         id: ver
