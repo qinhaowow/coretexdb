@@ -3,7 +3,13 @@
 # Usage: sudo scripts/secure_setup.sh [PREFIX]
 set -euo pipefail
 
-PREFIX="${1:-/opt/CoreTexDB-V0.2.4}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The version comes from the tree: the VERSION file that ships in the install
+# root, or Cargo.toml when running from a checkout. It used to be a literal in
+# this line, so every release had to edit three scripts to agree.
+VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || grep -m1 '^version = ' "$ROOT/Cargo.toml" 2>/dev/null | cut -d'"' -f2)"
+[ -n "$VERSION" ] || { echo "cannot determine version from $ROOT" >&2; exit 1; }
+PREFIX="${1:-/opt/CoreTexDB-V$VERSION}"
 [ -d "$PREFIX" ] || { echo "missing prefix: $PREFIX" >&2; exit 1; }
 
 # Groups/users are best-effort; fall back to current user if missing.

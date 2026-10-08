@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=coretex
 Group=coretex
-ExecStart=/opt/CoreTexDB-V0.2.4/bin/coretex server --data-dir /opt/CoreTexDB-V0.2.4
+ExecStart=/opt/CoreTexDB-V0.2.5/bin/coretex server --data-dir /opt/CoreTexDB-V0.2.5
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -16,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/CoreTexDB-V0.2.4/data
+ReadWritePaths=/opt/CoreTexDB-V0.2.5/data
 CapabilityBoundingSet=
 AmbientCapabilities=
 

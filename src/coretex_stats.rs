@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn info_text_carries_the_sections() {
         let info = ServerInfo {
-            version: "0.2.4".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             mode: "standalone".to_string(),
             read_only: true,
             uptime_seconds: 42,
@@ -415,7 +415,10 @@ mod tests {
 
         let text = info.to_text();
         assert!(text.contains("# Server"));
-        assert!(text.contains("coretexdb_version:0.2.4"));
+        assert!(text.contains(&format!(
+            "coretexdb_version:{}",
+            env!("CARGO_PKG_VERSION")
+        )));
         assert!(text.contains("read_only:true"));
         assert!(text.contains("coretexdb_collection:docs:vectors=3"));
         assert!(text.contains("cmdstat_search:calls=2"));

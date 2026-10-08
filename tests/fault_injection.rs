@@ -395,7 +395,10 @@ async fn lost_manifest_is_rebuilt_from_the_log_schema() {
     );
     std::fs::write(
         &manifest,
-        br#"{"version":"0.2.4","created_at":0,"last_modified":0,"collections":[],"schemas":[]}"#,
+        format!(
+            r#"{{"version":"{}","created_at":0,"last_modified":0,"collections":[],"schemas":[]}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
     )
     .unwrap();
 

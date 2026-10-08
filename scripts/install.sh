@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Install CoreTexDB into an install root (PREFIX).
-# Usage: scripts/install.sh [PREFIX]   (default: /opt/CoreTexDB-V0.2.4)
+# Usage: scripts/install.sh [PREFIX]   (default: /opt/CoreTexDB-V<version>)
 set -euo pipefail
 
-PREFIX="${1:-/opt/CoreTexDB-V0.2.4}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.2.4)"
+# The version comes from the tree: the VERSION file that ships in the install
+# root, or Cargo.toml when running from a checkout. It used to be a literal in
+# this line, so every release had to edit three scripts to agree.
+VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || grep -m1 '^version = ' "$ROOT/Cargo.toml" 2>/dev/null | cut -d'"' -f2)"
+[ -n "$VERSION" ] || { echo "cannot determine version from $ROOT" >&2; exit 1; }
+PREFIX="${1:-/opt/CoreTexDB-V$VERSION}"
 BIN_SRC="${BIN_SRC:-$ROOT/target/release}"
 
 echo "Installing CoreTexDB $VERSION → $PREFIX"
@@ -20,6 +24,19 @@ cp -a "$ROOT/config/." "$PREFIX/config/"
 cp -a "$ROOT/scripts/." "$PREFIX/scripts/"
 cp -a "$ROOT/systemd/." "$PREFIX/systemd/"
 cp -a "$ROOT/logrotate/." "$PREFIX/logrotate/"
+
+# The units name the install root literally, and `ExecStart=` is executed by
+# systemd rather than read: copied verbatim, a tree installed anywhere but the
+# default produced a unit pointing at a directory that does not exist, and the
+# service failed to start with no obvious cause. Rewriting them here is also
+# what makes an in-place upgrade work — upgrade.sh reuses the old prefix, so the
+# freshly copied units are renamed from the new default onto it.
+DEFAULT_PREFIX="/opt/CoreTexDB-V$VERSION"
+if [ "$PREFIX" != "$DEFAULT_PREFIX" ]; then
+    echo "Rewriting unit paths: $DEFAULT_PREFIX -> $PREFIX"
+    find "$PREFIX/systemd" "$PREFIX/logrotate" -type f \
+        -exec sed -i "s|$DEFAULT_PREFIX|$PREFIX|g" {} +
+fi
 cp -a "$ROOT/share/." "$PREFIX/share/"
 cp -a "$ROOT/include/." "$PREFIX/include/" 2>/dev/null || true
 chmod 755 "$PREFIX/scripts/"*.sh 2>/dev/null || true

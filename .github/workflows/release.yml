@@ -35,7 +35,7 @@ jobs:
             exe_suffix: ''
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -43,7 +43,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -51,18 +51,20 @@ jobs:
             target
           key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install protoc (Ubuntu)
+      - name: Install system dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y librocksdb-dev libssl-dev pkg-config protobuf-compiler
           echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+          echo "protoc path: $(which protoc)"
 
-      - name: Install protoc (macOS)
+      - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install protobuf
+          brew install rocksdb openssl protobuf
           echo "PROTOC=$(which protoc)" >> $GITHUB_ENV
+          echo "protoc path: $(which protoc)"
 
       - name: Install protoc (Windows)
         if: runner.os == 'Windows'
@@ -79,17 +81,28 @@ jobs:
 
       - name: Activate MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: step-security/msvc-dev-cmd@v1
         with:
           arch: x64
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        # `cut` rather than a `sed` regex: Cargo.toml is checked out with CRLF
+        # line endings, so a `$` anchor never matches and the version comes out
+        # empty — which silently produced `CoreTexDB-V-<target>`.
+        run: echo "v=$(grep -m1 '^version = ' Cargo.toml | cut -d'\"' -f2)" >> "$GITHUB_OUTPUT"
+
+      # `--features full`, the same combination build.yml compiles and tests.
+      # Publishing anything else means shipping binaries no test run ever
+      # exercised.
       - name: Build release binaries and libraries
-        run: cargo build --release --lib --bins --target ${{ matrix.target }}
+        run: cargo build --release --lib --bins --features full --target ${{ matrix.target }}
 
       - name: Stage package (Unix)
         if: runner.os != 'Windows'
         run: |
-          STAGE=CoreTexDB-V0.2.4-${{ matrix.target }}
+          STAGE=CoreTexDB-V${{ steps.ver.outputs.v }}-${{ matrix.target }}
           BD="${{ matrix.bin_dir }}"
           mkdir -p "$STAGE"/{bin,lib,include,config,share,scripts,systemd,logrotate}
           mkdir -p "$STAGE"/data/coretex/{collections,indexes/{vector,scalar},metadata,store}
@@ -118,7 +131,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "CoreTexDB-V0.2.4-${{ matrix.target }}"
+          $stage = "CoreTexDB-V${{ steps.ver.outputs.v }}-${{ matrix.target }}"
           $bd = "${{ matrix.bin_dir }}"
           $bins = @('coretex')
           New-Item -ItemType Directory -Path "$stage\bin","$stage\lib","$stage\include","$stage\config","$stage\share","$stage\scripts","$stage\systemd","$stage\logrotate" -Force | Out-Null
@@ -153,40 +166,110 @@ jobs:
       - name: SHA256 checksum
         shell: bash
         run: |
-          if [ -f "$ASSET" ]; then
-            sha256sum "$ASSET" | tee "${ASSET}.sha256"
-          fi
+          # An absent $ASSET used to skip this step in silence, so a release
+          # could publish an archive with no checksum beside it.
+          [ -n "${ASSET:-}" ] || { echo "ASSET is empty — staging failed"; exit 1; }
+          [ -f "$ASSET" ] || { echo "no such file: $ASSET"; exit 1; }
+          sha256sum "$ASSET" | tee "${ASSET}.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.ASSET_NAME }}
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET_NAME }}.sha256
 
+  build-python:
+    name: Build Python distributions
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine setuptools wheel grpcio-tools protobuf
+
+      # The generated stubs are inputs to the package, not build artefacts: the
+      # wheel has to ship them, so they are produced before packaging rather
+      # than left for a consumer to run protoc themselves.
+      - name: Generate protobuf Python code
+        run: |
+          python -m grpc_tools.protoc -I./src/coretex_grpc \
+            --python_out=./python/coretexdb --grpc_python_out=./python/coretexdb \
+            ./src/coretex_grpc/coretex.proto
+
+      - name: Fix protobuf imports
+        working-directory: python/coretexdb
+        run: |
+          if [ -f coretex_pb2_grpc.py ]; then
+            # protoc emits an absolute import; inside a package it must be
+            # relative, or the wheel installs something that cannot import.
+            # The names come from `coretex.proto`.
+            sed -i 's/^import coretex_pb2 as /from . import coretex_pb2 as /' coretex_pb2_grpc.py
+            ls -la coretex_pb2*.py
+          else
+            echo "coretex_pb2.py was not generated — the package would ship without it"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        working-directory: python
+        run: |
+          python -m build
+          ls -la dist/
+
+      # `twine check` renders the metadata the way a repository index would, so
+      # a malformed description or a missing long_description fails here rather
+      # than after the release is published.
+      - name: Verify distributions
+        working-directory: python
+        run: |
+          twine check dist/*
+          python -m zipfile -l dist/*.whl | head -20
+
+      - name: Install the wheel and import it
+        working-directory: python
+        run: |
+          pip install dist/*.whl
+          python -c "import coretexdb; print('wheel installs and imports:', coretexdb.__version__)"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v6
+        with:
+          name: python-dist
+          path: python/dist/*
+          if-no-files-found: error
+
   create-release:
     name: Create GitHub Release
-    needs: build-release
+    needs: [build-release, build-python]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
           files: artifacts/**/*
           body: |
-            CoreTexDB V0.2.4 multi-platform packages (full install-root).
+            CoreTexDB V${{ steps.ver.outputs.v }} multi-platform packages (full install-root).
 
             Each archive contains:
             - `bin/` coretex (single entrypoint: server / backup / restore / doctor / dump)
@@ -196,6 +279,12 @@ jobs:
             - `data/` skeleton: coretex/{collections,indexes,metadata,store}, wal, backup, logs, temp, versions
             - VERSION, README, LICENSE, RELEASE_NOTES
 
-            Verify with `*.sha256`.
+            Built with `--features full` — the same combination CI compiles and
+            tests, so the binaries here are the ones those runs exercised.
+
+            Also attached: `coretexdb` Python SDK `sdist` and `wheel` (a
+            separate version line; see `python/README.md`).
+
+            Verify every archive with its `*.sha256`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

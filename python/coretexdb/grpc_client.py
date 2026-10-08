@@ -7,14 +7,19 @@ import grpc
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
 
+# The module names follow `src/coretex_grpc/coretex.proto`, so protoc emits
+# `coretex_pb2` — not `coretexdb_pb2`, which nothing generates. Importing that
+# name meant this block always raised, the fallback below always raised too, and
+# every gRPC call reported protobuf as unavailable. Aliased back to the old
+# names so the rest of the module is unchanged.
 try:
-    from . import coretexdb_pb2
-    from . import coretexdb_pb2_grpc
+    from . import coretex_pb2 as coretexdb_pb2
+    from . import coretex_pb2_grpc as coretexdb_pb2_grpc
     CORETEXDB_PROTOBUF_AVAILABLE = True
 except ImportError:
     try:
-        import coretexdb_pb2
-        import coretexdb_pb2_grpc
+        import coretex_pb2 as coretexdb_pb2
+        import coretex_pb2_grpc as coretexdb_pb2_grpc
         CORETEXDB_PROTOBUF_AVAILABLE = True
     except ImportError:
         coretexdb_pb2 = None

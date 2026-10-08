@@ -113,3 +113,10 @@ lock_probe.txt
 # 个人会话记忆（含私有环境信息：SSH 配置、内网 IP、代理绕过方式）。
 # 保留在本地供自己跨会话使用，但绝不能进开源仓库。
 /CLAUDE.md
+
+# Generated protobuf stubs. `grpc_tools.protoc` produces them into the package
+# (see the CI steps and python/README.md); committing them would freeze one
+# protoc version's output into the tree.
+*_pb2.py
+*_pb2_grpc.py
+*_pb2.pyi

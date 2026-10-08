@@ -38,7 +38,7 @@ extern "C" {
 
 #define CORETEXDB_VERSION_MAJOR 0
 #define CORETEXDB_VERSION_MINOR 2
-#define CORETEXDB_VERSION_PATCH 4
+#define CORETEXDB_VERSION_PATCH 5
 
 /* Status codes (mirrored as Rust consts in coretex_ffi). */
 #define CORETEXDB_OK 0

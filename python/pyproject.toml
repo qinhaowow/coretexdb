@@ -11,6 +11,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coretexdb"
 description = "Python SDK for CoreTexDB — multimodal vector database with vector and BM25 hybrid search over REST/gRPC."
+# Without this the wheel carries no description at all, and `twine check`
+# warns that `long_description` is missing — which is the text a user
+# reads on the index page before deciding to install.
+readme = "README.md"
 requires-python = ">=3.9"
 dynamic = ["version"]
 dependencies = [

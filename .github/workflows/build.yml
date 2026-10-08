@@ -20,7 +20,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -28,19 +28,19 @@ jobs:
         components: rustfmt, clippy
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo build
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
@@ -76,30 +76,43 @@ jobs:
         Write-Output "PROTOC=$extractPath\bin\protoc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         Write-Output "protoc installed successfully"
 
-    - name: Activate MSVC 2026 toolchain (Windows)
+    # `ilammy/msvc-dev-cmd` is abandoned and still declares node20, with no v2
+    # and the Node 24 PRs unmerged; step-security's is the maintained drop-in
+    # and takes the same inputs.
+    - name: Activate MSVC toolchain (Windows)
       if: matrix.os == 'windows-latest'
-      uses: ilammy/msvc-dev-cmd@v1
+      uses: step-security/msvc-dev-cmd@v1
       with:
         arch: x64
 
-    - name: Verify MSVC 2026 (Windows)
+    # Reports which toolchain is actually present instead of demanding a year.
+    # Hosted runners ship whichever Visual Studio is current, so the old
+    # `-version "[2026.0,2027.0)"` query returned an empty string and the step
+    # passed without having checked anything — a build that later failed in
+    # `cc` would have had no clue why.
+    - name: Report MSVC toolchain (Windows)
       if: matrix.os == 'windows-latest'
       shell: pwsh
       run: |
         $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
-        if ($cl) {
-          $clPath = (Get-Command cl.exe).Source
-          $clVersion = ((& cl.exe) 2>&1 | Select-String -Pattern 'Microsoft.*Compiler' | Select-Object -First 1)
-          Write-Output "cl.exe: $clPath"
-          Write-Output "Version: $clVersion"
-        } else {
-          Write-Error "MSVC 2026 not found in PATH after activation"
+        if (-not $cl) {
+          Write-Error "cl.exe is not on PATH after activating the MSVC environment"
           exit 1
         }
+        Write-Output "cl.exe: $($cl.Source)"
+        Write-Output "Version: $((& cl.exe) 2>&1 | Select-String -Pattern 'Microsoft.*Compiler' | Select-Object -First 1)"
+
         $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
         if (Test-Path $vswhere) {
-          $install = & $vswhere -version "[2026.0,2027.0)" -products * -property installationPath
-          Write-Output "VS 2026 install path: $install"
+          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install) {
+            Write-Error "vswhere found no Visual Studio with the C++ toolset"
+            exit 1
+          }
+          Write-Output "VS install path: $install"
+          Write-Output "VS version: $(& $vswhere -latest -products * -property displayName)"
+        } else {
+          Write-Warning "vswhere not found; skipping the Visual Studio inventory"
         }
 
     - name: Install libclang (Windows)
@@ -139,13 +152,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -170,13 +183,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -223,12 +236,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         path: repo
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
         python-version: '3.11'
 
@@ -240,30 +253,67 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install setuptools wheel numpy pandas pydantic requests aiohttp grpcio grpcio-tools protobuf
+        pip install build twine setuptools wheel numpy pandas pydantic requests aiohttp grpcio grpcio-tools protobuf
 
     - name: Generate protobuf Python code
       run: |
         cd repo
-        python -m grpc_tools.protoc -I./src/coretex_grpc --python_out=./python --grpc_python_out=./python ./src/coretex_grpc/coretex.proto
-        ls -la python/
+        # Into the package, not beside it. A wheel carries only `coretexdb*`,
+        # so stubs left in python/ are dropped: the SDK then imports, reports
+        # protobuf as unavailable, and raises on the first gRPC call.
+        python -m grpc_tools.protoc -I./src/coretex_grpc \
+          --python_out=./python/coretexdb --grpc_python_out=./python/coretexdb \
+          ./src/coretex_grpc/coretex.proto
+        ls -la python/coretexdb/*pb2*
 
     - name: Fix protobuf imports
-      working-directory: repo/python
+      working-directory: repo/python/coretexdb
       run: |
-        if [ -f coretexdb_pb2_grpc.py ]; then
-          sed -i 's/^import coretexdb_pb2 from /from /g' coretexdb_pb2_grpc.py || true
-          cat coretexdb_pb2.py | head -20
+        if [ -f coretex_pb2_grpc.py ]; then
+          # protoc emits `import coretex_pb2 as coretex__pb2` — an absolute
+          # import that resolves only with python/ on sys.path. Inside an
+          # installed package it has to be relative.
+          #
+          # The names follow `coretex.proto`, and the step used to look for
+          # `coretexdb_pb2_grpc.py`, which no generator produces: it found
+          # nothing, warned, and carried on. `grpc_client` had the same
+          # mismatch, so gRPC was reported unavailable in every install.
+          sed -i 's/^import coretex_pb2 as /from . import coretex_pb2 as /' coretex_pb2_grpc.py
+          grep -n 'coretex_pb2' coretex_pb2_grpc.py | head -3
         else
-          echo "Warning: coretexdb_pb2.py not found"
+          # Previously a warning: the job went on to install a package with no
+          # stubs, which imports fine and fails at first use.
+          echo "error: coretex_pb2.py was not generated"
           ls -la
+          exit 1
         fi
 
-    - name: Build package with pip
+    # `pip install -e .` proved the tree was importable from the checkout, which
+    # says nothing about whether it can be packaged or installed from a wheel.
+    # Both are exercised here, and the generated stubs are required rather than
+    # assumed: the wheel ships them, so a protoc run that silently produced
+    # nothing would yield a package that imports and then fails on first use.
+    - name: Build sdist and wheel
       working-directory: repo/python
       run: |
-        pip install -e .
-        python -c "import coretexdb; print('Package installed successfully')"
+        rm -rf dist build *.egg-info
+        python -m build
+        ls -la dist/
+
+    - name: Verify distributions
+      working-directory: repo/python
+      run: |
+        twine check dist/*
+        test -f dist/*.whl || { echo "no wheel produced"; exit 1; }
+        test -f dist/*.tar.gz || { echo "no sdist produced"; exit 1; }
+        python -m zipfile -l dist/*.whl | grep -E 'coretex_pb2|coretexdb/version' || {
+          echo "the wheel is missing the generated stubs or the version module"; exit 1; }
+
+    - name: Install the wheel and import it
+      working-directory: repo/python
+      run: |
+        pip install dist/*.whl
+        python -c "import coretexdb; print('wheel installs and imports:', coretexdb.__version__)"
 
   examples:
     # examples/ 是对外可运行的示例，必须一直能编译、能跑通，否则文档就是假的。
@@ -271,13 +321,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -309,7 +359,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -317,7 +367,7 @@ jobs:
         components: clippy
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
