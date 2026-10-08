@@ -234,8 +234,7 @@ impl SnapshotArchive {
     /// Read one snapshot back.
     pub async fn load(&self, name: &str) -> Result<ReplicationSnapshot> {
         let path = self.path_for(name);
-        let bytes = std::fs::read(&path)
-            .map_err(|e| CoreTexError::Io(e))?;
+        let bytes = std::fs::read(&path).map_err(CoreTexError::Io)?;
         decode(&bytes)
     }
 

@@ -115,6 +115,12 @@ pub(crate) fn index_type_name(index_type: &IndexType) -> &'static str {
     }
 }
 
+/// `collection → (data_version the index was built at, the index)`.
+///
+/// A hit only counts when the stored version equals the one read while holding
+/// `data`'s read lock, so a stale entry is detected rather than trusted.
+pub(crate) type FilterIndexCache = HashMap<String, (u64, Arc<filter_index::FilterIndex>)>;
+
 #[derive(Clone)]
 pub struct DataManager {
     collections: Arc<RwLock<HashMap<String, CollectionSchema>>>,
@@ -137,7 +143,7 @@ pub struct DataManager {
     /// [`Self::data_version`] like the hybrid BM25 cache: a hit only counts
     /// when the version stored with the index equals the version read while
     /// holding `data`'s read lock (see [`Self::index_scan`]).
-    filter_index_cache: Arc<RwLock<HashMap<String, (u64, Arc<FilterIndex>)>>>,
+    filter_index_cache: Arc<RwLock<FilterIndexCache>>,
     /// Replication guard: while set, every mutation through the public write
     /// paths is refused (see [`Self::ensure_writable`]). Startup recovery and
     /// replication replay go through [`Self::write_data_unchecked`] and are
@@ -515,10 +521,8 @@ impl DataManager {
                         }
                     }
                 }
-                WalEntryType::DeleteCollection => {
-                    if self.collection_exists(collection).await {
-                        let _ = self.delete_collection_inner(collection, false).await;
-                    }
+                WalEntryType::DeleteCollection if self.collection_exists(collection).await => {
+                    let _ = self.delete_collection_inner(collection, false).await;
                 }
                 _ => {}
             }
@@ -2579,22 +2583,22 @@ impl DataManager {
             match op.as_str() {
                 "$gt" => {
                     if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
-                        if !(a > b) { return false; }
+                        if a.partial_cmp(&b) != Some(std::cmp::Ordering::Greater) { return false; }
                     } else { return false; }
                 }
                 "$gte" => {
                     if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
-                        if !(a >= b) { return false; }
+                        if a.partial_cmp(&b) == Some(std::cmp::Ordering::Less) { return false; }
                     } else { return false; }
                 }
                 "$lt" => {
                     if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
-                        if !(a < b) { return false; }
+                        if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) { return false; }
                     } else { return false; }
                 }
                 "$lte" => {
                     if let (Some(a), Some(b)) = (meta_val.as_f64(), cond_val.as_f64()) {
-                        if !(a <= b) { return false; }
+                        if a.partial_cmp(&b) == Some(std::cmp::Ordering::Greater) { return false; }
                     } else { return false; }
                 }
                 "$ne" => {

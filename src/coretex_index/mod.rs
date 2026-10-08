@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::coretex_core::{CoreTexError, Result};
 
 /// Result of a vector search
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     /// ID of the matched vector
     pub id: String,
@@ -15,17 +15,34 @@ pub struct SearchResult {
     pub distance: f32,
 }
 
-impl Eq for SearchResult {}
-
-impl PartialOrd for SearchResult {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.distance.partial_cmp(&other.distance)
+impl PartialEq for SearchResult {
+    fn eq(&self, other: &Self) -> bool {
+        // Agrees with `cmp`, including for NaN distances. The derived
+        // implementation would compare `distance` field-wise — so two NaN
+        // results would be `!=` while `cmp` called them equal, and a
+        // `BinaryHeap` would then contradict itself.
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 
+impl Eq for SearchResult {}
+
 impl Ord for SearchResult {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap_or(std::cmp::Ordering::Equal)
+        // Ties break by id. This type backs `BinaryHeap<Reverse<SearchResult>>`
+        // in the HNSW search layer, so comparing distance alone would leave
+        // equal-distance results in whatever order the heap happened to
+        // arrange — the same non-determinism the explicit sorts guard against.
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for SearchResult {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -99,6 +116,12 @@ pub struct IVFIndex {
 pub struct ScalarIndex {
     scalars: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, f32>>>,
     sorted_scalars: std::sync::Arc<tokio::sync::RwLock<Vec<(f32, String)>>>, // Sorted list of (value, ID) pairs
+}
+
+impl Default for ScalarIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Distance between two vectors under `metric`, lower always meaning "more
@@ -590,11 +613,7 @@ impl VectorIndex for HNSWIndex {
                     node_levels[l] = neighbors.clone();
                 }
                 for neighbor_id in &neighbors {
-                    let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| {
-                        let mut v = Vec::new();
-                        v.push(Vec::new());
-                        v
-                    });
+                    let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| vec![Vec::new()]);
                     if l < neighbor_levels.len() {
                         neighbor_levels[l].push(id.to_string());
                         if neighbor_levels[l].len() > self.m {
@@ -747,11 +766,7 @@ impl VectorIndex for HNSWIndex {
                             node_levels[l] = neighbors.clone();
                         }
                         for neighbor_id in &neighbors {
-                            let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| {
-                                let mut v = Vec::new();
-                                v.push(Vec::new());
-                                v
-                            });
+                            let neighbor_levels = graph.entry(neighbor_id.clone()).or_insert_with(|| vec![Vec::new()]);
                             if l < neighbor_levels.len() {
                                 neighbor_levels[l].push(id.to_string());
                                 if neighbor_levels[l].len() > self.m {
@@ -965,9 +980,7 @@ impl VectorIndex for IVFIndex {
             .cloned()
             .collect();
 
-        while centroids.len() < nlist {
-            centroids.push(vec![0.0; dim]);
-        }
+        centroids.resize(nlist, vec![0.0; dim]);
 
         let mut assignments: Vec<usize> = vec![0; all_vectors.len()];
 
@@ -992,15 +1005,16 @@ impl VectorIndex for IVFIndex {
                 }
                 assignments[i] = best;
                 counts[best] += 1;
-                for (d, val) in vec.iter().enumerate() {
-                    new_centroids[best][d] += val;
+                for (centroid_dim, value) in new_centroids[best].iter_mut().zip(vec) {
+                    *centroid_dim += value;
                 }
             }
 
             for j in 0..nlist {
                 if counts[j] > 0 {
-                    for d in 0..dim {
-                        new_centroids[j][d] /= counts[j] as f32;
+                    let count = counts[j] as f32;
+                    for value in new_centroids[j].iter_mut() {
+                        *value /= count;
                     }
                 } else {
                     new_centroids[j] = centroids[j].clone();
@@ -1264,6 +1278,12 @@ pub fn vectors_checksum(pairs: &[(String, Vec<f32>)]) -> String {
 
 pub struct IndexManager {
     indexes: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Box<dyn VectorIndex>>>>,
+}
+
+impl Default for IndexManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IndexManager {
@@ -1538,14 +1558,14 @@ impl PQIndex {
             let start = i * sub_dim;
             let end = if i == n_subquantizers - 1 { dimension } else { start + sub_dim };
 
-            let mut sub_vectors: Vec<Vec<f32>> = training_vectors
+            let sub_vectors: Vec<Vec<f32>> = training_vectors
                 .iter()
                 .map(|v| v[start..end].to_vec())
                 .collect();
 
             // `kmeans` clamps k to the sample count, so few samples simply
             // yield fewer centroids — the codes stay valid either way.
-            let codebook = Self::kmeans(&mut sub_vectors, 1 << PQ_DEFAULT_BITS);
+            let codebook = Self::kmeans(&sub_vectors, 1 << PQ_DEFAULT_BITS);
             if codebook.is_empty() {
                 return Err("Training produced an empty codebook".to_string());
             }
@@ -1609,7 +1629,7 @@ impl PQIndex {
         Ok(())
     }
 
-    fn kmeans(data: &mut Vec<Vec<f32>>, k: usize) -> Vec<Vec<f32>> {
+    fn kmeans(data: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
         if data.is_empty() || k == 0 {
             return Vec::new();
         }

@@ -177,7 +177,7 @@ impl FilterIndex {
     /// Candidate ids for `field: cond`. Always a superset of the true
     /// matches; exact whenever the shape allows it.
     fn scan_field(&self, field: &str, cond: &Value) -> HashSet<String> {
-        let operator_group = cond.as_object().map_or(false, |obj| {
+        let operator_group = cond.as_object().is_some_and(|obj| {
             const OPS: [&str; 8] = [
                 "$gt", "$gte", "$lt", "$lte", "$ne", "$in", "$exists", "$regex",
             ];

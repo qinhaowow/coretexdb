@@ -543,3 +543,57 @@ async fn full_scan_matches_a_serial_reference() {
     let tied = index.search(&vec![0.0; 16], 5).await.unwrap();
     assert_eq!(tied.len(), 5);
 }
+
+/// D3 follow-up: results at equal distance come back ordered by id.
+///
+/// This covers the HNSW path specifically. Its search layer keeps candidates
+/// in a `BinaryHeap<Reverse<SearchResult>>`, so `Ord` on `SearchResult` — not
+/// any explicit sort — decides the output order there. Ordering by distance
+/// alone left equal-distance candidates in whatever order the heap happened to
+/// arrange, which is how a restart could reorder identical results.
+#[tokio::test]
+async fn equal_distance_results_are_ordered_by_id() {
+    // Every vector sits the same distance from the origin, so all candidates
+    // tie and only the id tie-break can order them.
+    let manager = IndexManager::new();
+    manager.create_index("hnsw", "hnsw", "euclidean").await.unwrap();
+    let index = manager.get_index("hnsw").await.unwrap().unwrap();
+
+    for id in ["delta", "alpha", "charlie", "bravo", "echo"] {
+        index.add(id, &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
+    }
+
+    let hits = index.search(&[0.0, 0.0, 0.0, 0.0], 5).await.unwrap();
+    assert_eq!(hits.len(), 5);
+    let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        ids, sorted,
+        "equal-distance results must come back ordered by id, got {ids:?}"
+    );
+
+    // The same must hold for the exact index, whose top-k heap orders the same
+    // way — the two paths must not disagree about a tie.
+    let manager = IndexManager::new();
+    manager
+        .create_index("exact", "brute_force", "euclidean")
+        .await
+        .unwrap();
+    let exact = manager.get_index("exact").await.unwrap().unwrap();
+    for id in ["delta", "alpha", "charlie", "bravo", "echo"] {
+        exact.add(id, &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
+    }
+    let exact_ids: Vec<String> = exact
+        .search(&[0.0, 0.0, 0.0, 0.0], 5)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(
+        ids,
+        exact_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        "the approximate and exact paths must agree on ties"
+    );
+}
